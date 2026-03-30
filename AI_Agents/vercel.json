@@ -1,0 +1,15 @@
+{
+  "buildCommand": "cd client && npm install && npm run build",
+  "outputDirectory": "client/dist",
+  "installCommand": "pip install -r requirements.txt && cd client && npm install",
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/index.py" },
+    { "handle": "filesystem" },
+    { "src": "/(.*)", "dest": "/client/dist/index.html" }
+  ],
+  "functions": {
+    "api/index.py": {
+      "runtime": "@vercel/python@4.0.0"
+    }
+  }
+}
