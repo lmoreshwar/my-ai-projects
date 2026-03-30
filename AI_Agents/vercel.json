@@ -1,5 +1,5 @@
 {
-  "name": "myaiprojects",
+  "name": "intelligent-test-planner",
   "buildCommand": "cd client && npm install && npm run build",
   "outputDirectory": "client/dist",
   "rewrites": [
