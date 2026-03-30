@@ -1,4 +1,5 @@
 {
+  "name": "myaiprojects",
   "buildCommand": "cd client && npm install && npm run build",
   "outputDirectory": "client/dist",
   "installCommand": "pip install -r requirements.txt && cd client && npm install",
