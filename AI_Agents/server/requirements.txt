@@ -1,8 +1,0 @@
-fastapi
-uvicorn
-python-docx
-requests
-python-dotenv
-pydantic
-openai
-groq

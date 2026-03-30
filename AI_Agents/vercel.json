@@ -5,16 +5,11 @@
   "rewrites": [
     {
       "source": "/api/(.*)",
-      "destination": "/api/index.py"
+      "destination": "/api/index.js"
     },
     {
       "source": "/(.*)",
       "destination": "/index.html"
     }
-  ],
-  "functions": {
-    "api/index.py": {
-      "runtime": "@vercel/python@4.0.0"
-    }
-  }
+  ]
 }
