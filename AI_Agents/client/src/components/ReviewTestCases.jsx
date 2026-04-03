@@ -323,6 +323,8 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
   const [filterText, setFilterText] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [riskExpanded, setRiskExpanded] = useState(false);
+  const [rtmExpanded, setRtmExpanded] = useState(false);
+  const [testCasesExpanded, setTestCasesExpanded] = useState(true);
   const itemsPerPage = 10;
   const carouselRef = useRef(null);
 
@@ -786,27 +788,29 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
         </button>
       </section>
 
-      {/* ── Coverage Status Rows (horizontal cards) ── */}
+      {/* ── Coverage Status Rows (3-column cards) ── */}
       {coverage && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {[
-            { label: 'Functional Pathways', status: coverage.functionalStatus },
-            { label: 'Negative Scenarios', status: coverage.negativeStatus },
-            { label: 'Edge Case Matrix', status: coverage.edgeCaseStatus },
+            { label: 'Functional Pathways', status: coverage.functionalStatus, icon: 'route' },
+            { label: 'Negative Scenarios', status: coverage.negativeStatus, icon: 'bug_report' },
+            { label: 'Edge Case Matrix', status: coverage.edgeCaseStatus, icon: 'grid_view' },
           ].map((item, idx) => {
             const isOpt = item.status === 'Optimized';
             const isPart = item.status === 'Partially Covered';
             return (
-              <div key={idx} className="flex items-center justify-between p-4 bg-white dark:bg-slate-900 rounded-xl shadow-sm">
-                <div className="flex items-center gap-3">
+              <div key={idx} className="flex items-center gap-4 p-5 bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-outline-variant/10 hover:shadow-md transition-all">
+                <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${isOpt ? 'bg-green-100 dark:bg-green-900/30' : isPart ? 'bg-amber-100 dark:bg-amber-900/30' : 'bg-red-100 dark:bg-red-900/30'}`}>
                   <span className={`material-symbols-outlined ${isOpt ? 'text-green-600' : isPart ? 'text-amber-500' : 'text-app-red'}`} style={{ fontVariationSettings: "'FILL' 1" }}>
                     {isOpt ? 'check_circle' : isPart ? 'warning' : 'error'}
                   </span>
-                  <span className="font-bold text-on-surface dark:text-white text-sm">{item.label}</span>
                 </div>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase ${isOpt ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400' : isPart ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-red-100 text-app-red'}`}>
-                  {item.status}
-                </span>
+                <div className="flex-1 min-w-0">
+                  <span className="font-bold text-on-surface dark:text-white text-sm">{item.label}</span>
+                  <span className={`block text-[10px] font-bold uppercase mt-0.5 ${isOpt ? 'text-green-600' : isPart ? 'text-amber-600' : 'text-app-red'}`}>
+                    {item.status}
+                  </span>
+                </div>
               </div>
             );
           })}
@@ -940,93 +944,129 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
         </section>
       )}
 
-      {/* ── Requirement Traceability Matrix ── */}
+      {/* ── Requirement Traceability Matrix (Collapsible) ── */}
       {coverage?.requirementTraceability && coverage.requirementTraceability.length > 0 && (
-        <section className="bg-white dark:bg-slate-900 p-6 rounded-xl shadow-sm border-l-4 border-purple-600">
-          <div className="flex items-center gap-2 mb-4">
-            <span className="material-symbols-outlined text-purple-600">account_tree</span>
-            <h4 className="font-bold text-on-surface dark:text-white">Requirement Traceability Matrix</h4>
-            {coverage.coverageCalculation && (
-              <span className="ml-auto text-[10px] font-mono text-secondary bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
-                {coverage.coverageCalculation.formula}
+        <section className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border-l-4 border-purple-600 overflow-hidden">
+          <button
+            onClick={() => setRtmExpanded(!rtmExpanded)}
+            className="w-full flex items-center justify-between p-5 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+          >
+            <div className="flex items-center gap-3">
+              <span className="material-symbols-outlined text-purple-600">account_tree</span>
+              <div className="text-left">
+                <h4 className="font-bold text-on-surface dark:text-white">Requirement Traceability Matrix</h4>
+                <p className="text-[10px] text-secondary font-medium">
+                  {coverage.requirementTraceability.length} requirements · {coverage.coverageCalculation?.fullyCovered || 0} full · {coverage.coverageCalculation?.partiallyCovered || 0} partial · {coverage.coverageCalculation?.notCovered || 0} uncovered
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              {coverage.coverageCalculation && (
+                <span className="text-[10px] font-mono text-secondary bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded hidden md:inline">
+                  {coverage.coverageCalculation.formula}
+                </span>
+              )}
+              <span className="material-symbols-outlined text-secondary transition-transform duration-300" style={{ transform: rtmExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+                expand_more
               </span>
-            )}
-          </div>
-          <div className="overflow-x-auto max-h-[400px] overflow-y-auto">
-            <table className="w-full text-xs border-collapse">
-              <thead className="sticky top-0 z-10">
-                <tr className="bg-slate-50 dark:bg-slate-800">
-                  <th className="text-left px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Req</th>
-                  <th className="text-left px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700 min-w-[200px]">Requirement</th>
-                  <th className="text-center px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Coverage</th>
-                  <th className="text-center px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Match %</th>
-                  <th className="text-left px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Test Cases</th>
-                  <th className="text-left px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Comments</th>
-                </tr>
-              </thead>
-              <tbody>
-                {coverage.requirementTraceability.map((r, i) => {
-                  const covColor = r.coverage === 'Full' ? 'text-green-700 bg-green-100 dark:bg-green-900/30 dark:text-green-400' : r.coverage === 'Partial' ? 'text-amber-700 bg-amber-100 dark:bg-amber-900/30 dark:text-amber-400' : 'text-red-700 bg-red-100 dark:bg-red-900/30 dark:text-red-400';
-                  return (
-                    <tr key={i} className="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                      <td className="px-3 py-2 font-mono font-bold text-purple-600">{r.id}</td>
-                      <td className="px-3 py-2 text-on-surface dark:text-slate-300">{r.requirement}</td>
-                      <td className="px-3 py-2 text-center"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${covColor}`}>{r.coverage}</span></td>
-                      <td className="px-3 py-2 text-center font-mono text-xs">{r.score != null ? `${r.score}%` : '—'}</td>
-                      <td className="px-3 py-2 font-mono text-blue-600">{(r.testCaseIds || []).join(', ') || '—'}</td>
-                      <td className="px-3 py-2 text-secondary">{r.comments || '—'}</td>
+            </div>
+          </button>
+          {rtmExpanded && (
+            <div className="px-5 pb-5">
+              <div className="overflow-x-auto max-h-[400px] overflow-y-auto rounded-lg border border-outline-variant/10">
+                <table className="w-full text-xs border-collapse">
+                  <thead className="sticky top-0 z-10">
+                    <tr className="bg-slate-50 dark:bg-slate-800">
+                      <th className="text-left px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Req</th>
+                      <th className="text-left px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700 min-w-[200px]">Requirement</th>
+                      <th className="text-center px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Coverage</th>
+                      <th className="text-center px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Match %</th>
+                      <th className="text-left px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Test Cases</th>
+                      <th className="text-left px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Comments</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          {coverage.coverageCalculation && (
-            <div className="mt-3 flex gap-4 text-[10px] font-bold flex-wrap">
-              <span className="text-blue-600">Test Cases: {coverage.coverageCalculation.testCasesAnalyzed}</span>
-              <span className="text-green-600">Full: {coverage.coverageCalculation.fullyCovered}</span>
-              <span className="text-amber-600">Partial: {coverage.coverageCalculation.partiallyCovered}</span>
-              <span className="text-red-600">None: {coverage.coverageCalculation.notCovered}</span>
-              <span className="text-secondary">Requirements: {coverage.coverageCalculation.totalRequirements}</span>
+                  </thead>
+                  <tbody>
+                    {coverage.requirementTraceability.map((r, i) => {
+                      const covColor = r.coverage === 'Full' ? 'text-green-700 bg-green-100 dark:bg-green-900/30 dark:text-green-400' : r.coverage === 'Partial' ? 'text-amber-700 bg-amber-100 dark:bg-amber-900/30 dark:text-amber-400' : 'text-red-700 bg-red-100 dark:bg-red-900/30 dark:text-red-400';
+                      return (
+                        <tr key={i} className="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50">
+                          <td className="px-3 py-2 font-mono font-bold text-purple-600">{r.id}</td>
+                          <td className="px-3 py-2 text-on-surface dark:text-slate-300">{r.requirement}</td>
+                          <td className="px-3 py-2 text-center"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${covColor}`}>{r.coverage}</span></td>
+                          <td className="px-3 py-2 text-center font-mono text-xs">{r.score != null ? `${r.score}%` : '—'}</td>
+                          <td className="px-3 py-2 font-mono text-blue-600">{(r.testCaseIds || []).join(', ') || '—'}</td>
+                          <td className="px-3 py-2 text-secondary">{r.comments || '—'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              {coverage.coverageCalculation && (
+                <div className="mt-3 flex gap-4 text-[10px] font-bold flex-wrap">
+                  <span className="text-blue-600">Test Cases: {coverage.coverageCalculation.testCasesAnalyzed}</span>
+                  <span className="text-green-600">Full: {coverage.coverageCalculation.fullyCovered}</span>
+                  <span className="text-amber-600">Partial: {coverage.coverageCalculation.partiallyCovered}</span>
+                  <span className="text-red-600">None: {coverage.coverageCalculation.notCovered}</span>
+                  <span className="text-secondary">Requirements: {coverage.coverageCalculation.totalRequirements}</span>
+                </div>
+              )}
             </div>
           )}
         </section>
       )}
 
-      {/* ── Generated Test Cases Table ── */}
-      <section className="space-y-4">
-        <div className="flex items-center justify-between px-2">
-          <h2 className="text-xl font-extrabold text-on-surface dark:text-white tracking-tight">Generated Test Cases</h2>
-          <div className="flex gap-3 items-center">
+      {/* ── Generated Test Cases Table (Collapsible) ── */}
+      <section className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-outline-variant/10 overflow-hidden">
+        <button
+          onClick={() => setTestCasesExpanded(!testCasesExpanded)}
+          className="w-full flex items-center justify-between p-5 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <span className="material-symbols-outlined text-app-red" style={{ fontVariationSettings: "'FILL' 1" }}>list_alt</span>
+            <div className="text-left">
+              <h2 className="text-lg font-extrabold text-on-surface dark:text-white tracking-tight">Generated Test Cases</h2>
+              <p className="text-[10px] text-secondary font-medium">{parsedCases.length} total test cases{filterText ? ` · ${filteredCases.length} matching filter` : ''}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
             {parsedCases.length > 0 && (
-              <button onClick={() => { if (confirm('Clear all test cases?')) { setTestCases(''); setParsedCases([]); setCoverage(null); } }}
-                className="text-[10px] font-bold text-slate-400 hover:text-red-500 flex items-center gap-0.5 transition" title="Clear all">
-                <span className="material-symbols-outlined text-xs">delete_sweep</span> Clear
-              </button>
+              <span className="px-2 py-0.5 bg-app-red/10 text-app-red text-[10px] font-bold rounded-full">{parsedCases.length}</span>
             )}
-            <span className="text-xs font-bold text-secondary">{parsedCases.length} Total</span>
-            <button onClick={() => setFilterOpen(!filterOpen)}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white text-sm font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
-              <span className="material-symbols-outlined text-sm">filter_list</span> Filter
-            </button>
+            <span className="material-symbols-outlined text-secondary transition-transform duration-300" style={{ transform: testCasesExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+              expand_more
+            </span>
           </div>
-        </div>
+        </button>
 
-        {/* Filter Input */}
-        {filterOpen && (
-          <div className="px-2">
-            <input
-              className={ic}
-              placeholder="Search by ID, title, type, or tags..."
-              value={filterText}
-              onChange={(e) => { setFilterText(e.target.value); setCurrentPage(1); }}
-              autoFocus
-            />
-          </div>
-        )}
+        {testCasesExpanded && (
+          <div className="border-t border-outline-variant/10">
+            {/* Filter & Clear controls */}
+            <div className="flex items-center justify-end gap-3 px-5 py-3 bg-slate-50/50 dark:bg-slate-800/30">
+              {parsedCases.length > 0 && (
+                <button onClick={() => { if (confirm('Clear all test cases?')) { setTestCases(''); setParsedCases([]); setCoverage(null); } }}
+                  className="text-[10px] font-bold text-slate-400 hover:text-red-500 flex items-center gap-0.5 transition" title="Clear all">
+                  <span className="material-symbols-outlined text-xs">delete_sweep</span> Clear
+                </button>
+              )}
+              <button onClick={() => setFilterOpen(!filterOpen)}
+                className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white text-xs font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+                <span className="material-symbols-outlined text-sm">filter_list</span> Filter
+              </button>
+            </div>
 
-        <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-outline-variant/10 overflow-hidden">
-          {paginatedCases.length > 0 ? (
+            {/* Filter Input */}
+            {filterOpen && (
+              <div className="px-5 pb-3">
+                <input
+                  className={ic}
+                  placeholder="Search by ID, title, type, or tags..."
+                  value={filterText}
+                  onChange={(e) => { setFilterText(e.target.value); setCurrentPage(1); }}
+                  autoFocus
+                />
+              </div>
+            )}
             <>
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
@@ -1095,7 +1135,8 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
               <p className="text-[10px] mt-1">{filterText ? 'Try a different search term' : 'Generate test cases first from the "Create Test Cases" page'}</p>
             </div>
           )}
-        </div>
+          </div>
+        )}
       </section>
 
       {/* ── Requirement Status ── */}
@@ -1131,7 +1172,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
           onClick={() => {
             if (confirm('Clear all data? This will reset JIRA ID, uploaded files, manual input, and all review results.')) {
               setTicketId(''); setIssueData(null); setManualReq(''); setManualExpanded(false);
-              setTestCases(''); setParsedCases([]); setCoverage(null); setFilterText(''); setCurrentPage(1); setRiskExpanded(false);
+              setTestCases(''); setParsedCases([]); setCoverage(null); setFilterText(''); setCurrentPage(1); setRiskExpanded(false); setRtmExpanded(false); setTestCasesExpanded(true);
             }
           }}
           className="flex-1 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
