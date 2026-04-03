@@ -255,7 +255,8 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
           setPolling(true);
         } else {
           // Run not yet available — retry after a few seconds to find it
-          const findRun = async (retries = 5) => {
+          const prevRunId = data.previousRunId;
+          const findRun = async (retries = 8) => {
             for (let i = 0; i < retries; i++) {
               await new Promise(r => setTimeout(r, 3000));
               try {
@@ -265,7 +266,8 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
                   body: JSON.stringify({ token: gh.token, apiUrl: gh.apiUrl, repo: selectedRepo, workflowId: selectedWorkflow, branch: selectedBranch || 'main' }),
                 });
                 const runsData = await runsRes.json();
-                if (runsData.run) {
+                // Only accept a genuinely NEW run (not the old completed one)
+                if (runsData.run && runsData.run.id !== prevRunId) {
                   setActiveRun(runsData.run);
                   setPolling(true);
                   return;

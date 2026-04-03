@@ -363,26 +363,37 @@ app.post('/github-trigger-workflow', async (req, res) => {
         const axios = require('axios');
         const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
         const authHeader = `Bearer ${token}`;
+        const runsUrl = `${baseUrl}/repos/${repo}/actions/workflows/${workflowId}/runs?per_page=1&branch=${branch || 'main'}`;
+        const ghHeaders = { 'Authorization': authHeader, 'Accept': 'application/vnd.github+json' };
 
+        // Capture the latest run ID BEFORE dispatch so we can detect the new run
+        let previousRunId = null;
+        try {
+            const preRes = await axios.get(runsUrl, { headers: ghHeaders, timeout: 10000 });
+            previousRunId = preRes.data.workflow_runs?.[0]?.id || null;
+        } catch { /* ignore */ }
+
+        // Dispatch the workflow
         await axios.post(`${baseUrl}/repos/${repo}/actions/workflows/${workflowId}/dispatches`, {
             ref: branch || 'main',
         }, {
-            headers: { 'Authorization': authHeader, 'Accept': 'application/vnd.github+json' },
+            headers: ghHeaders,
             timeout: 15000,
         });
 
         // Wait briefly then fetch the latest run for this workflow
         await new Promise(r => setTimeout(r, 2000));
-        const runsRes = await axios.get(`${baseUrl}/repos/${repo}/actions/workflows/${workflowId}/runs?per_page=1&branch=${branch || 'main'}`, {
-            headers: { 'Authorization': authHeader, 'Accept': 'application/vnd.github+json' },
-            timeout: 10000,
-        });
+        const runsRes = await axios.get(runsUrl, { headers: ghHeaders, timeout: 10000 });
         const latestRun = runsRes.data.workflow_runs?.[0];
+
+        // Only return the run if it's genuinely new (different from the pre-dispatch run)
+        const isNewRun = latestRun && latestRun.id !== previousRunId;
 
         return res.json({
             status: 'success',
             message: 'Workflow triggered successfully',
-            run: latestRun ? { id: latestRun.id, run_number: latestRun.run_number, status: latestRun.status, html_url: latestRun.html_url } : null,
+            run: isNewRun ? { id: latestRun.id, run_number: latestRun.run_number, status: latestRun.status, html_url: latestRun.html_url } : null,
+            previousRunId,
         });
     } catch (error) {
         const msg = error.response ? `GitHub API ${error.response.status}: ${error.response.data?.message || 'Error'}` : error.message;
