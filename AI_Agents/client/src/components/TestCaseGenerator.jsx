@@ -325,12 +325,16 @@ Then the full test case table.`;
       });
       if (!r.ok) {
         const errData = await r.json().catch(() => ({}));
-        const errMsg = errData.detail || 'Generation failed';
-        if (errMsg.toLowerCase().includes('token')) {
-          setGenError(`⚠️ Token limit exceeded: ${errMsg}\n\nTry: 1) Use a model with higher token capacity (e.g., gemini-2.0-flash, llama-3.3-70b-versatile) 2) Split requirement into smaller parts`);
-        } else {
-          setGenError(errMsg);
+        let errMsg = errData.detail || '';
+        // Detect Vercel serverless timeout (504)
+        if (r.status === 504 || (!errMsg && r.status >= 500)) {
+          errMsg = `Server timeout (HTTP ${r.status}). The LLM generation took too long.\n\nTo fix this:\n1. Try a faster model (e.g., gemini-2.5-flash on Gemini, llama-3.3-70b-versatile on Groq)\n2. Simplify your requirement or split it into smaller parts\n3. Add Generation Instructions to limit scope (e.g., "generate only 10 functional test cases")`;
+        } else if (errMsg.toLowerCase().includes('token')) {
+          errMsg = `⚠️ Token limit exceeded: ${errMsg}\n\nTry: 1) Use a model with higher token capacity (e.g., gemini-2.5-flash, llama-3.3-70b-versatile) 2) Split requirement into smaller parts`;
+        } else if (!errMsg) {
+          errMsg = `Generation failed (HTTP ${r.status}). Please check your LLM connection settings.`;
         }
+        setGenError(errMsg);
         throw new Error(errMsg);
       }
       const data = await r.json();
@@ -352,7 +356,13 @@ Then the full test case table.`;
       if (onTestCasesGenerated) onTestCasesGenerated(plan);
       setStep(3);
     } catch (e) {
-      if (!genError) setGenError(e.message);
+      if (e.name === 'AbortError') {
+        if (!genError) setGenError('Generation was stopped by user.');
+      } else if (e.message?.includes('Failed to fetch') || e.message?.includes('NetworkError') || e.message?.includes('network')) {
+        if (!genError) setGenError('Network error — could not reach the server. Check your internet connection and try again.');
+      } else {
+        if (!genError) setGenError(e.message || 'Generation failed unexpectedly.');
+      }
     }
     setBusy('');
   };
@@ -656,6 +666,32 @@ Then the full test case table.`;
             )}
           </div>
 
+          {/* Generating progress indicator (Step 1) */}
+          {busy === 'generate' && (
+            <div className="flex items-center gap-4 px-5 py-4 bg-indigo-50 dark:bg-indigo-900/20 rounded-xl border border-indigo-200 dark:border-indigo-800 animate-pulse">
+              <div className="w-7 h-7 border-[3px] border-app-red/20 border-t-app-red rounded-full animate-spin shrink-0" />
+              <div>
+                <p className="font-bold text-sm text-on-surface dark:text-white">Generating test cases...</p>
+                <p className="text-xs text-secondary mt-0.5">Structured Coverage Analysis + Fact Verification — this may take 15-45 seconds</p>
+              </div>
+            </div>
+          )}
+
+          {/* Error banner (Step 1) */}
+          {genError && !busy && (
+            <div className="bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 rounded-xl p-4 flex items-start gap-3">
+              <span className="material-symbols-outlined text-red-600 dark:text-red-400 mt-0.5 shrink-0">error</span>
+              <div className="flex-1">
+                <h4 className="font-bold text-red-800 dark:text-red-300 text-sm mb-1">Generation Failed</h4>
+                <p className="text-xs text-red-700 dark:text-red-400 whitespace-pre-line leading-relaxed">{genError}</p>
+                <p className="text-xs text-red-600 dark:text-red-500 mt-2 font-semibold">Tip: Check your LLM connection in Connection Settings, or try a different model.</p>
+              </div>
+              <button onClick={() => setGenError('')} className="text-red-400 hover:text-red-600 shrink-0">
+                <span className="material-symbols-outlined text-lg">close</span>
+              </button>
+            </div>
+          )}
+
           {/* Shield bar */}
           <div className="flex items-center gap-3 px-5 py-3 bg-app-blue/5 dark:bg-app-blue/10 rounded-xl border border-app-blue/15">
             <span className="material-symbols-outlined text-app-blue">shield</span>
@@ -711,6 +747,20 @@ Then the full test case table.`;
               className="w-full py-2.5 text-secondary text-xs font-semibold hover:underline flex items-center justify-center gap-1.5">
               <span className="material-symbols-outlined text-sm">skip_next</span> Skip — Generate Without Clarifications
             </button>
+            )}
+            {/* Error banner (Step 2) */}
+            {genError && !busy && (
+              <div className="bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 rounded-xl p-4 flex items-start gap-3 mt-2">
+                <span className="material-symbols-outlined text-red-600 dark:text-red-400 mt-0.5 shrink-0">error</span>
+                <div className="flex-1">
+                  <h4 className="font-bold text-red-800 dark:text-red-300 text-sm mb-1">Generation Failed</h4>
+                  <p className="text-xs text-red-700 dark:text-red-400 whitespace-pre-line leading-relaxed">{genError}</p>
+                  <p className="text-xs text-red-600 dark:text-red-500 mt-2 font-semibold">Tip: Check your LLM connection in Connection Settings, or try a different model.</p>
+                </div>
+                <button onClick={() => setGenError('')} className="text-red-400 hover:text-red-600 shrink-0">
+                  <span className="material-symbols-outlined text-lg">close</span>
+                </button>
+              </div>
             )}
           </div>
         </div>
