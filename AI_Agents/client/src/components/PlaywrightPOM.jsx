@@ -227,17 +227,13 @@ function parseFileBlocks(output) {
 /* ═══════════════════════════════════════════════════════════════════════
    COMPONENT
    ═══════════════════════════════════════════════════════════════════════ */
-export default function PlaywrightPOM({ connections, apiBase, generatedTestCases }) {
+export default function PlaywrightPOM({ connections, apiBase, generatedTestCases, generatedFiles, setGeneratedFiles, activeFileIdx, setActiveFileIdx, selectedGroups, setSelectedGroups, langFilter, setLangFilter }) {
   const [busy, setBusy] = useState('');
-  const [generatedFiles, setGeneratedFiles] = useState([]);
-  const [activeFileIdx, setActiveFileIdx] = useState(0);
-  const [selectedGroups, setSelectedGroups] = useState(new Set());
   const [pushStatus, setPushStatus] = useState('');
   const [pushBranch, setPushBranch] = useState('');
   const [pushPath, setPushPath] = useState('tests');
   const [showPushModal, setShowPushModal] = useState(false);
   const [genProgress, setGenProgress] = useState('');
-  const [langFilter, setLangFilter] = useState('all'); // 'all' | 'js' | 'ts'
 
   // ── Parse & filter automation-tagged test cases ──
   const allParsed = useMemo(() => parseTestCasesFromMarkdown(generatedTestCases), [generatedTestCases]);

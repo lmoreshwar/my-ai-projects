@@ -307,7 +307,7 @@ Return ONLY valid JSON:
 - Do NOT hallucinate gaps for features without documented acceptance criteria
 - Return ONLY the JSON object`;
 
-export default function ReviewTestCases({ connections, apiBase, generatedTestCases, onNavigate }) {
+export default function ReviewTestCases({ connections, apiBase, generatedTestCases, onNavigate, reviewCoverage, setReviewCoverage }) {
   /* ── State ── */
   const [testCases, setTestCases] = useState('');
   const [parsedCases, setParsedCases] = useState([]);
@@ -316,7 +316,8 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
   const [issueData, setIssueData] = useState(null);
   const [fetchingJira, setFetchingJira] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
-  const [coverage, setCoverage] = useState(null);
+  const coverage = reviewCoverage;
+  const setCoverage = setReviewCoverage;
   const [manualExpanded, setManualExpanded] = useState(false);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterText, setFilterText] = useState('');

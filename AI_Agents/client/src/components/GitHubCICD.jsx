@@ -1,27 +1,38 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 
-export default function GitHubCICD({ connections, apiBase }) {
-  /* ── State ── */
-  const [workflows, setWorkflows] = useState([]);
-  const [selectedWorkflow, setSelectedWorkflow] = useState('');
+export default function GitHubCICD({ connections, apiBase, cicdState, setCicdState }) {
+  /* ── Lifted state from App.jsx for persistence ── */
+  const workflows = cicdState.workflows;
+  const setWorkflows = (v) => setCicdState(s => ({ ...s, workflows: typeof v === 'function' ? v(s.workflows) : v }));
+  const selectedWorkflow = cicdState.selectedWorkflow;
+  const setSelectedWorkflow = (v) => setCicdState(s => ({ ...s, selectedWorkflow: typeof v === 'function' ? v(s.selectedWorkflow) : v }));
+  const activeRun = cicdState.activeRun;
+  const setActiveRun = (v) => setCicdState(s => ({ ...s, activeRun: typeof v === 'function' ? v(s.activeRun) : v }));
+  const jobs = cicdState.jobs;
+  const setJobs = (v) => setCicdState(s => ({ ...s, jobs: typeof v === 'function' ? v(s.jobs) : v }));
+  const artifacts = cicdState.artifacts;
+  const setArtifacts = (v) => setCicdState(s => ({ ...s, artifacts: typeof v === 'function' ? v(s.artifacts) : v }));
+  const logLines = cicdState.logLines;
+  const setLogLines = (v) => setCicdState(s => ({ ...s, logLines: typeof v === 'function' ? v(s.logLines) : v }));
+  const htmlReport = cicdState.htmlReport;
+  const setHtmlReport = (v) => setCicdState(s => ({ ...s, htmlReport: typeof v === 'function' ? v(s.htmlReport) : v }));
+  const reportData = cicdState.reportData;
+  const setReportData = (v) => setCicdState(s => ({ ...s, reportData: typeof v === 'function' ? v(s.reportData) : v }));
+  const testResults = cicdState.testResults;
+  const setTestResults = (v) => setCicdState(s => ({ ...s, testResults: typeof v === 'function' ? v(s.testResults) : v }));
+
+  /* ── Local UI state ── */
   const [selectedRepo, setSelectedRepo] = useState(connections.github?.selectedRepo || '');
   const [selectedBranch, setSelectedBranch] = useState(connections.github?.selectedBranch || '');
   const [branches, setBranches] = useState(connections.github?.branches || []);
   const [triggering, setTriggering] = useState(false);
-  const [activeRun, setActiveRun] = useState(null);   // { id, run_number, status, conclusion, html_url }
-  const [jobs, setJobs] = useState([]);                // array of job objects with steps
-  const [artifacts, setArtifacts] = useState([]);
   const [polling, setPolling] = useState(false);
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
-  const [logLines, setLogLines] = useState([]);
-  const [htmlReport, setHtmlReport] = useState(null);
   const [loadingReport, setLoadingReport] = useState(false);
   const [showReport, setShowReport] = useState(false);
-  const [reportData, setReportData] = useState(null); // { tests: [], summary: {} }
-  const [reportView, setReportView] = useState('dashboard'); // 'dashboard' | 'raw'
-  const [reportFilter, setReportFilter] = useState('all'); // 'all' | 'passed' | 'failed' | 'skipped'
-  const [testResults, setTestResults] = useState({ passed: 0, failed: 0, skipped: 0, total: 0 });
+  const [reportView, setReportView] = useState('dashboard');
+  const [reportFilter, setReportFilter] = useState('all');
   const pollingRef = useRef(null);
   const logContainerRef = useRef(null);
 

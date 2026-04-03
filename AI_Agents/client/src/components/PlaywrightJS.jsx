@@ -173,12 +173,9 @@ function parseFileBlocks(output) {
 /* ═══════════════════════════════════════════════════════════════════════
    COMPONENT
    ═══════════════════════════════════════════════════════════════════════ */
-export default function PlaywrightJS({ connections, apiBase, generatedTestCases }) {
+export default function PlaywrightJS({ connections, apiBase, generatedTestCases, generatedFiles, setGeneratedFiles, activeFileIdx, setActiveFileIdx, selectedGroups, setSelectedGroups }) {
   // ── State ──
   const [busy, setBusy] = useState('');
-  const [generatedFiles, setGeneratedFiles] = useState([]); // [{path, content}]
-  const [activeFileIdx, setActiveFileIdx] = useState(0);
-  const [selectedGroups, setSelectedGroups] = useState(new Set());
   const [pushStatus, setPushStatus] = useState('');
   const [pushBranch, setPushBranch] = useState('');
   const [pushPath, setPushPath] = useState('tests');

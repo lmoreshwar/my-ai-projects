@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 
-export default function ConnectionSettings({ connections, setConnections, apiBase }) {
+export default function ConnectionSettings({ connections, setConnections, apiBase, onResetGenerated }) {
   const [testing, setTesting] = useState({ jira: false, llm: false, zephyr: false, github: false });
   const [fetchingBranches, setFetchingBranches] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
@@ -82,6 +82,8 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
       const data = await res.json();
       updateConn('llm', 'status', data.status === 'success' ? 'connected' : 'error');
       updateConn('llm', 'message', data.message);
+      // Reset all generated data when a new LLM connection succeeds
+      if (data.status === 'success' && onResetGenerated) onResetGenerated();
     } catch {
       updateConn('llm', 'status', 'error');
       updateConn('llm', 'message', 'Network error or server down');

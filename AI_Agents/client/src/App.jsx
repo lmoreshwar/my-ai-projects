@@ -25,6 +25,44 @@ function App() {
     try { return localStorage.getItem(TC_STORAGE_KEY) || ''; } catch { return ''; }
   });
 
+  // ── Lifted state for tab persistence ──
+  // Playwright POM
+  const [pomFiles, setPomFiles] = useState([]);
+  const [pomActiveIdx, setPomActiveIdx] = useState(0);
+  const [pomSelectedGroups, setPomSelectedGroups] = useState(new Set());
+  const [pomLangFilter, setPomLangFilter] = useState('all');
+
+  // Playwright TS + BDD
+  const [bddFiles, setBddFiles] = useState([]);
+  const [bddActiveIdx, setBddActiveIdx] = useState(0);
+  const [bddSelectedGroups, setBddSelectedGroups] = useState(new Set());
+
+  // Selenium BDD
+  const [seleniumOutput, setSeleniumOutput] = useState('');
+
+  // GitHub CI/CD
+  const [cicdState, setCicdState] = useState({
+    workflows: [], selectedWorkflow: '', activeRun: null,
+    jobs: [], artifacts: [], logLines: [], htmlReport: null,
+    reportData: null, testResults: { passed: 0, failed: 0, skipped: 0, total: 0 },
+  });
+
+  // Review Test Cases
+  const [reviewCoverage, setReviewCoverage] = useState(null);
+
+  // ── Reset all generated data when user reconnects ──
+  const handleResetGenerated = () => {
+    setPomFiles([]); setPomActiveIdx(0); setPomSelectedGroups(new Set()); setPomLangFilter('all');
+    setBddFiles([]); setBddActiveIdx(0); setBddSelectedGroups(new Set());
+    setSeleniumOutput('');
+    setCicdState({
+      workflows: [], selectedWorkflow: '', activeRun: null,
+      jobs: [], artifacts: [], logLines: [], htmlReport: null,
+      reportData: null, testResults: { passed: 0, failed: 0, skipped: 0, total: 0 },
+    });
+    setReviewCoverage(null);
+  };
+
   const [connections, setConnections] = useState({
     jira: { url: '', email: '', token: '', status: 'disconnected', message: '' },
     llm: { platform: 'groq', apiKey: '', endpoint: '', model: '', status: 'disconnected', message: '' },
@@ -87,7 +125,7 @@ function App() {
   const renderPage = () => {
     switch (activePage) {
       case 'connections':
-        return <ConnectionSettings connections={connections} setConnections={setConnections} apiBase={API_BASE} />;
+        return <ConnectionSettings connections={connections} setConnections={setConnections} apiBase={API_BASE} onResetGenerated={handleResetGenerated} />;
       case 'test-plan':
         return <TestPlanGenerator connections={connections} apiBase={API_BASE} />;
       case 'test-cases':
@@ -95,21 +133,21 @@ function App() {
       case 'test-scenarios':
         return <TestScenarioGenerator connections={connections} apiBase={API_BASE} />;
       case 'review-cases':
-        return <ReviewTestCases connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} />;
+        return <ReviewTestCases connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} reviewCoverage={reviewCoverage} setReviewCoverage={setReviewCoverage} />;
       case 'zephyr-dashboard':
         return <ZephyrDashboard connections={connections} />;
       case 'selenium-bdd':
-        return <SeleniumBDD connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} />;
+        return <SeleniumBDD connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} seleniumOutput={seleniumOutput} setSeleniumOutput={setSeleniumOutput} />;
       case 'playwright-js':
-        return <PlaywrightJS connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} />;
+        return <PlaywrightJS connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={bddFiles} setGeneratedFiles={setBddFiles} activeFileIdx={bddActiveIdx} setActiveFileIdx={setBddActiveIdx} selectedGroups={bddSelectedGroups} setSelectedGroups={setBddSelectedGroups} />;
       case 'playwright-pom':
-        return <PlaywrightPOM connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} />;
+        return <PlaywrightPOM connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={pomFiles} setGeneratedFiles={setPomFiles} activeFileIdx={pomActiveIdx} setActiveFileIdx={setPomActiveIdx} selectedGroups={pomSelectedGroups} setSelectedGroups={setPomSelectedGroups} langFilter={pomLangFilter} setLangFilter={setPomLangFilter} />;
       case 'github':
         return <GitHubIntegration connections={connections} onNavigate={setActivePage} />;
       case 'github-cicd':
-        return <GitHubCICD connections={connections} apiBase={API_BASE} />;
+        return <GitHubCICD connections={connections} apiBase={API_BASE} cicdState={cicdState} setCicdState={setCicdState} />;
       default:
-        return <ConnectionSettings connections={connections} setConnections={setConnections} apiBase={API_BASE} />;
+        return <ConnectionSettings connections={connections} setConnections={setConnections} apiBase={API_BASE} onResetGenerated={handleResetGenerated} />;
     }
   };
 

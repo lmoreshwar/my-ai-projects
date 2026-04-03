@@ -61,11 +61,12 @@ Use Selenium WebDriver API with Page Object pattern.
 
 Return the .feature file content followed by the step definitions. Use proper code blocks.`;
 
-export default function SeleniumBDD({ connections, apiBase, generatedTestCases }) {
+export default function SeleniumBDD({ connections, apiBase, generatedTestCases, seleniumOutput, setSeleniumOutput }) {
   const [ticketId, setTicketId] = useState('');
   const [manualReq, setManualReq] = useState('');
   const [selectedImported, setSelectedImported] = useState('');
-  const [gherkinOutput, setGherkinOutput] = useState('');
+  const gherkinOutput = seleniumOutput || '';
+  const setGherkinOutput = setSeleniumOutput;
   const [busy, setBusy] = useState('');
   const [issueData, setIssueData] = useState(null);
 
