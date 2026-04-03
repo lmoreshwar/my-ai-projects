@@ -531,8 +531,9 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
         <div className="lg:col-span-8 bg-surface-container-lowest dark:bg-slate-900 p-8 rounded-xl shadow-sm border-l-4 border-indigo-500 border border-outline-variant/20">
           <div className="flex items-center justify-between mb-8">
             <div className="flex items-center gap-3">
-              <span className={`material-symbols-outlined ${polling ? 'text-amber-500 animate-pulse' : activeRun?.conclusion === 'success' ? 'text-emerald-500' : activeRun?.conclusion === 'failure' ? 'text-red-500' : 'text-indigo-500'}`}>
-                {polling ? 'pending' : activeRun?.conclusion === 'success' ? 'check_circle' : activeRun?.conclusion === 'failure' ? 'cancel' : 'pending'}
+              <span className={`material-symbols-outlined ${polling ? 'text-amber-500 animate-pulse' : activeRun?.status === 'completed' && activeRun?.conclusion === 'success' ? 'text-emerald-500' : activeRun?.status === 'completed' && activeRun?.conclusion === 'failure' ? 'text-red-500' : activeRun?.status === 'in_progress' ? 'text-amber-500 animate-pulse' : 'text-indigo-500'}`}
+                style={activeRun?.status === 'completed' && activeRun?.conclusion === 'success' ? { fontVariationSettings: "'FILL' 1" } : {}}>
+                {polling ? 'sync' : activeRun?.status === 'completed' && activeRun?.conclusion === 'success' ? 'check_circle' : activeRun?.status === 'completed' && activeRun?.conclusion === 'failure' ? 'cancel' : activeRun?.status === 'in_progress' ? 'sync' : 'pending'}
               </span>
               <h3 className="font-bold text-on-surface dark:text-white uppercase tracking-widest text-xs">Real-Time Execution</h3>
             </div>
@@ -1079,11 +1080,12 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
                           {art.name.toLowerCase().includes('report') || art.name.toLowerCase().includes('playwright') || art.name.toLowerCase().includes('html') ? (
                             <button
                               onClick={() => handleViewHtmlReport(art.id)}
-                              disabled={loadingReport}
-                              className="flex-1 px-3 py-2 bg-gradient-to-br from-app-red to-app-dark-red text-white text-xs font-bold rounded-lg transition-all hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-1 disabled:opacity-50"
+                              disabled={loadingReport || polling || activeRun?.status !== 'completed'}
+                              title={polling || activeRun?.status !== 'completed' ? 'Report will be available after pipeline completes' : ''}
+                              className="flex-1 px-3 py-2 bg-gradient-to-br from-app-red to-app-dark-red text-white text-xs font-bold rounded-lg transition-all hover:scale-[1.02] active:scale-95 flex items-center justify-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
                             >
-                              <span className="material-symbols-outlined text-sm">{loadingReport ? 'sync' : 'visibility'}</span>
-                              {loadingReport ? 'Loading...' : 'View Report'}
+                              <span className="material-symbols-outlined text-sm">{loadingReport ? 'sync' : polling || activeRun?.status !== 'completed' ? 'hourglass_empty' : 'visibility'}</span>
+                              {loadingReport ? 'Loading...' : polling || activeRun?.status !== 'completed' ? 'Waiting...' : 'View Report'}
                             </button>
                           ) : null}
                           <button

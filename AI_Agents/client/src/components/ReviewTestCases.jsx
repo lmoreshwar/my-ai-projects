@@ -322,8 +322,12 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterText, setFilterText] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
+  const [riskExpanded, setRiskExpanded] = useState(false);
   const itemsPerPage = 10;
   const carouselRef = useRef(null);
+
+  // Determine which input method is active (for mutual exclusion)
+  const activeInputMethod = ticketId.trim() || issueData ? 'jira' : manualReq.trim() ? 'upload' : null;
 
   /* Auto-load test cases */
   useEffect(() => {
@@ -639,7 +643,8 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 
           {/* JIRA ID */}
-          <div className="bg-white dark:bg-slate-800 p-3 rounded-lg flex items-center gap-3">
+          <div className={`bg-white dark:bg-slate-800 p-3 rounded-lg flex items-center gap-3 transition-all ${activeInputMethod && activeInputMethod !== 'jira' ? 'opacity-40 pointer-events-none' : ''}`}
+            title={activeInputMethod && activeInputMethod !== 'jira' ? 'Clear current input to use JIRA lookup' : ''}>
             <span className="material-symbols-outlined text-secondary">link</span>
             <div className="flex-1 min-w-0">
               <label className="block text-[10px] text-on-surface-variant dark:text-slate-400 font-medium">JIRA ID</label>
@@ -651,10 +656,11 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
                   value={ticketId}
                   onChange={(e) => setTicketId(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && fetchJira()}
+                  disabled={activeInputMethod && activeInputMethod !== 'jira'}
                 />
                 <button
                   onClick={fetchJira}
-                  disabled={fetchingJira || !ticketId.trim()}
+                  disabled={fetchingJira || !ticketId.trim() || (activeInputMethod && activeInputMethod !== 'jira')}
                   className="text-app-red hover:text-red-700 disabled:opacity-40 transition shrink-0"
                 >
                   <span className="material-symbols-outlined text-sm">{fetchingJira ? 'progress_activity' : 'send'}</span>
@@ -670,8 +676,9 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
 
           {/* Document Upload */}
           <div
-            className="bg-white dark:bg-slate-800 p-3 rounded-lg flex items-center gap-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
-            onClick={() => document.getElementById('req-upload')?.click()}
+            className={`bg-white dark:bg-slate-800 p-3 rounded-lg flex items-center gap-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700 transition-all ${activeInputMethod && activeInputMethod !== 'upload' ? 'opacity-40 pointer-events-none' : ''}`}
+            title={activeInputMethod && activeInputMethod !== 'upload' ? 'Clear current input to use file upload' : ''}
+            onClick={() => !activeInputMethod || activeInputMethod === 'upload' ? document.getElementById('req-upload')?.click() : null}
             onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
             onDrop={(e) => {
               e.preventDefault(); e.stopPropagation();
@@ -712,8 +719,9 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
 
           {/* Manual Input (click to expand textarea) */}
           <div
-            className="bg-white dark:bg-slate-800 p-3 rounded-lg flex items-center gap-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors"
-            onClick={() => setManualExpanded(!manualExpanded)}
+            className={`bg-white dark:bg-slate-800 p-3 rounded-lg flex items-center gap-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-700 transition-all ${activeInputMethod && activeInputMethod !== 'upload' ? 'opacity-40 pointer-events-none' : ''}`}
+            title={activeInputMethod && activeInputMethod !== 'upload' ? 'Clear current input to use manual entry' : ''}
+            onClick={() => !activeInputMethod || activeInputMethod === 'upload' ? setManualExpanded(!manualExpanded) : null}
           >
             <span className="material-symbols-outlined text-secondary">edit_note</span>
             <div className="flex-1 min-w-0">
@@ -805,24 +813,32 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
         </div>
       )}
 
-      {/* ── AI & Risk Intelligence Carousel ── */}
+      {/* ── AI & Risk Intelligence (Collapsible) ── */}
       {coverage && (
-        <section className="space-y-4">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-bold text-on-surface dark:text-white tracking-tight">AI &amp; Risk Intelligence</h2>
-            <div className="flex gap-2">
-              <button onClick={() => scrollCarousel(-1)} className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
-                <span className="material-symbols-outlined text-sm">chevron_left</span>
-              </button>
-              <button onClick={() => scrollCarousel(1)} className="w-8 h-8 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
-                <span className="material-symbols-outlined text-sm">chevron_right</span>
-              </button>
+        <section className="space-y-0">
+          <button
+            onClick={() => setRiskExpanded(!riskExpanded)}
+            className="w-full flex items-center justify-between p-5 bg-gradient-to-r from-slate-50 to-white dark:from-slate-900 dark:to-slate-800 rounded-xl border border-outline-variant/20 shadow-sm hover:shadow-md transition-all"
+          >
+            <div className="flex items-center gap-3">
+              <span className="material-symbols-outlined text-app-red text-xl" style={{ fontVariationSettings: "'FILL' 1" }}>psychology</span>
+              <div className="text-left">
+                <h2 className="text-lg font-bold text-on-surface dark:text-white tracking-tight">AI &amp; Risk Intelligence</h2>
+                <p className="text-[10px] text-secondary font-medium">
+                  {coverage.gapAnalysis?.length || 0} gaps · {coverage.qualityIssues?.length || 0} issues · {coverage.duplicates?.length || 0} duplicates
+                </p>
+              </div>
             </div>
-          </div>
-          <div ref={carouselRef} className="flex overflow-x-auto gap-6 pb-4 scroll-smooth" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+            <span className="material-symbols-outlined text-secondary transition-transform duration-300" style={{ transform: riskExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+              expand_more
+            </span>
+          </button>
+
+          {riskExpanded && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-5 animate-in">
 
             {/* Card 1: AI Strategic Insights */}
-            <div className="min-w-[320px] md:min-w-[380px] bg-gradient-to-br from-app-red to-red-700 p-6 rounded-2xl text-white flex flex-col shadow-lg shrink-0">
+            <div className="bg-gradient-to-br from-app-red to-red-700 p-6 rounded-2xl text-white flex flex-col shadow-lg">
               <div className="flex justify-between items-start mb-4">
                 <span className="material-symbols-outlined bg-white/20 p-2 rounded-lg">psychology</span>
                 <span className="text-[10px] bg-white/30 px-2 py-1 rounded-full font-bold uppercase">Insights</span>
@@ -846,7 +862,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
             </div>
 
             {/* Card 2: Gap Analysis */}
-            <div className="min-w-[320px] md:min-w-[380px] bg-white dark:bg-slate-900 p-6 rounded-2xl flex flex-col border-l-8 border-blue-600 shadow-sm shrink-0">
+            <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl flex flex-col border-l-8 border-blue-600 shadow-sm">
               <div className="flex justify-between items-start mb-4">
                 <span className="material-symbols-outlined text-blue-600 bg-blue-100 dark:bg-blue-900/30 p-2 rounded-lg">analytics</span>
                 <span className="text-[10px] bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-1 rounded-full font-bold uppercase">{coverage.gapAnalysis?.length || 0} Gaps</span>
@@ -873,7 +889,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
             </div>
 
             {/* Card 3: Quality Issues */}
-            <div className="min-w-[320px] md:min-w-[380px] bg-white dark:bg-slate-900 p-6 rounded-2xl flex flex-col shadow-sm border border-outline-variant/15 shrink-0">
+            <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl flex flex-col shadow-sm border border-outline-variant/15">
               <div className="flex justify-between items-start mb-4">
                 <span className="material-symbols-outlined text-orange-500 bg-orange-100 dark:bg-orange-900/30 p-2 rounded-lg">report_problem</span>
                 <span className="text-[10px] bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 px-2 py-1 rounded-full font-bold uppercase">{coverage.qualityIssues?.length || 0} Issues</span>
@@ -900,7 +916,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
 
             {/* Card 4: Duplicates (if any) */}
             {coverage.duplicates && coverage.duplicates.length > 0 && (
-              <div className="min-w-[320px] md:min-w-[380px] bg-white dark:bg-slate-900 p-6 rounded-2xl flex flex-col shadow-sm border border-outline-variant/15 shrink-0">
+              <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl flex flex-col shadow-sm border border-outline-variant/15">
                 <div className="flex justify-between items-start mb-4">
                   <span className="material-symbols-outlined text-gray-500 bg-gray-100 dark:bg-gray-800 p-2 rounded-lg">content_copy</span>
                   <span className="text-[10px] bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-2 py-1 rounded-full font-bold uppercase">{coverage.duplicates.length} Dupes</span>
@@ -919,7 +935,8 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
                 </div>
               </div>
             )}
-          </div>
+            </div>
+          )}
         </section>
       )}
 
@@ -1110,12 +1127,22 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
 
       {/* ── Final Actions ── */}
       <div className="flex flex-col md:flex-row gap-4 pt-4">
-        <button onClick={exportReviewMd}
-          className="flex-1 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
-          <span className="material-symbols-outlined">save</span> Save as Draft
+        <button
+          onClick={() => {
+            if (confirm('Clear all data? This will reset JIRA ID, uploaded files, manual input, and all review results.')) {
+              setTicketId(''); setIssueData(null); setManualReq(''); setManualExpanded(false);
+              setTestCases(''); setParsedCases([]); setCoverage(null); setFilterText(''); setCurrentPage(1); setRiskExpanded(false);
+            }
+          }}
+          className="flex-1 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
+        >
+          <span className="material-symbols-outlined">restart_alt</span> Clear All
         </button>
         <button onClick={exportTraceMatrix}
-          className="flex-1 bg-app-red text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 shadow-lg shadow-app-red/20 hover:bg-red-700 active:scale-95 transition-all">
+          disabled={!coverage}
+          title={!coverage ? 'Complete the review analysis first' : ''}
+          className="flex-1 bg-app-red text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 shadow-lg shadow-app-red/20 hover:bg-red-700 active:scale-95 transition-all disabled:opacity-40 disabled:shadow-none disabled:hover:scale-100 disabled:cursor-not-allowed"
+        >
           <span className="material-symbols-outlined">check_circle</span> Approve &amp; Export Scenarios
         </button>
       </div>

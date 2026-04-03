@@ -316,7 +316,9 @@ IMPORTANT:
 
         const zip = new JSZip();
         // Apply cleanCodeContent to all files before zipping
-        generatedFiles.forEach((f) => {
+        // Skip non-essential files: .md, .txt, .log, .yml (keep .js, .ts, .json, .config.*)
+        const ZIP_SKIP = /\.(md|txt|log|yml|yaml)$/i;
+        generatedFiles.filter(f => !ZIP_SKIP.test(f.path)).forEach((f) => {
           zip.file(f.path, cleanCodeContent(f.content));
         });
         const blob = await zip.generateAsync({ type: 'blob' });

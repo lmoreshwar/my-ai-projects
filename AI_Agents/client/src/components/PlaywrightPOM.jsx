@@ -373,7 +373,9 @@ IMPORTANT:
         }
         const zip = new JSZip();
         // Use displayedFiles (filtered by language + cleaned) instead of all generatedFiles
-        displayedFiles.forEach((f) => zip.file(f.path, cleanCodeContent(f.content)));
+        // Skip non-essential files: .md, .txt, .log, .yml (keep .js, .ts, .json, .config.*)
+        const ZIP_SKIP = /\.(md|txt|log|yml|yaml)$/i;
+        displayedFiles.filter(f => !ZIP_SKIP.test(f.path)).forEach((f) => zip.file(f.path, cleanCodeContent(f.content)));
         const blob = await zip.generateAsync({ type: 'blob' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
