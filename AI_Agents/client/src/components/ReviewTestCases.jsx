@@ -1067,6 +1067,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
                 />
               </div>
             )}
+            {parsedCases.length > 0 ? (
             <>
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
