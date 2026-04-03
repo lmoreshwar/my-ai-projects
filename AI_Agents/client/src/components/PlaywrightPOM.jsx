@@ -109,11 +109,18 @@ For each feature group, return output using this EXACT delimiter format:
 (TypeScript spec file using POM)
 
 === FILE: playwright.config.ts ===
-(Single config file — TypeScript config works for both JS and TS)
+(Single TypeScript config file — works for both JS and TS)
 
 IMPORTANT: Generate ONLY ONE config file (playwright.config.ts). Do NOT generate playwright.config.js separately.
-Do NOT generate video recording, trace, or screenshot config unless explicitly asked.
-Keep the config minimal: baseURL, projects (chromium), reporter.
+The config MUST include:
+- baseURL: '// TODO: [URL NOT SPECIFIED]'
+- projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }]
+- reporter: [['html', { open: 'never' }], ['list']]
+- use.screenshot: 'on' (capture screenshots for every test)
+- use.video: 'retain-on-failure' (record video but only keep for failed tests)
+- use.trace: 'retain-on-failure' (capture trace but only keep for failed tests)
+- outputDir: 'test-results'
+- retries: 1
 
 ## Mapping Rules
 - SRL No → test name prefix

@@ -52,7 +52,15 @@ For each feature group, return output using this EXACT delimiter format:
 (TypeScript spec file with test.describe, test blocks, assertions)
 
 === FILE: playwright.config.ts ===
-(Minimal Playwright config: baseURL as TODO, chromium project, html+list reporters. Do NOT add video, trace, or screenshot config unless explicitly asked. Keep it clean and minimal.)
+(TypeScript config file. MUST include:
+- baseURL: '// TODO: [URL NOT SPECIFIED]'
+- projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }]
+- reporter: [['html', { open: 'never' }], ['list']]
+- use.screenshot: 'on' (capture screenshots for every test)
+- use.video: 'retain-on-failure' (record video but only keep for failed tests)
+- use.trace: 'retain-on-failure' (capture trace but only keep for failed tests)
+- outputDir: 'test-results'
+- retries: 1)
 
 ## Mapping Rules
 - SRL No → @tag in .feature, test name prefix in .spec.ts
