@@ -261,8 +261,15 @@ IMPORTANT DISTINCTION:
 - "Execution Tags" (Sanity/Regression/Automation) = HOW/WHEN to execute
 - If user says "only automation feasible" → filter by Execution Tags (include "Automation"), NOT by Test Case Type
 - If user says "only Functional" → filter by Test Case Type = Functional
-- If user says "create N test cases" or "generate N test cases" → create EXACTLY N test cases, NO MORE, NO LESS. Do not generate extra rows.
-- User instructions override ALL default rules${executionTagGuidance}
+- If user says "create N test cases" or "generate N test cases" or "only N" → create EXACTLY N test cases, NO MORE, NO LESS. Do not generate extra rows.
+- User instructions override ALL default rules${executionTagGuidance}${extractedCount ? `
+
+🚨 HARD COUNT LIMIT — NON-NEGOTIABLE:
+The user requested EXACTLY ${extractedCount} test case(s). You MUST generate EXACTLY ${extractedCount} rows in the table.
+- Do NOT generate more than ${extractedCount} test cases under any circumstance.
+- Do NOT generate fewer than ${extractedCount} test cases.
+- If you reach ${extractedCount} rows, STOP IMMEDIATELY. Do not add "bonus" or "additional" rows.
+- This overrides all other rules about coverage or completeness.` : ''}
 
 First output: ## SELF-VALIDATION CHECK
 Then the full test case table.`;
@@ -284,27 +291,53 @@ Then the full test case table.`;
       }
 
       // Adjust continuation strategy:
-      // - If user gave an explicit count (e.g. "create 5 test cases", "up to 15 functional test cases", "seven test cases"), disable continuation
+      // - If user gave an explicit count (e.g. "create 5 test cases", "only five", "test cases only five"), disable continuation
       // - If user gave filter instructions (e.g. "only automation"), STILL allow continuation
-      //   because the model may need multiple rounds to cover all categories
       // - Default: table continuation with minItems=15, maxRounds=3
       const instrText = genInstructions.trim();
       
-      // Number words pattern: one, two, three... twenty, thirty, forty, fifty
+      // Number words → digit map
+      const WORD_TO_NUM = { one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10,
+        eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18,
+        nineteen:19, twenty:20, thirty:30, forty:40, fifty:50 };
       const numberWords = '(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)';
-      // Combined pattern: matches digits OR number words
       const numPattern = `(\\d+|${numberWords})`;
       
-      const hasExplicitCount = hasUserInstructions && (
-        // Pattern 1: "generate/create/write/make/produce [up to/only/exactly/at most/maximum] N/word"
-        new RegExp(`\\b(create|generate|write|make|produce)\\s+(up\\s+to\\s+|only\\s+|exactly\\s+|at\\s+most\\s+|max(imum)?\\s+)?${numPattern}\\b`, 'i').test(instrText) ||
-        // Pattern 2: "[only] N/word [functional/negative/boundary/ui/api/etc] test case(s)"
-        new RegExp(`\\b(only\\s+)?${numPattern}\\s+(functional\\s+|negative\\s+|boundary\\s+|ui\\s+|api\\s+|integration\\s+|security\\s+|validation\\s+|automation\\s+|regression\\s+|sanity\\s+)*(test\\s*case|tc)`, 'i').test(instrText) ||
-        // Pattern 3: "up to N/word" or "maximum N/word" or "at most N/word" or "exactly N/word" anywhere
-        new RegExp(`\\b(up\\s+to|at\\s+most|max(imum)?|exactly|no\\s+more\\s+than)\\s+${numPattern}\\b`, 'i').test(instrText) ||
-        // Pattern 4: "N/word or fewer/less" anywhere
-        new RegExp(`\\b${numPattern}\\s+(or\\s+)?(fewer|less)\\b`, 'i').test(instrText)
-      );
+      // All patterns to detect explicit count
+      const countPatterns = [
+        // Pattern 1: "generate/create/write/make/produce [qualifier] N"
+        new RegExp(`\\b(create|generate|write|make|produce)\\s+(up\\s+to\\s+|only\\s+|exactly\\s+|at\\s+most\\s+|max(imum)?\\s+)?${numPattern}\\b`, 'i'),
+        // Pattern 2: "[only] N [type words] test case(s)"
+        new RegExp(`\\b(only\\s+)?${numPattern}\\s+(functional\\s+|negative\\s+|boundary\\s+|ui\\s+|api\\s+|integration\\s+|security\\s+|validation\\s+|automation\\s+|regression\\s+|sanity\\s+)*(test\\s*case|tc)`, 'i'),
+        // Pattern 3: "up to N" / "maximum N" / "at most N" / "exactly N"
+        new RegExp(`\\b(up\\s+to|at\\s+most|max(imum)?|exactly|no\\s+more\\s+than)\\s+${numPattern}\\b`, 'i'),
+        // Pattern 4: "N or fewer/less"
+        new RegExp(`\\b${numPattern}\\s+(or\\s+)?(fewer|less)\\b`, 'i'),
+        // Pattern 5: "test case(s) only N" / "test cases N" (number AFTER "test case")
+        new RegExp(`\\b(test\\s*cases?|tc)\\s*(only\\s+|just\\s+)?${numPattern}\\b`, 'i'),
+        // Pattern 6: "only N" anywhere (standalone)
+        new RegExp(`\\bonly\\s+${numPattern}\\b`, 'i'),
+        // Pattern 7: "just N" anywhere
+        new RegExp(`\\bjust\\s+${numPattern}\\b`, 'i'),
+      ];
+      
+      const hasExplicitCount = hasUserInstructions && countPatterns.some(p => p.test(instrText));
+      
+      // Extract the actual count number from the instruction
+      let extractedCount = null;
+      if (hasExplicitCount) {
+        // Find the first number (digit or word) in the instruction
+        const numMatch = instrText.match(new RegExp(`\\b${numPattern}\\b`, 'gi'));
+        if (numMatch) {
+          for (const m of numMatch) {
+            const asDigit = parseInt(m, 10);
+            if (!isNaN(asDigit) && asDigit > 0 && asDigit <= 200) { extractedCount = asDigit; break; }
+            const asWord = WORD_TO_NUM[m.toLowerCase()];
+            if (asWord) { extractedCount = asWord; break; }
+          }
+        }
+      }
+      
       const continuation = hasExplicitCount
         ? { type: 'none' }  // user specified exact count — no auto-continuation
         : { type: 'table', minItems: 15, maxRounds: 3 };
