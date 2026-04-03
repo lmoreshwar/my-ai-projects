@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: blast-agent
+    runtime: node
+    region: oregon
+    plan: free
+    rootDir: .
+    buildCommand: npm install && cd client && npm install && npm run build
+    startCommand: node api/index.js
+    envVars:
+      - key: NODE_ENV
+        value: production

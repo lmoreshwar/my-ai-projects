@@ -903,7 +903,20 @@ app.get('/download/:filename', (req, res) => {
 // Export the app for Vercel Serverless Function
 module.exports = app;
 
-// Listen if running locally directly via 'node index.js'
+// Serve React frontend in production (Render / standalone — not Vercel)
+if (!process.env.VERCEL) {
+    const clientDist = path.join(__dirname, '..', 'client', 'dist');
+    if (fs.existsSync(clientDist)) {
+        app.use(express.static(clientDist));
+        // SPA fallback: serve index.html for all non-API routes
+        app.get('*', (req, res) => {
+            res.sendFile(path.join(clientDist, 'index.html'));
+        });
+        console.log(`[Server] Serving React frontend from ${clientDist}`);
+    }
+}
+
+// Listen if running locally or on Render (Render sets PORT env var)
 if (require.main === module) {
     const port = process.env.PORT || 8000;
     app.listen(port, () => {
