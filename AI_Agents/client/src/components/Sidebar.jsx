@@ -1,29 +1,233 @@
-import React from 'react';
+import { useState } from 'react';
 
-const Sidebar = ({ activeTab = 'intelligent_test_planner' }) => {
+const navItems = [
+  { id: 'connections', icon: 'hub', label: 'Test Connection' },
+  { id: 'test-plan', icon: 'assignment', label: 'Create Test Plan' },
+  { id: 'test-cases', icon: 'edit_note', label: 'Create Test Cases' },
+  { id: 'test-scenarios', icon: 'schema', label: 'Create Test Scenarios' },
+  { id: 'review-cases', icon: 'fact_check', label: 'Review Test Cases' },
+];
+
+const automationChildren = [
+  { id: 'selenium-bdd', icon: 'terminal', label: 'Selenium BDD' },
+  { id: 'playwright-js', icon: 'code', label: 'PW TS + BDD' },
+  { id: 'playwright-pom', icon: 'account_tree', label: 'PW JS/TS + POM' },
+];
+
+const bottomItems = [
+  { id: 'zephyr-dashboard', icon: 'dashboard', label: 'Zephyr Dashboard', filled: true },
+];
+
+export default function Sidebar({ activePage, onNavigate, onToggleDark, collapsed, onToggleCollapse }) {
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const automationActive = automationChildren.some((c) => c.id === activePage);
+  const [autoOpen, setAutoOpen] = useState(automationActive);
+
+  const handleNav = (id) => {
+    onNavigate(id);
+    setMobileOpen(false);
+  };
+
   return (
-    <aside className="sidebar">
-      <div className="sidebar-header">
-        <div className="sidebar-logo">TB</div>
-        <div className="sidebar-brand">
-          <div className="brand-name">TestingBuddy AI</div>
-          <div className="brand-tagline">Testing Platform</div>
-        </div>
-      </div>
+    <>
+      {/* Mobile overlay */}
+      {mobileOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-[60] backdrop-blur-sm lg:hidden"
+          onClick={() => setMobileOpen(false)}
+        />
+      )}
 
-      <nav className="sidebar-nav">
-        <div className="nav-section">
-          <div className="nav-title">Main</div>
-          <div className={`nav-item ${activeTab === 'intelligent_test_planner' ? 'active' : ''}`}>
-            <span className="nav-icon">🎯</span> Test Planner
-          </div>
-          <div className={`nav-item ${activeTab === 'settings' ? 'active' : ''}`}>
-            <span className="nav-icon">📊</span> Dashboard / Settings
-          </div>
+      {/* Mobile hamburger (rendered inside TopBar externally) */}
+      <button
+        className="p-2 hover:bg-white/10 rounded-full text-white transition-colors lg:hidden"
+        onClick={() => setMobileOpen(true)}
+        aria-label="Open menu"
+      >
+        <span className="material-symbols-outlined">menu</span>
+      </button>
+
+      {/* Drawer */}
+      <aside
+        className={`fixed left-0 top-0 h-full ${collapsed ? 'w-[72px]' : 'w-80'} bg-surface-container-low dark:bg-slate-900 z-[70] border-r border-outline-variant/30 flex flex-col transition-all duration-300 ease-in-out persistent-drawer ${
+          mobileOpen ? 'translate-x-0' : '-translate-x-full'
+        } lg:translate-x-0`}
+      >
+        {/* Brand + Collapse Toggle */}
+        <div className={`flex items-center ${collapsed ? 'justify-center' : 'justify-between'} px-4 h-16 border-b border-outline-variant/30 bg-white dark:bg-slate-900`}>
+          {!collapsed && (
+            <h2 className="text-lg font-bold text-app-red font-headline uppercase tracking-wider whitespace-nowrap overflow-hidden">
+              Command Center
+            </h2>
+          )}
+          {/* Desktop collapse toggle */}
+          <button
+            className="p-1.5 hover:bg-surface-variant dark:hover:bg-slate-800 rounded-full transition-colors hidden lg:flex items-center justify-center"
+            onClick={onToggleCollapse}
+            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          >
+            <span className="material-symbols-outlined text-app-red transition-transform duration-300" style={{ transform: collapsed ? 'rotate(180deg)' : 'rotate(0deg)' }}>
+              chevron_left
+            </span>
+          </button>
+          {/* Mobile close */}
+          <button
+            className="p-2 hover:bg-surface-variant dark:hover:bg-slate-800 rounded-full transition-colors lg:hidden"
+            onClick={() => setMobileOpen(false)}
+          >
+            <span className="material-symbols-outlined">close</span>
+          </button>
         </div>
-      </nav>
-    </aside>
+
+        {/* Nav items */}
+        <div className="flex-grow overflow-y-auto p-4 space-y-2">
+          <nav className="flex flex-col space-y-1">
+            {navItems.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => handleNav(item.id)}
+                title={collapsed ? item.label : ''}
+                className={`flex items-center ${collapsed ? 'justify-center px-0' : 'gap-4 px-4'} py-3 w-full text-left transition-all rounded-sm ${
+                  activePage === item.id
+                    ? 'nav-item-active'
+                    : 'text-on-surface-variant dark:text-slate-400 font-medium hover:bg-surface-container-high dark:hover:bg-slate-800'
+                }`}
+              >
+                <span className={`material-symbols-outlined ${activePage === item.id ? '' : 'text-app-dark-red dark:text-app-red'}`} style={item.filled ? { fontVariationSettings: "'FILL' 1" } : {}}>
+                  {item.icon}
+                </span>
+                {!collapsed && <span className="text-sm">{item.label}</span>}
+              </button>
+            ))}
+
+            {/* ── Automation (collapsible) ── */}
+            <div>
+              <button
+                onClick={() => collapsed ? handleNav(automationChildren[0]?.id || 'selenium-bdd') : setAutoOpen((o) => !o)}
+                title={collapsed ? 'Automation' : ''}
+                className={`flex items-center ${collapsed ? 'justify-center px-0' : 'justify-between px-4'} w-full py-3 transition-all rounded-sm ${
+                  automationActive
+                    ? 'nav-item-active'
+                    : 'text-on-surface-variant dark:text-slate-400 font-medium hover:bg-surface-container-high dark:hover:bg-slate-800'
+                }`}
+              >
+                <div className={`flex items-center ${collapsed ? '' : 'gap-4'}`}>
+                  <span className={`material-symbols-outlined ${automationActive ? '' : 'text-app-dark-red dark:text-app-red'}`}>
+                    settings_suggest
+                  </span>
+                  {!collapsed && <span className="text-sm">Automation</span>}
+                </div>
+                {!collapsed && (
+                  <span
+                    className="material-symbols-outlined text-sm transition-transform duration-300"
+                    style={{ transform: autoOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
+                  >
+                    expand_more
+                  </span>
+                )}
+              </button>
+
+              {!collapsed && (
+                <div
+                  className="overflow-hidden transition-all duration-300 ease-in-out"
+                  style={{ maxHeight: autoOpen ? '200px' : '0px' }}
+                >
+                  <div className="bg-black/[0.03] dark:bg-white/[0.04] rounded-b-sm">
+                    {automationChildren.map((child) => (
+                      <button
+                        key={child.id}
+                        onClick={() => handleNav(child.id)}
+                        className={`flex items-center gap-3 pl-12 pr-4 py-3 w-full text-left transition-all ${
+                          activePage === child.id
+                            ? 'text-app-red dark:text-app-red font-bold bg-app-red/5'
+                            : 'text-on-surface-variant dark:text-slate-400 font-normal hover:bg-surface-container-high dark:hover:bg-slate-800'
+                        }`}
+                      >
+                        <span className={`material-symbols-outlined text-sm ${activePage === child.id ? 'text-app-red' : ''}`}>
+                          {child.icon}
+                        </span>
+                        <span className="text-sm">{child.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* ── GitHub ── */}
+            <button
+              onClick={() => handleNav('github')}
+              title={collapsed ? 'GitHub' : ''}
+              className={`flex items-center ${collapsed ? 'justify-center px-0' : 'gap-4 px-4'} py-3 w-full text-left transition-all rounded-sm ${
+                activePage === 'github'
+                  ? 'nav-item-active'
+                  : 'text-on-surface-variant dark:text-slate-400 font-medium hover:bg-surface-container-high dark:hover:bg-slate-800'
+              }`}
+            >
+              <span className={`material-symbols-outlined ${activePage === 'github' ? '' : 'text-app-dark-red dark:text-app-red'}`}>
+                cloud_upload
+              </span>
+              {!collapsed && <span className="text-sm">GitHub</span>}
+            </button>
+
+            {/* ── GitHub CICD ── */}
+            <button
+              onClick={() => handleNav('github-cicd')}
+              title={collapsed ? 'GitHub CICD' : ''}
+              className={`flex items-center ${collapsed ? 'justify-center px-0' : 'gap-4 px-4'} py-3 w-full text-left transition-all rounded-sm ${
+                activePage === 'github-cicd'
+                  ? 'nav-item-active'
+                  : 'text-on-surface-variant dark:text-slate-400 font-medium hover:bg-surface-container-high dark:hover:bg-slate-800'
+              }`}
+            >
+              <span className={`material-symbols-outlined ${activePage === 'github-cicd' ? '' : 'text-app-dark-red dark:text-app-red'}`}>
+                rocket_launch
+              </span>
+              {!collapsed && <span className="text-sm">GitHub CICD</span>}
+            </button>
+
+            {/* ── Zephyr Dashboard (last item) ── */}
+            {bottomItems.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => handleNav(item.id)}
+                title={collapsed ? item.label : ''}
+                className={`flex items-center ${collapsed ? 'justify-center px-0' : 'gap-4 px-4'} py-3 w-full text-left transition-all rounded-sm ${
+                  activePage === item.id
+                    ? 'nav-item-active'
+                    : 'text-on-surface-variant dark:text-slate-400 font-medium hover:bg-surface-container-high dark:hover:bg-slate-800'
+                }`}
+              >
+                <span className={`material-symbols-outlined ${activePage === item.id ? '' : 'text-app-dark-red dark:text-app-red'}`} style={item.filled ? { fontVariationSettings: "'FILL' 1" } : {}}>
+                  {item.icon}
+                </span>
+                {!collapsed && <span className="text-sm">{item.label}</span>}
+              </button>
+            ))}
+          </nav>
+
+        </div>
+
+        {/* Bottom section: Settings + Dark Mode */}
+        <div className="mt-auto border-t border-outline-variant/30 dark:border-slate-800 p-4 space-y-1">
+          <button
+            onClick={() => handleNav('connections')}
+            title={collapsed ? 'Settings' : ''}
+            className={`flex items-center ${collapsed ? 'justify-center px-0' : 'gap-4 px-4'} py-3 w-full text-on-surface-variant dark:text-slate-400 font-medium hover:bg-surface-container-high dark:hover:bg-slate-800 transition-all rounded-sm text-left`}
+          >
+            <span className="material-symbols-outlined">settings</span>
+            {!collapsed && <span className="text-sm">Settings</span>}
+          </button>
+          <button
+            onClick={onToggleDark}
+            title={collapsed ? 'Dark Mode' : ''}
+            className={`flex items-center ${collapsed ? 'justify-center px-0' : 'gap-4 px-4'} py-3 w-full text-on-surface-variant dark:text-slate-400 font-medium hover:bg-surface-container-high dark:hover:bg-slate-800 transition-all rounded-sm text-left`}
+          >
+            <span className="material-symbols-outlined">dark_mode</span>
+            {!collapsed && <span className="text-sm">Dark Mode</span>}
+          </button>
+        </div>
+      </aside>
+    </>
   );
-};
-
-export default Sidebar;
+}
