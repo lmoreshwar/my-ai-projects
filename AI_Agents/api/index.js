@@ -21,8 +21,16 @@ app.use((req, res, next) => {
     next();
 });
 
-// Main status route
-app.get('/', (req, res) => {
+// Serve React static files (Render / standalone — not Vercel)
+// Must be BEFORE API routes so static assets (JS, CSS, images) are served directly
+const _clientDist = path.join(__dirname, '..', 'client', 'dist');
+if (!process.env.VERCEL && fs.existsSync(_clientDist)) {
+    app.use(express.static(_clientDist));
+    console.log(`[Server] Serving React frontend from ${_clientDist}`);
+}
+
+// Main status route (API health check)
+app.get('/health', (req, res) => {
     res.json({ message: "Test Planner Node API is running seamlessly!" });
 });
 
@@ -903,17 +911,11 @@ app.get('/download/:filename', (req, res) => {
 // Export the app for Vercel Serverless Function
 module.exports = app;
 
-// Serve React frontend in production (Render / standalone — not Vercel)
-if (!process.env.VERCEL) {
-    const clientDist = path.join(__dirname, '..', 'client', 'dist');
-    if (fs.existsSync(clientDist)) {
-        app.use(express.static(clientDist));
-        // SPA fallback: serve index.html for all non-API routes
-        app.get('*', (req, res) => {
-            res.sendFile(path.join(clientDist, 'index.html'));
-        });
-        console.log(`[Server] Serving React frontend from ${clientDist}`);
-    }
+// SPA fallback: serve index.html for all non-API routes (Render / standalone)
+if (!process.env.VERCEL && fs.existsSync(_clientDist)) {
+    app.get('*', (req, res) => {
+        res.sendFile(path.join(_clientDist, 'index.html'));
+    });
 }
 
 // Listen if running locally or on Render (Render sets PORT env var)
