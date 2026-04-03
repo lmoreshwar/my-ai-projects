@@ -52,7 +52,7 @@ For each feature group, return output using this EXACT delimiter format:
 (TypeScript spec file with test.describe, test blocks, assertions)
 
 === FILE: playwright.config.ts ===
-(Playwright config with baseURL as TODO, chromium/firefox/webkit projects, html+list reporters)
+(Minimal Playwright config: baseURL as TODO, chromium project, html+list reporters. Do NOT add video, trace, or screenshot config unless explicitly asked. Keep it clean and minimal.)
 
 ## Mapping Rules
 - SRL No → @tag in .feature, test name prefix in .spec.ts
@@ -310,8 +310,9 @@ IMPORTANT:
         }
 
         const zip = new JSZip();
+        // Apply cleanCodeContent to all files before zipping
         generatedFiles.forEach((f) => {
-          zip.file(f.path, f.content);
+          zip.file(f.path, cleanCodeContent(f.content));
         });
         const blob = await zip.generateAsync({ type: 'blob' });
         const url = URL.createObjectURL(blob);
@@ -358,8 +359,9 @@ IMPORTANT:
       const apiUrl = connections.github.apiUrl || 'https://api.github.com';
 
       for (const file of generatedFiles) {
+        const cleanContent = cleanCodeContent(file.content);
         const filePath = pushPath ? `${pushPath.replace(/\/+$/, '')}/${file.path}` : file.path;
-        const content = btoa(unescape(encodeURIComponent(file.content)));
+        const content = btoa(unescape(encodeURIComponent(cleanContent)));
 
         // Check if file exists (to get SHA for update)
         let sha;

@@ -108,11 +108,12 @@ For each feature group, return output using this EXACT delimiter format:
 === FILE: tests/specs/{feature}.spec.ts ===
 (TypeScript spec file using POM)
 
-=== FILE: playwright.config.js ===
-(JavaScript config)
-
 === FILE: playwright.config.ts ===
-(TypeScript config)
+(Single config file — TypeScript config works for both JS and TS)
+
+IMPORTANT: Generate ONLY ONE config file (playwright.config.ts). Do NOT generate playwright.config.js separately.
+Do NOT generate video recording, trace, or screenshot config unless explicitly asked.
+Keep the config minimal: baseURL, projects (chromium), reporter.
 
 ## Mapping Rules
 - SRL No → test name prefix
@@ -352,7 +353,7 @@ IMPORTANT:
      DOWNLOAD ZIP
      ──────────────────────────────────────────────────────────────────── */
   const handleDownload = async () => {
-    if (generatedFiles.length === 0) return;
+    if (displayedFiles.length === 0) return;
     setBusy('download');
     try {
       if (typeof window !== 'undefined') {
@@ -368,7 +369,8 @@ IMPORTANT:
           JSZip = window.JSZip;
         }
         const zip = new JSZip();
-        generatedFiles.forEach((f) => zip.file(f.path, f.content));
+        // Use displayedFiles (filtered by language + cleaned) instead of all generatedFiles
+        displayedFiles.forEach((f) => zip.file(f.path, cleanCodeContent(f.content)));
         const blob = await zip.generateAsync({ type: 'blob' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -410,9 +412,11 @@ IMPORTANT:
       const branch = pushBranch || 'main';
       const apiUrl = connections.github.apiUrl || 'https://api.github.com';
 
-      for (const file of generatedFiles) {
+      // Use displayedFiles (filtered by language + cleaned) instead of all generatedFiles
+      for (const file of displayedFiles) {
+        const cleanContent = cleanCodeContent(file.content);
         const filePath = pushPath ? `${pushPath.replace(/\/+$/, '')}/${file.path}` : file.path;
-        const content = btoa(unescape(encodeURIComponent(file.content)));
+        const content = btoa(unescape(encodeURIComponent(cleanContent)));
         let sha;
         try {
           const existing = await fetch(`${apiUrl}/repos/${repo}/contents/${filePath}?ref=${branch}`, {
