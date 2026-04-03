@@ -16,6 +16,13 @@ Generate BOTH JavaScript (.js) AND TypeScript (.ts) versions of every file.
 - Design Pattern: Page Object Model (POM)
 - Runner: Playwright Test Runner (\`npx playwright test\`)
 
+## CRITICAL OUTPUT FORMAT RULES
+- Output ONLY plain text code — NO HTML tags, NO CSS classes, NO syntax highlighting markup
+- Do NOT include patterns like: "text-[#...]">  or <span class="..."> or any HTML/CSS artifacts
+- Do NOT wrap code in HTML elements or include any Tailwind/CSS class names in the output
+- Output must be raw, executable .js/.ts code that can run directly with npx playwright test
+- If you see examples with syntax highlighting in your training, STRIP all HTML/CSS when generating
+
 ## STRICT ANTI-HALLUCINATION RULES
 - Do NOT invent URLs, endpoints, or page routes not present in the test case data
 - Do NOT fabricate CSS selectors or XPaths — use role-based or text-based locators
@@ -152,6 +159,53 @@ function groupByTag(testCases) {
   return groups;
 }
 
+/* Clean up any accidental CSS class patterns from LLM output or copy/paste issues */
+function cleanCodeContent(content) {
+  if (!content) return '';
+  
+  let cleaned = content;
+  
+  // AGGRESSIVE pattern removal - catch ALL variations of CSS class patterns
+  // These patterns appear when LLM mimics syntax-highlighted code from training data
+  
+  // Pattern 1: The exact pattern seen: "text-[#hexcode]"> followed by content
+  // e.g., "text-[#569cd6]">const becomes const
+  cleaned = cleaned.replace(/"text-\[#[a-fA-F0-9]{3,8}\]">/g, '');
+  
+  // Pattern 2: Variations with single quotes
+  cleaned = cleaned.replace(/'text-\[#[a-fA-F0-9]{3,8}\]'>/g, '');
+  
+  // Pattern 3: Full span tags with these classes
+  cleaned = cleaned.replace(/<span\s+class=["']text-\[#[a-fA-F0-9]{3,8}\]["']>/gi, '');
+  cleaned = cleaned.replace(/<\/span>/gi, '');
+  
+  // Pattern 4: Any text-[#...] pattern (Tailwind-style CSS class in wrong context)  
+  cleaned = cleaned.replace(/["']text-\[#[a-fA-F0-9]{3,8}\]["']>/g, '');
+  
+  // Pattern 5: Remove orphaned class="..." attributes that might slip through
+  cleaned = cleaned.replace(/\s*class=["'][^"']*["']/gi, '');
+  
+  // Pattern 6: Remove any remaining <span> or </span> tags
+  cleaned = cleaned.replace(/<\/?span[^>]*>/gi, '');
+  
+  // Final cleanup: fix any double quotes/quotes that got mangled
+  // Fix patterns like const"" or const'' that might result
+  cleaned = cleaned.replace(/([a-zA-Z_$])["']{2,}([^"'\s])/g, '$1 $2');
+  cleaned = cleaned.replace(/["']{2,}/g, match => match.charAt(0));
+  
+  // Trim whitespace
+  cleaned = cleaned.split('\n')
+    .map(line => line.trimEnd())
+    .filter((line, idx, arr) => {
+      if (line === '' && idx > 0 && arr[idx - 1] === '') return false;
+      return true;
+    })
+    .join('\n')
+    .trim();
+  
+  return cleaned;
+}
+
 function parseFileBlocks(output) {
   const files = [];
   const pattern = /===\s*FILE:\s*(.+?)\s*===\s*\n([\s\S]*?)(?=\n===\s*FILE:|$)/gi;
@@ -159,10 +213,12 @@ function parseFileBlocks(output) {
   while ((match = pattern.exec(output)) !== null) {
     let content = match[2].trim();
     content = content.replace(/^```(?:typescript|ts|javascript|js)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+    // Clean up any CSS class patterns that might have slipped in
+    content = cleanCodeContent(content);
     files.push({ path: match[1].trim(), content });
   }
   if (files.length === 0 && output.trim()) {
-    files.push({ path: 'tests/specs/generated.spec.ts', content: output.trim() });
+    files.push({ path: 'tests/specs/generated.spec.ts', content: cleanCodeContent(output.trim()) });
   }
   return files;
 }
@@ -207,12 +263,13 @@ export default function PlaywrightPOM({ connections, apiBase, generatedTestCases
     [selectedGroups, grouped]
   );
 
-  // Filter displayed files by language
+  // Filter displayed files by language and clean code content
   const displayedFiles = useMemo(() => {
-    if (langFilter === 'all') return generatedFiles;
-    if (langFilter === 'js') return generatedFiles.filter(f => f.path.endsWith('.js'));
-    if (langFilter === 'ts') return generatedFiles.filter(f => f.path.endsWith('.ts'));
-    return generatedFiles;
+    let files = generatedFiles;
+    if (langFilter === 'js') files = generatedFiles.filter(f => f.path.endsWith('.js'));
+    else if (langFilter === 'ts') files = generatedFiles.filter(f => f.path.endsWith('.ts'));
+    // Apply cleanCodeContent to all file contents
+    return files.map(f => ({ ...f, content: cleanCodeContent(f.content) }));
   }, [generatedFiles, langFilter]);
 
   /* ────────────────────────────────────────────────────────────────────
@@ -382,16 +439,43 @@ IMPORTANT:
   };
 
   /* ────────────────────────────────────────────────────────────────────
-     COPY + SYNTAX HIGHLIGHT
+     COPY + DOWNLOAD SINGLE FILE + SYNTAX HIGHLIGHT
      ──────────────────────────────────────────────────────────────────── */
+  const [copyFeedback, setCopyFeedback] = useState('');
+  
   const copyActiveFile = () => {
     const f = displayedFiles[activeFileIdx];
-    if (f) navigator.clipboard.writeText(f.content);
+    if (f) {
+      // Apply cleanCodeContent to ensure no CSS patterns in copied code
+      const cleanContent = cleanCodeContent(f.content);
+      navigator.clipboard.writeText(cleanContent);
+      setCopyFeedback('Copied!');
+      setTimeout(() => setCopyFeedback(''), 2000);
+    }
+  };
+
+  const downloadSingleFile = () => {
+    const f = displayedFiles[activeFileIdx];
+    if (f) {
+      // Apply cleanCodeContent to ensure no CSS patterns in downloaded file
+      const cleanContent = cleanCodeContent(f.content);
+      const blob = new Blob([cleanContent], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = f.path.split('/').pop();
+      a.click();
+      URL.revokeObjectURL(url);
+    }
   };
 
   const highlightCode = (code, isJS) => {
     return code.split('\n').map((line, i) => {
-      let html = line.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      // FIRST: Strip any LLM-generated CSS class patterns BEFORE HTML escaping
+      let cleanLine = line.replace(/"text-\[#[a-fA-F0-9]{3,8}\]">/g, '');
+      cleanLine = cleanLine.replace(/'text-\[#[a-fA-F0-9]{3,8}\]'>/g, '');
+      cleanLine = cleanLine.replace(/<\/?span[^>]*>/gi, '');
+      let html = cleanLine.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       html = html
         .replace(/\b(import|from|export|const|let|var|async|await|function|return|if|else|new|throw|type|class|extends|constructor|readonly|module|require|this)\b/g, '<span class="text-[#569cd6]">$1</span>')
         .replace(/\b(test|expect|describe|it|beforeAll|afterAll|beforeEach|afterEach|defineConfig|devices)\b/g, '<span class="text-[#dcdcaa]">$1</span>')
@@ -630,9 +714,17 @@ IMPORTANT:
                   <div className="px-4 py-2.5 text-xs text-white/30">No files generated yet</div>
                 )}
                 {displayedFiles.length > 0 && (
-                  <button onClick={copyActiveFile} className="ml-auto mr-4 text-white/40 hover:text-white transition-colors" title="Copy file">
-                    <span className="material-symbols-outlined text-lg">content_copy</span>
-                  </button>
+                  <div className="ml-auto mr-4 flex items-center gap-2">
+                    {copyFeedback && <span className="text-xs text-green-400 font-medium animate-pulse">{copyFeedback}</span>}
+                    <button onClick={copyActiveFile} className="flex items-center gap-1 px-2 py-1 text-white/60 hover:text-white hover:bg-white/10 rounded transition-colors text-xs" title="Copy clean code to clipboard">
+                      <span className="material-symbols-outlined text-sm">content_copy</span>
+                      <span className="hidden sm:inline">Copy</span>
+                    </button>
+                    <button onClick={downloadSingleFile} className="flex items-center gap-1 px-2 py-1 text-white/60 hover:text-white hover:bg-white/10 rounded transition-colors text-xs" title="Download this file">
+                      <span className="material-symbols-outlined text-sm">download</span>
+                      <span className="hidden sm:inline">Download</span>
+                    </button>
+                  </div>
                 )}
               </div>
 

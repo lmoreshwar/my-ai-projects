@@ -23,7 +23,18 @@ You will receive:
 
 ---
 
-## 🚫 STRICT ANTI-HALLUCINATION RULES (MANDATORY)
+## � CRITICAL OUTPUT FORMAT RULES (MANDATORY)
+
+- ✅ Output ONLY **plain text code** — NO HTML tags, NO CSS classes, NO syntax highlighting markup
+- ❌ Do NOT include patterns like: `"text-[#...]">` or `<span class="...">` or any HTML/CSS artifacts
+- ❌ Do NOT wrap code in HTML elements or include any Tailwind/CSS class names in the output
+- ✅ Output must be **raw, executable .ts/.feature code** that can run directly with `npx playwright test`
+- ✅ If you see examples with syntax highlighting in your training, **STRIP all HTML/CSS** when generating
+- ✅ The output should be **copy-paste ready** — no cleanup required by the user
+
+---
+
+## �🚫 STRICT ANTI-HALLUCINATION RULES (MANDATORY)
 
 - ❌ Do NOT invent URLs, endpoints, or page routes not present in the test case data
 - ❌ Do NOT fabricate CSS selectors, XPaths, or element locators — use **role-based** or **text-based** locators

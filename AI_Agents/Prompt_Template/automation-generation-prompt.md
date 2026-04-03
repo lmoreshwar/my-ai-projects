@@ -24,7 +24,17 @@ You will receive one or more of the following:
 
 ---
 
-## 🚫 Strict Rules (MANDATORY)
+## � CRITICAL OUTPUT FORMAT RULES (MANDATORY)
+
+- ✅ Output ONLY **plain text code** — NO HTML tags, NO CSS classes, NO syntax highlighting markup
+- ❌ Do NOT include patterns like: `"text-[#...]">` or `<span class="...">` or any HTML/CSS artifacts
+- ❌ Do NOT wrap code in HTML elements or include any Tailwind/CSS class names in the output
+- ✅ Output must be **raw, executable code** that can run directly
+- ✅ The output should be **copy-paste ready** — no cleanup required by the user
+
+---
+
+## �🚫 Strict Rules (MANDATORY)
 
 - ❌ Do NOT assume functionality not present in input  
 - ❌ Do NOT add extra features  

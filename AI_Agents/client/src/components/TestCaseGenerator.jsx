@@ -167,9 +167,13 @@ export default function TestCaseGenerator({ connections, apiBase, onTestCasesGen
     if (manualReq.trim()) c += `## MANUAL REQUIREMENT / PRD\n${manualReq}\n\n`;
     // genInstructions are now injected via taskSuffix in the system prompt to avoid duplication
     if (appName.trim()) c += `## APPLICATION: ${appName}\n\n`;
-    if (sharedPrereqs.trim()) c += `## SHARED PREREQUISITES\n${sharedPrereqs}\nInstruction: Reference as "Shared Prerequisites completed" in Pre-conditions.\n\n`;
-    if (businessRules.trim()) c += `## BUSINESS RULES\n${businessRules}\n\n`;
-    if (widgets.trim()) c += `## WIDGETS / UI SECTIONS\n${widgets}\nInstruction: Generate test cases per widget.\n\n`;
+    if (sharedPrereqs.trim()) {
+      // Format prerequisites as a single line for the Pre-conditions column
+      const prereqsOneLine = sharedPrereqs.trim().split('\n').map(s => s.trim()).filter(Boolean).join(' → ');
+      c += `## SHARED PREREQUISITES (MUST BE INCLUDED IN OUTPUT)\n${sharedPrereqs}\n\n**OUTPUT INSTRUCTION FOR SHARED PREREQUISITES:**\n1. Output a "## 📋 Shared Prerequisites" section at the TOP of your response (BEFORE the test case table)\n2. In this section, list EXACTLY these steps as provided above\n3. In the **Pre-conditions** column of EACH test case, include the FULL prerequisite steps: "${prereqsOneLine}"\n4. Do NOT just write "Shared Prerequisites completed" — include the ACTUAL steps in the Pre-conditions column\n5. Do NOT skip outputting the Shared Prerequisites section. It MUST appear in the final output.\n\n`;
+    }
+    if (businessRules.trim()) c += `## BUSINESS RULES (MUST BE INCLUDED IN OUTPUT)\n${businessRules}\n\n**OUTPUT INSTRUCTION FOR BUSINESS RULES:**\n1. Output a "## 📜 Business Rules" section at the TOP of your response (after Shared Prerequisites if present, BEFORE the test case table)\n2. In this section, list EXACTLY these business rules as provided above\n3. Generate test cases that VALIDATE each business rule (positive and negative scenarios)\n4. In the Tags column of test cases that validate a business rule, include "Business Rule" tag\n5. Do NOT skip outputting the Business Rules section. It MUST appear in the final output.\n\n`;
+    if (widgets.trim()) c += `## WIDGETS / UI SECTIONS (MUST BE INCLUDED IN OUTPUT)\n${widgets}\n\n**OUTPUT INSTRUCTION FOR WIDGETS/UI SECTIONS:**\n1. Output a "## 🧩 Widgets / UI Sections" section at the TOP of your response (after Business Rules if present, BEFORE the test case table)\n2. In this section, list EXACTLY these widgets/UI sections as provided above\n3. Generate test cases for EACH widget/UI section independently\n4. In the Tags column, include the widget name (e.g., "Login Form", "Cart Widget", "Payment Panel")\n5. Group test cases by widget when possible\n6. Do NOT skip outputting the Widgets/UI Sections section. It MUST appear in the final output.\n\n`;
     if (extraCtx.trim()) c += `## ADDITIONAL CONTEXT\n${extraCtx}\n\n`;
     return c;
   }, [issueData, manualReq, genInstructions, appName, sharedPrereqs, businessRules, widgets, extraCtx]);
@@ -280,20 +284,26 @@ Then the full test case table.`;
       }
 
       // Adjust continuation strategy:
-      // - If user gave an explicit count (e.g. "create 5 test cases", "up to 15 functional test cases"), disable continuation
+      // - If user gave an explicit count (e.g. "create 5 test cases", "up to 15 functional test cases", "seven test cases"), disable continuation
       // - If user gave filter instructions (e.g. "only automation"), STILL allow continuation
       //   because the model may need multiple rounds to cover all categories
       // - Default: table continuation with minItems=15, maxRounds=3
       const instrText = genInstructions.trim();
+      
+      // Number words pattern: one, two, three... twenty, thirty, forty, fifty
+      const numberWords = '(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)';
+      // Combined pattern: matches digits OR number words
+      const numPattern = `(\\d+|${numberWords})`;
+      
       const hasExplicitCount = hasUserInstructions && (
-        // Pattern 1: "generate/create/write/make/produce [up to/only/exactly/at most/maximum] N"
-        /\b(create|generate|write|make|produce)\s+(up\s+to\s+|only\s+|exactly\s+|at\s+most\s+|max(imum)?\s+)?\d+\b/i.test(instrText) ||
-        // Pattern 2: "[only] N [functional/negative/boundary/ui/api/etc] test case(s)"
-        /\b(only\s+)?\d+\s+(functional\s+|negative\s+|boundary\s+|ui\s+|api\s+|integration\s+|security\s+|validation\s+|automation\s+|regression\s+|sanity\s+)*(test\s*case|tc)/i.test(instrText) ||
-        // Pattern 3: "up to N" or "maximum N" or "at most N" or "exactly N" anywhere
-        /\b(up\s+to|at\s+most|max(imum)?|exactly|no\s+more\s+than)\s+\d+\b/i.test(instrText) ||
-        // Pattern 4: "N or fewer/less" anywhere
-        /\b\d+\s+(or\s+)?(fewer|less)\b/i.test(instrText)
+        // Pattern 1: "generate/create/write/make/produce [up to/only/exactly/at most/maximum] N/word"
+        new RegExp(`\\b(create|generate|write|make|produce)\\s+(up\\s+to\\s+|only\\s+|exactly\\s+|at\\s+most\\s+|max(imum)?\\s+)?${numPattern}\\b`, 'i').test(instrText) ||
+        // Pattern 2: "[only] N/word [functional/negative/boundary/ui/api/etc] test case(s)"
+        new RegExp(`\\b(only\\s+)?${numPattern}\\s+(functional\\s+|negative\\s+|boundary\\s+|ui\\s+|api\\s+|integration\\s+|security\\s+|validation\\s+|automation\\s+|regression\\s+|sanity\\s+)*(test\\s*case|tc)`, 'i').test(instrText) ||
+        // Pattern 3: "up to N/word" or "maximum N/word" or "at most N/word" or "exactly N/word" anywhere
+        new RegExp(`\\b(up\\s+to|at\\s+most|max(imum)?|exactly|no\\s+more\\s+than)\\s+${numPattern}\\b`, 'i').test(instrText) ||
+        // Pattern 4: "N/word or fewer/less" anywhere
+        new RegExp(`\\b${numPattern}\\s+(or\\s+)?(fewer|less)\\b`, 'i').test(instrText)
       );
       const continuation = hasExplicitCount
         ? { type: 'none' }  // user specified exact count — no auto-continuation
