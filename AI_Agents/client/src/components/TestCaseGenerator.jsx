@@ -280,13 +280,20 @@ Then the full test case table.`;
       }
 
       // Adjust continuation strategy:
-      // - If user gave an explicit count (e.g. "create 5 test cases"), disable continuation
+      // - If user gave an explicit count (e.g. "create 5 test cases", "up to 15 functional test cases"), disable continuation
       // - If user gave filter instructions (e.g. "only automation"), STILL allow continuation
       //   because the model may need multiple rounds to cover all categories
       // - Default: table continuation with minItems=15, maxRounds=3
+      const instrText = genInstructions.trim();
       const hasExplicitCount = hasUserInstructions && (
-        /\b(create|generate|write|make|produce)\s+(only\s+)?\d+\b/i.test(genInstructions.trim()) ||
-        /\b(only\s+)?\d+\s+(automation|test\s*case|tc)/i.test(genInstructions.trim())
+        // Pattern 1: "generate/create/write/make/produce [up to/only/exactly/at most/maximum] N"
+        /\b(create|generate|write|make|produce)\s+(up\s+to\s+|only\s+|exactly\s+|at\s+most\s+|max(imum)?\s+)?\d+\b/i.test(instrText) ||
+        // Pattern 2: "[only] N [functional/negative/boundary/ui/api/etc] test case(s)"
+        /\b(only\s+)?\d+\s+(functional\s+|negative\s+|boundary\s+|ui\s+|api\s+|integration\s+|security\s+|validation\s+|automation\s+|regression\s+|sanity\s+)*(test\s*case|tc)/i.test(instrText) ||
+        // Pattern 3: "up to N" or "maximum N" or "at most N" or "exactly N" anywhere
+        /\b(up\s+to|at\s+most|max(imum)?|exactly|no\s+more\s+than)\s+\d+\b/i.test(instrText) ||
+        // Pattern 4: "N or fewer/less" anywhere
+        /\b\d+\s+(or\s+)?(fewer|less)\b/i.test(instrText)
       );
       const continuation = hasExplicitCount
         ? { type: 'none' }  // user specified exact count — no auto-continuation
