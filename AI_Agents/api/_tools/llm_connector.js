@@ -149,7 +149,7 @@ class LLMConnector {
         };
 
         /* ── Single LLM call with automatic retry on 429 ── */
-        const callLLM = async (msgs, retries = 3) => {
+        const callLLM = async (msgs, retries = 2) => {
             // Gemini's OpenAI-compatible API does not support 'seed' or 'top_p'
             const callParams = {
                 messages: msgs,
@@ -182,7 +182,7 @@ class LLMConnector {
                     lastError = err;
                     const status = err.status || err.statusCode || 0;
                     if (status === 429 && attempt < retries) {
-                        const wait = attempt * 15000; // 15s, 30s, 45s
+                        const wait = attempt * 5000; // 5s, 10s (reduced for Vercel free-tier 10s limit)
                         console.warn(`[LLM] Rate limited (429). Retrying in ${wait / 1000}s (attempt ${attempt}/${retries})...`);
                         await new Promise(r => setTimeout(r, wait));
                         continue;

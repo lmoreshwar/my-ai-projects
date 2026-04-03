@@ -274,7 +274,13 @@ Use professional tone. Do not use markdown formatting in the final text (just pl
         const userModel = reqData.llm.model && reqData.llm.model.trim() ? reqData.llm.model.trim() : null;
         
         // Pass continuation options if provided by frontend
-        const continuation = reqData.continuation || null;
+        // On Vercel Free tier (10s limit), force single-round to avoid timeout
+        const isVercelFree = !!process.env.VERCEL && !process.env.VERCEL_PRO;
+        let continuation = reqData.continuation || null;
+        if (isVercelFree && continuation && continuation.type !== 'none') {
+            console.log('[generate-plan] Vercel Free tier detected — disabling continuation to fit 10s limit');
+            continuation = { type: 'none' };
+        }
         const result = await connector.generateContent(userPrompt, systemPrompt, userModel, continuation);
         
         // result is now { content, meta } from the updated LLM connector
