@@ -221,10 +221,52 @@ export default function TestCaseGenerator({ connections, apiBase, onTestCasesGen
     try {
       // Build dynamic task instructions based on whether user gave specific generation instructions
       const hasUserInstructions = genInstructions.trim().length > 0;
+
+      // ── Count detection & extraction (must run BEFORE taskSuffix is built) ──
+      const instrText = genInstructions.trim();
+      // Number words → digit map
+      const WORD_TO_NUM = { one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10,
+        eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18,
+        nineteen:19, twenty:20, thirty:30, forty:40, fifty:50 };
+      const numberWords = '(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)';
+      const numPattern = `(\\d+|${numberWords})`;
+
+      // All patterns to detect explicit count
+      const countPatterns = [
+        new RegExp(`\\b(create|generate|write|make|produce)\\s+(up\\s+to\\s+|only\\s+|exactly\\s+|at\\s+most\\s+|max(imum)?\\s+)?${numPattern}\\b`, 'i'),
+        new RegExp(`\\b(only\\s+)?${numPattern}\\s+(functional\\s+|negative\\s+|boundary\\s+|ui\\s+|api\\s+|integration\\s+|security\\s+|validation\\s+|automation\\s+|regression\\s+|sanity\\s+)*(test\\s*case|tc)`, 'i'),
+        new RegExp(`\\b(up\\s+to|at\\s+most|max(imum)?|exactly|no\\s+more\\s+than)\\s+${numPattern}\\b`, 'i'),
+        new RegExp(`\\b${numPattern}\\s+(or\\s+)?(fewer|less)\\b`, 'i'),
+        new RegExp(`\\b(test\\s*cases?|tc)\\s*(only\\s+|just\\s+)?${numPattern}\\b`, 'i'),
+        new RegExp(`\\bonly\\s+${numPattern}\\b`, 'i'),
+        new RegExp(`\\bjust\\s+${numPattern}\\b`, 'i'),
+      ];
+
+      const hasExplicitCount = hasUserInstructions && countPatterns.some(p => p.test(instrText));
+
+      // Extract the actual count number from the instruction
+      let extractedCount = null;
+      if (hasExplicitCount) {
+        const numMatch = instrText.match(new RegExp(`\\b${numPattern}\\b`, 'gi'));
+        if (numMatch) {
+          for (const m of numMatch) {
+            const asDigit = parseInt(m, 10);
+            if (!isNaN(asDigit) && asDigit > 0 && asDigit <= 200) { extractedCount = asDigit; break; }
+            const asWord = WORD_TO_NUM[m.toLowerCase()];
+            if (asWord) { extractedCount = asWord; break; }
+          }
+        }
+      }
+
+      const continuation = hasExplicitCount
+        ? { type: 'none' }  // user specified exact count — no auto-continuation
+        : { type: 'table', minItems: 15, maxRounds: 3 };
+
+      // ── Build taskSuffix (uses extractedCount) ──
       let taskSuffix;
       if (hasUserInstructions) {
         // Detect if user is asking for automation-related filtering
-        const instrLower = genInstructions.trim().toLowerCase();
+        const instrLower = instrText.toLowerCase();
         const isAutomationFilter = /\b(only\s+)?automation\b|\bautomation\s*(feasible|only|tagged|suitable)\b|\bautomatable\b/.test(instrLower);
         const isSanityFilter = /\b(only\s+)?sanity\b/.test(instrLower);
         const isRegressionFilter = /\b(only\s+)?regression\b/.test(instrLower);
@@ -253,7 +295,7 @@ The user wants ONLY automation-feasible test cases. This means:
 
         taskSuffix = `TASK: Generate test cases using RICE-POT methodology.
 ⚡ USER INSTRUCTIONS (HIGHEST PRIORITY — MUST OVERRIDE ALL DEFAULT RULES):
-${genInstructions.trim()}
+${instrText}
 
 You MUST follow the above user instructions EXACTLY.
 IMPORTANT DISTINCTION:
@@ -289,58 +331,6 @@ First output:
 
 Then the full test case table.`;
       }
-
-      // Adjust continuation strategy:
-      // - If user gave an explicit count (e.g. "create 5 test cases", "only five", "test cases only five"), disable continuation
-      // - If user gave filter instructions (e.g. "only automation"), STILL allow continuation
-      // - Default: table continuation with minItems=15, maxRounds=3
-      const instrText = genInstructions.trim();
-      
-      // Number words → digit map
-      const WORD_TO_NUM = { one:1, two:2, three:3, four:4, five:5, six:6, seven:7, eight:8, nine:9, ten:10,
-        eleven:11, twelve:12, thirteen:13, fourteen:14, fifteen:15, sixteen:16, seventeen:17, eighteen:18,
-        nineteen:19, twenty:20, thirty:30, forty:40, fifty:50 };
-      const numberWords = '(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty)';
-      const numPattern = `(\\d+|${numberWords})`;
-      
-      // All patterns to detect explicit count
-      const countPatterns = [
-        // Pattern 1: "generate/create/write/make/produce [qualifier] N"
-        new RegExp(`\\b(create|generate|write|make|produce)\\s+(up\\s+to\\s+|only\\s+|exactly\\s+|at\\s+most\\s+|max(imum)?\\s+)?${numPattern}\\b`, 'i'),
-        // Pattern 2: "[only] N [type words] test case(s)"
-        new RegExp(`\\b(only\\s+)?${numPattern}\\s+(functional\\s+|negative\\s+|boundary\\s+|ui\\s+|api\\s+|integration\\s+|security\\s+|validation\\s+|automation\\s+|regression\\s+|sanity\\s+)*(test\\s*case|tc)`, 'i'),
-        // Pattern 3: "up to N" / "maximum N" / "at most N" / "exactly N"
-        new RegExp(`\\b(up\\s+to|at\\s+most|max(imum)?|exactly|no\\s+more\\s+than)\\s+${numPattern}\\b`, 'i'),
-        // Pattern 4: "N or fewer/less"
-        new RegExp(`\\b${numPattern}\\s+(or\\s+)?(fewer|less)\\b`, 'i'),
-        // Pattern 5: "test case(s) only N" / "test cases N" (number AFTER "test case")
-        new RegExp(`\\b(test\\s*cases?|tc)\\s*(only\\s+|just\\s+)?${numPattern}\\b`, 'i'),
-        // Pattern 6: "only N" anywhere (standalone)
-        new RegExp(`\\bonly\\s+${numPattern}\\b`, 'i'),
-        // Pattern 7: "just N" anywhere
-        new RegExp(`\\bjust\\s+${numPattern}\\b`, 'i'),
-      ];
-      
-      const hasExplicitCount = hasUserInstructions && countPatterns.some(p => p.test(instrText));
-      
-      // Extract the actual count number from the instruction
-      let extractedCount = null;
-      if (hasExplicitCount) {
-        // Find the first number (digit or word) in the instruction
-        const numMatch = instrText.match(new RegExp(`\\b${numPattern}\\b`, 'gi'));
-        if (numMatch) {
-          for (const m of numMatch) {
-            const asDigit = parseInt(m, 10);
-            if (!isNaN(asDigit) && asDigit > 0 && asDigit <= 200) { extractedCount = asDigit; break; }
-            const asWord = WORD_TO_NUM[m.toLowerCase()];
-            if (asWord) { extractedCount = asWord; break; }
-          }
-        }
-      }
-      
-      const continuation = hasExplicitCount
-        ? { type: 'none' }  // user specified exact count — no auto-continuation
-        : { type: 'table', minItems: 15, maxRounds: 3 };
 
       const r = await fetch(`${apiBase}/generate-plan`, {
         method: 'POST',
