@@ -152,6 +152,21 @@ export default function TestPlanGenerator({ connections, apiBase }) {
               <span className="material-symbols-outlined">cloud_upload</span>
               Push to Confluence
             </button>
+            {(ticketId || issueData || plan || context) && (
+              <button
+                onClick={() => {
+                  if (confirm('Clear all data? This will reset the ticket, context, and generated plan.')) {
+                    setTicketId(''); setIssueData(null); setPlan(''); setDownloadUrl(''); setMdDownloadUrl(''); setContext('');
+                    try { localStorage.removeItem(TP_STORAGE); } catch {}
+                  }
+                }}
+                disabled={!!loading}
+                className="w-full py-3 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white rounded-sm font-bold text-[0.875rem] flex items-center justify-center gap-2 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors active:scale-95 disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-lg">restart_alt</span>
+                Clear All
+              </button>
+            )}
           </div>
 
           {/* Export Options */}
