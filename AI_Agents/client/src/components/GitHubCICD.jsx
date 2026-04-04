@@ -21,7 +21,15 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
   const testResults = cicdState.testResults;
   const setTestResults = (v) => setCicdState(s => ({ ...s, testResults: typeof v === 'function' ? v(s.testResults) : v }));
 
-  /* ── Local UI state ── */
+  /* ── Lifted UI state for tab persistence ── */
+  const showReport = cicdState.showReport;
+  const setShowReport = (v) => setCicdState(s => ({ ...s, showReport: typeof v === 'function' ? v(s.showReport) : v }));
+  const reportView = cicdState.reportView;
+  const setReportView = (v) => setCicdState(s => ({ ...s, reportView: typeof v === 'function' ? v(s.reportView) : v }));
+  const reportFilter = cicdState.reportFilter;
+  const setReportFilter = (v) => setCicdState(s => ({ ...s, reportFilter: typeof v === 'function' ? v(s.reportFilter) : v }));
+
+  /* ── Local UI state (transient, OK to reset on tab switch) ── */
   const [selectedRepo, setSelectedRepo] = useState(connections.github?.selectedRepo || '');
   const [selectedBranch, setSelectedBranch] = useState(connections.github?.selectedBranch || '');
   const [branches, setBranches] = useState(connections.github?.branches || []);
@@ -30,9 +38,6 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [loadingReport, setLoadingReport] = useState(false);
-  const [showReport, setShowReport] = useState(false);
-  const [reportView, setReportView] = useState('dashboard');
-  const [reportFilter, setReportFilter] = useState('all');
   const pollingRef = useRef(null);
   const logContainerRef = useRef(null);
 

@@ -228,6 +228,21 @@ export default function TestScenarioGenerator({ connections, apiBase }) {
               <span className="material-symbols-outlined">cloud_upload</span>
               Upload to Zephyr
             </button>
+            {(ticketId || issueData || manualReq || scenarios || context) && (
+              <button
+                onClick={() => {
+                  if (confirm('Clear all data? This will reset the ticket, requirement, context, and generated scenarios.')) {
+                    setTicketId(''); setIssueData(null); setManualReq(''); setScenarios(''); setContext('');
+                    try { localStorage.removeItem(TS_STORAGE); } catch {}
+                  }
+                }}
+                disabled={!!loading}
+                className="w-full py-3 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white rounded-sm font-bold text-[0.875rem] flex items-center justify-center gap-2 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors active:scale-95 disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-lg">restart_alt</span>
+                Clear All
+              </button>
+            )}
           </div>
         </div>
 

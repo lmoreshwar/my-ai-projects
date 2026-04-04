@@ -45,6 +45,7 @@ function App() {
     workflows: [], selectedWorkflow: '', activeRun: null,
     jobs: [], artifacts: [], logLines: [], htmlReport: null,
     reportData: null, testResults: { passed: 0, failed: 0, skipped: 0, total: 0 },
+    showReport: false, reportView: 'dashboard', reportFilter: 'all',
   });
 
   // Review Test Cases
@@ -59,6 +60,7 @@ function App() {
       workflows: [], selectedWorkflow: '', activeRun: null,
       jobs: [], artifacts: [], logLines: [], htmlReport: null,
       reportData: null, testResults: { passed: 0, failed: 0, skipped: 0, total: 0 },
+      showReport: false, reportView: 'dashboard', reportFilter: 'all',
     });
     setReviewCoverage(null);
   };
