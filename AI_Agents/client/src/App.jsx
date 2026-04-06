@@ -177,7 +177,7 @@ function App() {
       case 'zephyr-dashboard':
         return <ZephyrDashboard connections={connections} />;
       case 'selenium-bdd':
-        return <SeleniumBDD connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} seleniumOutput={seleniumOutput} setSeleniumOutput={setSeleniumOutput} selectedGroups={seleniumSelectedGroups} setSelectedGroups={setSeleniumSelectedGroups} localState={seleniumLocalState} setLocalState={setSeleniumLocalState} />;
+        return <SeleniumBDD connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} seleniumOutput={seleniumOutput} setSeleniumOutput={setSeleniumOutput} selectedGroups={seleniumSelectedGroups} setSelectedGroups={setSeleniumSelectedGroups} />;
       case 'playwright-js':
         return <PlaywrightJS connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={bddFiles} setGeneratedFiles={setBddFiles} activeFileIdx={bddActiveIdx} setActiveFileIdx={setBddActiveIdx} selectedGroups={bddSelectedGroups} setSelectedGroups={setBddSelectedGroups} />;
       case 'playwright-pom':
