@@ -1,74 +1,168 @@
-import { useState } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
+import CustomSelect from './CustomSelect';
 
-const GHERKIN_SYSTEM_PROMPT = `# BDD + AUTOMATION SCRIPT GENERATION PROMPT
+const GHERKIN_SYSTEM_PROMPT = `# SELENIUM BDD AUTOMATION GENERATION PROMPT
 
-## Objective
-You are a **Senior QA Automation Engineer / QA Lead**.
-Your task is to generate **BDD (Gherkin) scenarios and executable automation scripts** based strictly on the provided input.
-
-## Input
-You will receive one or more of the following:
-- JIRA User Story / JIRA ID
-- Requirement Document
-- Test Plan
-- Existing Test Cases
+## Role
+You are a **Senior QA Automation Engineer** operating under STRICT anti-hallucination rules.
+Your task: Convert provided test cases into BDD Gherkin feature files AND Java step definition skeletons.
 
 ## Configuration
-- Automation Framework: Selenium
+- Automation Framework: Selenium WebDriver
 - Language: Java (Cucumber BDD)
-- BDD Required: Yes
+- BDD Syntax: Gherkin (.feature files)
 
-## CRITICAL OUTPUT FORMAT RULES
-- Output ONLY plain text code — NO HTML tags, NO CSS classes, NO syntax highlighting markup
-- Do NOT include patterns like: "text-[#...]">  or <span class="..."> or any HTML/CSS artifacts
-- Do NOT wrap code in HTML elements or include any Tailwind/CSS class names in the output
-- Output must be raw, executable .java/.feature code that can compile and run directly
-- The output should be copy-paste ready — no cleanup required by the user
+## STRICT ANTI-HALLUCINATION RULES (MANDATORY)
+1. ONLY use information explicitly present in the provided test case data.
+2. DO NOT invent product names, prices, URLs, page routes, or UI element details not in the input.
+3. DO NOT fabricate CSS selectors, XPaths, IDs, or class names. Use placeholder comments instead.
+4. DO NOT assume application behavior, navigation flows, or page structure not described in test steps.
+5. DO NOT add extra scenarios beyond what the test case specifies (no empty cart, no edge cases unless explicitly in input).
+6. If a URL is NOT specified, use: // TODO: [URL NOT SPECIFIED - Update with actual application URL]
+7. If a locator/selector is NOT determinable from test steps, use: // TODO: [LOCATOR NOT SPECIFIED - Update with actual selector]
+8. If test data (values, usernames, passwords) is NOT specified, use: // TODO: [TEST DATA NOT SPECIFIED]
+9. Map test steps exactly 1:1 — do NOT expand, compress, or reinterpret steps.
+10. Product names, quantities, prices MUST come from the test case data only. DO NOT substitute or invent.
 
-## Strict Rules (MANDATORY)
-- Do NOT assume functionality not present in input
-- Do NOT add extra features
-- Do NOT generate pseudo code
-- Do NOT leave incomplete steps
-- Generate runnable, production-ready code
-- Use real selectors (generic but valid)
-- Follow framework best practices
-- Keep scripts clean and modular
+## PROCESS
+Step 1: Extract ONLY verifiable facts from the test case (steps, preconditions, expected results).
+Step 2: Map each test step to a Gherkin Given/When/Then statement using the EXACT wording from test steps.
+Step 3: Create step definition skeletons with TODO markers for unknown selectors/URLs.
+Step 4: Self-check — remove any assumed/invented content.
 
-## Instructions
-1. Analyze the input carefully
-2. Identify key user flows
-3. Convert flows into:
-   - BDD Scenarios (Gherkin .feature files)
-   - Step Definition stubs (Selenium + Cucumber)
-4. Ensure:
-   - Positive scenarios
-   - Negative scenarios (only if applicable)
+## OUTPUT FORMAT (MANDATORY — use these EXACT delimiters)
+You MUST separate Feature file and Step Definitions using these exact markers:
 
-## Output Structure
+=== FILE: feature ===
+(Gherkin .feature file content here)
 
-### 1. Feature File (BDD - Gherkin)
-Follow standard Gherkin syntax: Feature, Scenario, Scenario Outline, Given/When/Then/And/But
-Use clear, business-readable language.
-Include Scenario Outlines with Examples where applicable.
-Add tags like @TC-ID, @smoke, @regression where appropriate.
-Cover: happy path, negative scenarios, edge cases, validation.
-If info is missing, note it as a comment: # [NOT SPECIFIED]
+=== FILE: steps ===
+(Java step definition class content here)
 
-### 2. Step Definitions (Selenium + Cucumber Java)
-Provide corresponding step definition methods for each Given/When/Then step.
-Use Selenium WebDriver API with Page Object pattern.
+## Feature File Rules
+- Use standard Gherkin: Feature, Scenario, Given/When/Then/And/But
+- Add tags from test case data: @TC_ID, and execution tags from the test case
+- Given steps = Pre-conditions from test case
+- When/And steps = Test Steps from test case (map each step exactly)
+- Then steps = Expected Results from test case (map each result exactly)
+- Use Scenario Outline with Examples ONLY if the test case itself provides tabular data
+- DO NOT create extra Scenarios beyond what is in the test case
+- If information is missing, add as Gherkin comment: # [NOT SPECIFIED IN TEST CASE]
 
-Return the .feature file content followed by the step definitions. Use proper code blocks.`;
+## Step Definition Rules
+- Create a Java class with Cucumber annotations (@Given, @When, @Then)
+- Use Selenium WebDriver API
+- For ALL locators: add // TODO: [LOCATOR NOT SPECIFIED] unless the test case describes the exact UI element
+- For ALL URLs: add // TODO: [URL NOT SPECIFIED]
+- For ALL test data: add // TODO: [TEST DATA NOT SPECIFIED] if not in the test case
+- Method bodies should contain the SKELETON structure (driver.findElement, click, sendKeys)
+  but with TODO comments for actual selectors
+- Include proper imports and class structure
+- DO NOT instantiate WebDriver in steps — use a shared hooks class pattern
+- DO NOT hardcode product prices, names, or any data not from the test case
 
-export default function SeleniumBDD({ connections, apiBase, generatedTestCases, seleniumOutput, setSeleniumOutput }) {
-  const [ticketId, setTicketId] = useState('');
-  const [manualReq, setManualReq] = useState('');
-  const [selectedImported, setSelectedImported] = useState('');
+Generate ONLY what the test case data supports. Nothing more.`;
+
+/* ═══════════════════════════════════════════════════════════════════════
+   UTILITY: Parse markdown table test cases from the generator output
+   ═══════════════════════════════════════════════════════════════════════ */
+function parseTestCasesFromMarkdown(raw) {
+  if (!raw) return [];
+  const lines = raw.split('\n').filter((l) => l.trim().startsWith('|'));
+  if (lines.length < 2) return [];
+  const headerCols = lines[0].split('|').map((c) => c.trim()).filter(Boolean);
+  const dataLines = lines.slice(2);
+  return dataLines.map((line) => {
+    const cols = line.split('|').map((c) => c.trim()).filter(Boolean);
+    const obj = {};
+    headerCols.forEach((h, i) => { obj[h] = cols[i] || ''; });
+    return obj;
+  }).filter((r) => r['SRL No.'] && /^TC[_-]/i.test(r['SRL No.']));
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   UTILITY: Group test cases by their Tags column
+   ═══════════════════════════════════════════════════════════════════════ */
+function groupByTag(testCases) {
+  const groups = {};
+  testCases.forEach((tc) => {
+    const tags = (tc['Tags'] || 'General').split(',').map((t) => t.trim()).filter(Boolean);
+    const primary = tags[0] || 'General';
+    const key = primary.toLowerCase().replace(/\s+/g, '-');
+    if (!groups[key]) groups[key] = { label: primary, cases: [] };
+    groups[key].cases.push(tc);
+  });
+  return groups;
+}
+
+export default function SeleniumBDD({ connections, apiBase, generatedTestCases, seleniumOutput, setSeleniumOutput, selectedGroups, setSelectedGroups, localState, setLocalState }) {
+  const [ticketId, setTicketId] = useState(localState?.ticketId || '');
+  const [manualReq, setManualReq] = useState(localState?.manualReq || '');
+  const [selectedImported, setSelectedImported] = useState(localState?.selectedImported || '');
   const gherkinOutput = seleniumOutput || '';
   const setGherkinOutput = setSeleniumOutput;
   const [busy, setBusy] = useState('');
-  const [issueData, setIssueData] = useState(null);
+  const [issueData, setIssueData] = useState(localState?.issueData || null);
+  const [activeTab, setActiveTab] = useState('feature'); // 'feature' | 'steps'
+
+  // ── Parse & filter automation-tagged test cases into groups ──
+  const allParsed = useMemo(() => parseTestCasesFromMarkdown(generatedTestCases), [generatedTestCases]);
+  const automationCases = useMemo(
+    () => allParsed.filter((tc) => (tc['Execution Tags'] || '').toLowerCase().includes('automation')),
+    [allParsed]
+  );
+  const grouped = useMemo(() => groupByTag(automationCases), [automationCases]);
+  const groupKeys = Object.keys(grouped);
+
+  // ── Toggle group selection ──
+  const toggleGroup = useCallback((key) => {
+    setSelectedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
+  const selectAll = () => setSelectedGroups(new Set(groupKeys));
+  const deselectAll = () => setSelectedGroups(new Set());
+
+  // ── Count selected test cases ──
+  const selectedCaseCount = useMemo(
+    () => [...selectedGroups].reduce((sum, k) => sum + (grouped[k]?.cases.length || 0), 0),
+    [selectedGroups, grouped]
+  );
+
+  /* ── Parse output into separate files ── */
+  const parsedFiles = (() => {
+    if (!gherkinOutput) return { feature: '', steps: '' };
+    // Try to parse via === FILE: feature === and === FILE: steps === markers
+    const featureMatch = gherkinOutput.match(/===\s*FILE:\s*feature\s*===\s*\n([\s\S]*?)(?=\n===\s*FILE:|$)/i);
+    const stepsMatch = gherkinOutput.match(/===\s*FILE:\s*steps\s*===\s*\n([\s\S]*?)(?=\n===\s*FILE:|$)/i);
+    if (featureMatch || stepsMatch) {
+      let feature = (featureMatch ? featureMatch[1] : '').trim();
+      let steps = (stepsMatch ? stepsMatch[1] : '').trim();
+      // Strip wrapping code fences
+      feature = feature.replace(/^```(?:gherkin)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+      steps = steps.replace(/^```(?:java)?\s*\n?/, '').replace(/\n?```\s*$/, '');
+      return { feature, steps };
+    }
+    // Fallback: split by ```java or ```gherkin markers
+    const gherkinBlock = gherkinOutput.match(/```gherkin\s*\n([\s\S]*?)```/);
+    const javaBlock = gherkinOutput.match(/```java\s*\n([\s\S]*?)```/);
+    if (gherkinBlock || javaBlock) {
+      return { feature: gherkinBlock ? gherkinBlock[1].trim() : '', steps: javaBlock ? javaBlock[1].trim() : '' };
+    }
+    // Last fallback: if output has 'import io.cucumber' or 'import org.openqa', split there
+    const importIdx = gherkinOutput.search(/\nimport\s+(io\.cucumber|org\.openqa)/);
+    if (importIdx > 0) {
+      return { feature: gherkinOutput.substring(0, importIdx).trim(), steps: gherkinOutput.substring(importIdx).trim() };
+    }
+    return { feature: gherkinOutput, steps: '' };
+  })();
+
+  /* ── Sync local state up to App.jsx for tab persistence ── */
+  useEffect(() => {
+    if (setLocalState) setLocalState({ ticketId, manualReq, selectedImported, issueData });
+  }, [ticketId, manualReq, selectedImported, issueData]);
 
   /* ── Parse generated test cases from Create Test Cases page ── */
   const getTestCaseOptions = () => {
@@ -117,8 +211,65 @@ export default function SeleniumBDD({ connections, apiBase, generatedTestCases, 
     setBusy('');
   };
 
-  /* ── Generate Gherkin via LLM ── */
+  /* ── Generate Gherkin via LLM (group-based) ── */
   const generateGherkin = async () => {
+    // If groups are available, use group-based generation
+    if (groupKeys.length > 0) {
+      if (selectedGroups.size === 0) return alert('Select at least one feature group');
+      if (connections.llm.status !== 'connected') return alert('Connect to LLM first in Connection Settings');
+      setBusy('generate');
+      try {
+        const header = '| SRL No. | Test Case Title | Description | Pre-conditions | Test Data | Test Steps | Expected Results | Test Case Type | Tags | Execution Tags |';
+        const sep = '|---|---|---|---|---|---|---|---|---|---|';
+        let allRows = [];
+        const groupNames = [];
+        for (const key of selectedGroups) {
+          const g = grouped[key];
+          if (!g) continue;
+          groupNames.push(g.label);
+          g.cases.forEach((tc) => {
+            allRows.push(
+              `| ${tc['SRL No.']} | ${tc['Test Case Title']} | ${tc['Description'] || ''} | ${tc['Pre-conditions'] || ''} | ${tc['Test Data'] || ''} | ${tc['Test Steps'] || ''} | ${tc['Expected Results'] || ''} | ${tc['Test Case Type'] || ''} | ${tc['Tags'] || ''} | ${tc['Execution Tags'] || ''} |`
+            );
+          });
+        }
+        const tcTable = [header, sep, ...allRows].join('\n');
+        const description = `Convert the following Automation-tagged test cases into Selenium BDD (Gherkin + Java Step Definitions) format.
+
+FEATURE GROUPS: ${groupNames.join(', ')}
+TOTAL TEST CASES: ${allRows.length}
+
+TEST CASE TABLE:
+${tcTable}
+
+IMPORTANT:
+- Group scenarios by feature tag (${groupNames.join(', ')})
+- Use the exact === FILE: feature === and === FILE: steps === delimiter format`;
+
+        const r = await fetch(`${apiBase}/generate-plan`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            issueData: {
+              product: 'Selenium BDD',
+              id: 'BATCH',
+              summary: `Selenium Cucumber for: ${groupNames.join(', ')}`,
+              description,
+              additional_context: GHERKIN_SYSTEM_PROMPT,
+            },
+            llm: connections.llm,
+            continuation: { type: 'code', maxRounds: 5 },
+          }),
+        });
+        if (!r.ok) throw new Error((await r.json()).detail || 'Generation failed');
+        const data = await r.json();
+        setGherkinOutput(data.plan);
+      } catch (e) { alert(e.message); }
+      setBusy('');
+      return;
+    }
+
+    // Fallback: legacy single-input generation
     const input = manualReq.trim();
     if (!input && !issueData && !selectedImported) return alert('Provide a requirement, fetch from JIRA, or select a test case');
     if (connections.llm.status !== 'connected') return alert('Connect to LLM first in Connection Settings');
@@ -151,19 +302,25 @@ export default function SeleniumBDD({ connections, apiBase, generatedTestCases, 
     setBusy('');
   };
 
-  /* ── Download .feature file ── */
-  const downloadFeature = () => {
-    if (!gherkinOutput) return;
-    const blob = new Blob([gherkinOutput], { type: 'text/plain' });
+  /* ── Download file based on active tab ── */
+  const downloadFile = () => {
+    const content = activeTab === 'feature' ? parsedFiles.feature : parsedFiles.steps;
+    if (!content) return;
+    const ext = activeTab === 'feature' ? '.feature' : '.java';
+    const name = activeTab === 'feature' ? `${issueData?.id || 'feature'}${ext}` : `${issueData?.id || 'Steps'}StepDefs${ext}`;
+    const blob = new Blob([content], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${issueData?.id || 'feature'}.feature`;
+    a.download = name;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  const copyOutput = () => { if (gherkinOutput) navigator.clipboard.writeText(gherkinOutput); };
+  const copyOutput = () => {
+    const content = activeTab === 'feature' ? parsedFiles.feature : parsedFiles.steps;
+    if (content) navigator.clipboard.writeText(content);
+  };
 
   /* ── Syntax highlight Gherkin ── */
   const highlightGherkin = (text) => {
@@ -180,6 +337,21 @@ export default function SeleniumBDD({ connections, apiBase, generatedTestCases, 
     });
   };
 
+  /* ── Syntax highlight Java ── */
+  const highlightJava = (text) => {
+    return text.split('\n').map((line, i) => {
+      let cls = 'text-on-surface-variant dark:text-slate-400';
+      const trimmed = line.trimStart();
+      if (/^(import|package)\b/.test(trimmed)) cls = 'text-secondary';
+      else if (/^(public|private|protected|class|void|static|final)\b/.test(trimmed)) cls = 'text-app-red font-bold';
+      else if (/^\s*@(Given|When|Then|And|But|Before|After)\b/.test(trimmed)) cls = 'text-app-red font-bold';
+      else if (/^\s*\/\/\s*TODO/.test(trimmed)) cls = 'text-amber-600 dark:text-amber-400 font-bold';
+      else if (/^\s*\/\//.test(trimmed)) cls = 'text-tertiary-container italic';
+      const highlighted = line.replace(/"([^"]*)"/g, '<span class="text-secondary">"$1"</span>');
+      return <div key={i} className={cls} dangerouslySetInnerHTML={{ __html: highlighted }} />;
+    });
+  };
+
   const hasInput = !!issueData || manualReq.trim().length > 0 || !!selectedImported;
   const tcOptions = getTestCaseOptions();
 
@@ -191,7 +363,19 @@ export default function SeleniumBDD({ connections, apiBase, generatedTestCases, 
           <span className="material-symbols-outlined text-sm">auto_awesome</span>
           AI-POWERED ARCHITECT
         </div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">Selenium BDD Generator</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">Selenium BDD Generator</h1>
+          {(gherkinOutput || ticketId || manualReq || issueData) && (
+            <button
+              onClick={() => { if (confirm('Clear all Selenium BDD data? This will reset inputs and generated output.')) { setTicketId(''); setManualReq(''); setSelectedImported(''); setIssueData(null); setGherkinOutput(''); } }}
+              disabled={!!busy}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white rounded-sm text-[0.8125rem] font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors active:scale-95 disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-base">restart_alt</span>
+              Clear All
+            </button>
+          )}
+        </div>
         <p className="text-on-surface-variant dark:text-slate-400 max-w-2xl font-medium leading-relaxed">
           Accelerate your quality engineering workflow by automatically generating Gherkin feature files from JIRA requirements or manual input.
         </p>
@@ -201,6 +385,97 @@ export default function SeleniumBDD({ connections, apiBase, generatedTestCases, 
         {/* ══════════════ Left Column: Inputs ══════════════ */}
         <div className="col-span-12 lg:col-span-7 space-y-6">
 
+          {/* ── Stats Bar (shown when test cases exist) ── */}
+          {groupKeys.length > 0 && (
+            <div className="grid grid-cols-3 gap-3">
+              <div className="bg-surface-container-low dark:bg-slate-900 rounded-xl p-4 text-center border border-outline-variant/10 dark:border-slate-800">
+                <div className="text-2xl font-black text-primary dark:text-app-red">{allParsed.length}</div>
+                <div className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Total TCs</div>
+              </div>
+              <div className="bg-surface-container-low dark:bg-slate-900 rounded-xl p-4 text-center border border-outline-variant/10 dark:border-slate-800">
+                <div className="text-2xl font-black text-green-600">{automationCases.length}</div>
+                <div className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Automation</div>
+              </div>
+              <div className="bg-surface-container-low dark:bg-slate-900 rounded-xl p-4 text-center border border-outline-variant/10 dark:border-slate-800">
+                <div className="text-2xl font-black text-secondary">{groupKeys.length}</div>
+                <div className="text-[10px] font-bold text-on-surface-variant uppercase tracking-wider">Groups</div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Feature Group Selection (shown when test cases exist) ── */}
+          {groupKeys.length > 0 && (
+            <section className="bg-white dark:bg-slate-900 rounded-xl border border-outline-variant/20 dark:border-slate-800 shadow-sm overflow-hidden">
+              <div className="p-4 border-b border-outline-variant/10 bg-surface-container-low dark:bg-slate-800/50 flex justify-between items-center">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-primary dark:text-app-red text-xl">category</span>
+                  <h3 className="font-bold text-on-surface dark:text-white text-sm">Feature Groups</h3>
+                  <span className="text-[10px] bg-primary/10 dark:bg-app-red/10 text-primary dark:text-app-red font-bold px-2 py-0.5 rounded-full">
+                    {selectedGroups.size}/{groupKeys.length}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={selectAll} className="text-[10px] font-bold text-secondary hover:underline uppercase">All</button>
+                  <button onClick={deselectAll} className="text-[10px] font-bold text-on-surface-variant hover:underline uppercase">None</button>
+                </div>
+              </div>
+              <div className="divide-y divide-outline-variant/10 dark:divide-slate-800 max-h-[300px] overflow-y-auto">
+                {groupKeys.map((key) => {
+                  const g = grouped[key];
+                  const selected = selectedGroups.has(key);
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => toggleGroup(key)}
+                      className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-all ${
+                        selected ? 'bg-primary/5 dark:bg-app-red/5 border-l-4 border-primary dark:border-app-red' : 'hover:bg-surface-container-highest dark:hover:bg-slate-800 border-l-4 border-transparent'
+                      }`}
+                    >
+                      <span className={`material-symbols-outlined text-lg ${selected ? 'text-primary dark:text-app-red' : 'text-on-surface-variant'}`}>
+                        {selected ? 'check_box' : 'check_box_outline_blank'}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm text-on-surface dark:text-white truncate">{g.label}</span>
+                          <span className="text-[10px] font-bold bg-primary/10 dark:bg-app-red/10 text-primary dark:text-app-red px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                            {g.cases.length} TC{g.cases.length > 1 ? 's' : ''}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {g.cases.map((c) => (
+                            <span key={c['SRL No.']} className="text-[10px] font-mono text-on-surface-variant bg-surface-container-highest dark:bg-slate-800 px-1.5 py-0.5 rounded">
+                              {c['SRL No.']}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* ── Summary + Generate Button (inside card) ── */}
+              <div className="p-4 border-t border-outline-variant/10 dark:border-slate-800 bg-surface-container-low dark:bg-slate-800/50 space-y-3">
+                {selectedGroups.size > 0 && (
+                  <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3">
+                    <p className="text-xs text-red-800 dark:text-red-300">
+                      <strong>{selectedCaseCount}</strong> test cases across <strong>{selectedGroups.size}</strong> groups selected
+                      → .feature + Step Definitions
+                    </p>
+                  </div>
+                )}
+                <button
+                  onClick={generateGherkin}
+                  disabled={busy === 'generate' || selectedGroups.size === 0}
+                  className="w-full py-3.5 bg-app-red text-white font-bold rounded-xl flex items-center justify-center gap-3 shadow-lg shadow-app-red/20 hover:bg-app-dark-red transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>bolt</span>
+                  {busy === 'generate' ? 'Generating...' : `Generate Cucumber Scripts (${selectedCaseCount} TCs)`}
+                </button>
+              </div>
+            </section>
+          )}
+
           {/* ── Card 1: Select Imported Test Cases ── */}
           <section className="bg-surface-container-low dark:bg-slate-900 rounded-xl p-6 border border-transparent shadow-sm">
             <h3 className="text-on-surface dark:text-white font-bold mb-4 flex items-center gap-2">
@@ -208,22 +483,16 @@ export default function SeleniumBDD({ connections, apiBase, generatedTestCases, 
               Select Imported Test Cases
             </h3>
             <div className="relative">
-              <select
-                className="w-full bg-surface-container-highest dark:bg-slate-800 border-b-2 border-app-red focus:ring-0 focus:border-app-dark-red px-4 py-3 rounded-t-md text-on-surface dark:text-white font-medium appearance-none cursor-pointer"
+              <CustomSelect
                 value={selectedImported}
-                onChange={(e) => handleImportedSelect(e.target.value)}
-              >
-                <option value="">Choose a previously imported test case...</option>
-                {tcOptions.map((tc) => (
-                  <option key={tc.id} value={`${tc.id}: ${tc.title}`}>
-                    {tc.id}: {tc.title}
-                  </option>
-                ))}
-              </select>
-              <div className="absolute inset-y-0 right-4 flex items-center pointer-events-none">
-                <span className="material-symbols-outlined text-on-surface-variant">expand_more</span>
-              </div>
-              <label className="absolute -top-2 left-2 px-1 bg-surface-container-low dark:bg-slate-900 text-[10px] uppercase tracking-widest text-app-red font-bold">
+                onChange={(val) => handleImportedSelect(val)}
+                placeholder="Choose a previously imported test case..."
+                options={tcOptions.map((tc) => ({
+                  value: `${tc.id}: ${tc.title}`,
+                  label: `${tc.id}: ${tc.title}`,
+                }))}
+              />
+              <label className="absolute -top-2 left-2 px-1 bg-surface-container-low dark:bg-slate-900 text-[10px] uppercase tracking-widest text-app-red font-bold z-[101]">
                 Existing Test Cases
               </label>
             </div>
@@ -301,7 +570,8 @@ export default function SeleniumBDD({ connections, apiBase, generatedTestCases, 
             </div>
           </section>
 
-          {/* ── Generate Button ── */}
+          {/* ── Generate Button (fallback: shown only when no groups available) ── */}
+          {groupKeys.length === 0 && (
           <div className="pt-4">
             <button
               onClick={generateGherkin}
@@ -309,55 +579,84 @@ export default function SeleniumBDD({ connections, apiBase, generatedTestCases, 
               className="w-full bg-gradient-to-r from-app-red to-app-dark-red text-white py-4 rounded-xl font-black text-lg shadow-lg hover:shadow-app-red/20 transition-all active:scale-[0.98] flex items-center justify-center gap-3 disabled:opacity-50"
             >
               <span className="material-symbols-outlined">auto_awesome</span>
-              {busy === 'generate' ? 'Generating...' : 'Generate Gherkin Feature File'}
+              {busy === 'generate' ? 'Generating...' : 'Generate Cucumber Scripts'}
             </button>
           </div>
+          )}
         </div>
 
-        {/* ══════════════ Right Column: Gherkin Preview ══════════════ */}
+        {/* ══════════════ Right Column: Tabbed Preview ══════════════ */}
         <div className="col-span-12 lg:col-span-5">
           <div className="sticky top-24 bg-surface-container-lowest dark:bg-slate-900 border border-outline-variant/10 dark:border-slate-800 rounded-xl shadow-xl overflow-hidden flex flex-col h-[calc(100vh-250px)] min-h-[500px]">
-            {/* Preview Header */}
-            <div className="bg-surface-container-highest dark:bg-slate-800 px-4 py-3 flex justify-between items-center border-b border-outline-variant/20">
-              <div className="flex items-center gap-2">
+            {/* Tab Header */}
+            <div className="bg-surface-container-highest dark:bg-slate-800 border-b border-outline-variant/20">
+              <div className="flex items-center justify-between px-4 py-2">
                 <div className="flex gap-1.5 mr-4">
                   <span className="w-3 h-3 rounded-full bg-red-400" />
                   <span className="w-3 h-3 rounded-full bg-yellow-400" />
                   <span className="w-3 h-3 rounded-full bg-green-400" />
                 </div>
-                <span className="text-xs font-bold text-tertiary-container dark:text-slate-400 uppercase tracking-widest">Gherkin Preview</span>
+                <button onClick={copyOutput} className="text-secondary hover:text-app-red transition-colors" title="Copy current tab">
+                  <span className="material-symbols-outlined text-lg">content_copy</span>
+                </button>
               </div>
-              <button onClick={copyOutput} className="text-secondary hover:text-app-red transition-colors" title="Copy">
-                <span className="material-symbols-outlined text-lg">content_copy</span>
-              </button>
+              {/* Tabs */}
+              <div className="flex border-t border-outline-variant/10">
+                <button
+                  onClick={() => setActiveTab('feature')}
+                  className={`flex-1 py-2.5 text-xs font-bold uppercase tracking-widest flex items-center justify-center gap-1.5 transition-all border-b-2 ${activeTab === 'feature' ? 'border-app-red text-app-red bg-surface-container-lowest dark:bg-slate-900' : 'border-transparent text-tertiary-container hover:text-on-surface dark:text-slate-500'}`}
+                >
+                  <span className="material-symbols-outlined text-sm">description</span>
+                  Feature File
+                  {parsedFiles.feature && <span className="w-1.5 h-1.5 rounded-full bg-green-500 ml-1" />}
+                </button>
+                <button
+                  onClick={() => setActiveTab('steps')}
+                  className={`flex-1 py-2.5 text-xs font-bold uppercase tracking-widest flex items-center justify-center gap-1.5 transition-all border-b-2 ${activeTab === 'steps' ? 'border-app-red text-app-red bg-surface-container-lowest dark:bg-slate-900' : 'border-transparent text-tertiary-container hover:text-on-surface dark:text-slate-500'}`}
+                >
+                  <span className="material-symbols-outlined text-sm">code</span>
+                  Step Definitions
+                  {parsedFiles.steps && <span className="w-1.5 h-1.5 rounded-full bg-green-500 ml-1" />}
+                </button>
+              </div>
             </div>
 
-            {/* Preview Content */}
+            {/* Tab Content */}
             <div className="flex-1 p-6 overflow-auto bg-[#fafafa] dark:bg-slate-950 font-mono text-sm leading-relaxed">
               {busy === 'generate' ? (
                 <div className="flex flex-col items-center justify-center h-full gap-3 text-secondary">
                   <div className="w-8 h-8 border-3 border-app-red/30 border-t-app-red rounded-full animate-spin" />
-                  <span className="text-xs font-semibold">Generating Gherkin...</span>
+                  <span className="text-xs font-semibold">Generating BDD scripts...</span>
                 </div>
-              ) : gherkinOutput ? (
-                <pre className="whitespace-pre-wrap">{highlightGherkin(gherkinOutput)}</pre>
+              ) : activeTab === 'feature' ? (
+                parsedFiles.feature ? (
+                  <pre className="whitespace-pre-wrap">{highlightGherkin(parsedFiles.feature)}</pre>
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-full gap-2 text-secondary/50">
+                    <span className="material-symbols-outlined text-4xl">description</span>
+                    <p className="text-xs font-medium">Gherkin .feature file will appear here</p>
+                  </div>
+                )
               ) : (
-                <div className="flex flex-col items-center justify-center h-full gap-2 text-secondary/50">
-                  <span className="material-symbols-outlined text-4xl">code</span>
-                  <p className="text-xs font-medium">Gherkin output will appear here</p>
-                </div>
+                parsedFiles.steps ? (
+                  <pre className="whitespace-pre-wrap">{highlightJava(parsedFiles.steps)}</pre>
+                ) : (
+                  <div className="flex flex-col items-center justify-center h-full gap-2 text-secondary/50">
+                    <span className="material-symbols-outlined text-4xl">code</span>
+                    <p className="text-xs font-medium">Java step definitions will appear here</p>
+                  </div>
+                )
               )}
             </div>
 
             {/* Preview Footer */}
             <div className="bg-surface-container-high dark:bg-slate-800 p-4 flex justify-between items-center border-t border-outline-variant/20">
-              <span className="text-[10px] text-tertiary dark:text-slate-500 font-bold uppercase tracking-widest">v2.4 Engine Active</span>
+              <span className="text-[10px] text-tertiary dark:text-slate-500 font-bold uppercase tracking-widest">
+                {activeTab === 'feature' ? '.feature' : '.java'} — Selenium BDD Engine
+              </span>
               <div className="flex gap-2">
-                <button onClick={downloadFeature} disabled={!gherkinOutput} className="px-3 py-1.5 bg-surface-container-lowest dark:bg-slate-700 text-on-surface dark:text-white border border-outline-variant/30 dark:border-slate-600 rounded text-xs font-bold hover:bg-surface-variant transition-colors disabled:opacity-40">
-                  Download .feature
-                </button>
-                <button disabled={!gherkinOutput} className="px-3 py-1.5 bg-secondary text-white rounded text-xs font-bold hover:bg-on-secondary-container transition-colors disabled:opacity-40" onClick={() => alert('Export to Selenium runner — coming soon!')}>
-                  Export to Selenium
+                <button onClick={downloadFile} disabled={!(activeTab === 'feature' ? parsedFiles.feature : parsedFiles.steps)} className="px-3 py-1.5 bg-surface-container-lowest dark:bg-slate-700 text-on-surface dark:text-white border border-outline-variant/30 dark:border-slate-600 rounded text-xs font-bold hover:bg-surface-variant transition-colors disabled:opacity-40">
+                  Download {activeTab === 'feature' ? '.feature' : '.java'}
                 </button>
               </div>
             </div>

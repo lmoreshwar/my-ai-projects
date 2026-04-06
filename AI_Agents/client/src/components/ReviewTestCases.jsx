@@ -307,13 +307,13 @@ Return ONLY valid JSON:
 - Do NOT hallucinate gaps for features without documented acceptance criteria
 - Return ONLY the JSON object`;
 
-export default function ReviewTestCases({ connections, apiBase, generatedTestCases, onNavigate, reviewCoverage, setReviewCoverage }) {
+export default function ReviewTestCases({ connections, apiBase, generatedTestCases, onNavigate, reviewCoverage, setReviewCoverage, localState, setLocalState }) {
   /* ── State ── */
   const [testCases, setTestCases] = useState('');
   const [parsedCases, setParsedCases] = useState([]);
-  const [ticketId, setTicketId] = useState('');
-  const [manualReq, setManualReq] = useState('');
-  const [issueData, setIssueData] = useState(null);
+  const [ticketId, setTicketId] = useState(localState?.ticketId || '');
+  const [manualReq, setManualReq] = useState(localState?.manualReq || '');
+  const [issueData, setIssueData] = useState(localState?.issueData || null);
   const [fetchingJira, setFetchingJira] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const coverage = reviewCoverage;
@@ -330,6 +330,11 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
 
   // Determine which input method is active (for mutual exclusion)
   const activeInputMethod = ticketId.trim() || issueData ? 'jira' : manualReq.trim() ? 'upload' : null;
+
+  /* ── Sync local state up to App.jsx for tab persistence ── */
+  useEffect(() => {
+    if (setLocalState) setLocalState({ ticketId, manualReq, issueData });
+  }, [ticketId, manualReq, issueData]);
 
   /* Auto-load test cases */
   useEffect(() => {

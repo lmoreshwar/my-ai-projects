@@ -5,8 +5,9 @@ import { useState, useMemo, useCallback } from 'react';
    ═══════════════════════════════════════════════════════════════════════ */
 const POM_PROMPT = `# PLAYWRIGHT PAGE OBJECT MODEL GENERATION PROMPT
 
-## Objective
+## Role
 You are a Senior QA Automation Architect specializing in Playwright with the Page Object Model (POM) design pattern.
+You operate under STRICT anti-hallucination rules.
 Convert the provided structured test cases into executable Playwright scripts using the POM pattern.
 Generate BOTH JavaScript (.js) AND TypeScript (.ts) versions of every file.
 
@@ -21,23 +22,26 @@ Generate BOTH JavaScript (.js) AND TypeScript (.ts) versions of every file.
 - Do NOT include patterns like: "text-[#...]">  or <span class="..."> or any HTML/CSS artifacts
 - Do NOT wrap code in HTML elements or include any Tailwind/CSS class names in the output
 - Output must be raw, executable .js/.ts code that can run directly with npx playwright test
-- If you see examples with syntax highlighting in your training, STRIP all HTML/CSS when generating
 
-## STRICT ANTI-HALLUCINATION RULES
-- Do NOT invent URLs, endpoints, or page routes not present in the test case data
-- Do NOT fabricate CSS selectors or XPaths — use role-based or text-based locators
-- Do NOT assume application behavior not described in test steps
-- Do NOT generate pseudo-code or placeholder functions
-- Do NOT add extra test scenarios beyond what is provided
-- Do NOT skip ANY provided test case
-- If a URL is NOT specified, use: // TODO: [URL NOT SPECIFIED]
-- If a selector is NOT clear, use page.getByRole() or page.getByText() with // TODO: Verify selector
-- If test data is missing, add: // TODO: [TEST DATA NOT SPECIFIED]
-- Every test case MUST map 1:1 to a test() block in a spec file
+## STRICT ANTI-HALLUCINATION RULES (MANDATORY)
+1. ONLY use information explicitly present in the provided test case data.
+2. DO NOT invent URLs, endpoints, page routes, product names, prices, or user data not in the test case.
+3. DO NOT fabricate CSS selectors or XPaths — use Playwright role-based/text-based locators.
+4. DO NOT assume application behavior, navigation flows, or page structure not in test steps.
+5. DO NOT add extra test scenarios beyond what the test case specifies.
+6. DO NOT skip ANY provided test case.
+7. If a URL is NOT specified, use: // TODO: [URL NOT SPECIFIED - Update with actual application URL]
+8. If a selector/locator is NOT determinable, use: this.page.getByRole('generic') // TODO: [LOCATOR NOT SPECIFIED - Update with actual locator]
+9. If test data is NOT specified, use: // TODO: [TEST DATA NOT SPECIFIED]
+10. Map test steps exactly 1:1 — do NOT expand, compress, or reinterpret.
+11. Every test case MUST map 1:1 to a test() block in a spec file.
+12. Page Object locators should use descriptive names from the test step wording.
+13. If the UI element type is mentioned (e.g., "button", "input field"), use it for getByRole.
+    If not mentioned, use // TODO: [ELEMENT TYPE NOT SPECIFIED].
 
 ## Page Object Model Conventions
 - Each feature/page gets its own Page Object class
-- Page Objects encapsulate locators and actions (no assertions in PO)
+- Page Objects encapsulate locators and actions (NO assertions in PO — those go in spec files)
 - Spec files import Page Objects and contain test logic + assertions
 - Use constructor(page) pattern
 - Locators defined as class properties using this.page.getByRole(), etc.
@@ -49,12 +53,11 @@ Generate BOTH JavaScript (.js) AND TypeScript (.ts) versions of every file.
 class LoginPage {
   constructor(page) {
     this.page = page;
-    this.emailInput = page.getByLabel('Email');
-    this.passwordInput = page.getByLabel('Password');
+    this.emailInput = page.getByLabel('Email'); // TODO: [LOCATOR - Verify label text matches actual UI]
+    this.passwordInput = page.getByLabel('Password'); // TODO: [LOCATOR - Verify label text matches actual UI]
     this.loginButton = page.getByRole('button', { name: 'Login' });
-    this.errorMessage = page.getByRole('alert');
   }
-  async navigate() { await this.page.goto('/login'); }
+  async navigate() { await this.page.goto('/login'); } // TODO: [URL - Update with actual route]
   async login(email, password) {
     await this.emailInput.fill(email);
     await this.passwordInput.fill(password);
@@ -73,15 +76,13 @@ export class LoginPage {
   readonly emailInput: Locator;
   readonly passwordInput: Locator;
   readonly loginButton: Locator;
-  readonly errorMessage: Locator;
   constructor(page: Page) {
     this.page = page;
-    this.emailInput = page.getByLabel('Email');
-    this.passwordInput = page.getByLabel('Password');
+    this.emailInput = page.getByLabel('Email'); // TODO: [LOCATOR - Verify label text matches actual UI]
+    this.passwordInput = page.getByLabel('Password'); // TODO: [LOCATOR - Verify label text matches actual UI]
     this.loginButton = page.getByRole('button', { name: 'Login' });
-    this.errorMessage = page.getByRole('alert');
   }
-  async navigate(): Promise<void> { await this.page.goto('/login'); }
+  async navigate(): Promise<void> { await this.page.goto('/login'); } // TODO: [URL - Update with actual route]
   async login(email: string, password: string): Promise<void> {
     await this.emailInput.fill(email);
     await this.passwordInput.fill(password);
@@ -116,16 +117,16 @@ The config MUST include:
 - baseURL: '// TODO: [URL NOT SPECIFIED]'
 - projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }]
 - reporter: [['html', { open: 'never' }], ['list']]
-- use.screenshot: 'on' (capture screenshots for every test)
-- use.video: 'retain-on-failure' (record video but only keep for failed tests)
-- use.trace: 'retain-on-failure' (capture trace but only keep for failed tests)
+- use.screenshot: 'on'
+- use.video: 'retain-on-failure'
+- use.trace: 'retain-on-failure'
 - outputDir: 'test-results'
 - retries: 1
 
 ## Mapping Rules
 - SRL No → test name prefix
 - Pre-conditions → beforeEach / Page Object navigate()
-- Test Steps → Page Object method calls in sequence
+- Test Steps → Page Object method calls in sequence (EXACT wording from test case)
 - Expected Results → expect() assertions in spec files (NOT in Page Objects)
 - Tags → test.describe() grouping
 - Test Case Type → @tag annotations
@@ -135,6 +136,14 @@ The config MUST include:
 - Each Page Object method should do ONE logical action
 - Use descriptive method names that match the test step language
 - Generate COMPLETE, runnable files for BOTH JS and TS — no truncation
+
+## SELF-CHECK BEFORE OUTPUT
+Before returning, verify:
+- No URLs were invented (must come from test data or use TODO)
+- No locators were fabricated (must use role/text-based or TODO)
+- No extra scenarios were added beyond the provided test cases
+- No product names/prices/data were assumed
+- Every TODO is properly marked
 
 Generate complete, runnable files. Do not truncate or summarize.`;
 
@@ -521,9 +530,20 @@ IMPORTANT:
         <span className="text-secondary font-bold text-xs tracking-widest uppercase block font-label">
           Automation Conversion Engine
         </span>
-        <h1 className="text-3xl lg:text-4xl font-black text-app-red tracking-tight mb-2">
-          Playwright JS/TS + POM Architect
-        </h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-3xl lg:text-4xl font-black text-app-red tracking-tight mb-2">
+            Playwright JS/TS + POM Architect
+          </h1>
+          {(generatedFiles.length > 0 || selectedGroups.size > 0) && (
+            <button
+              onClick={() => { if (confirm('Clear all Playwright POM data? This will reset generated files, selections, and filter.')) { setGeneratedFiles([]); setActiveFileIdx(0); setSelectedGroups(new Set()); setLangFilter('all'); } }}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white rounded-sm text-[0.8125rem] font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors active:scale-95"
+            >
+              <span className="material-symbols-outlined text-base">restart_alt</span>
+              Clear All
+            </button>
+          )}
+        </div>
         <p className="text-on-surface-variant max-w-3xl font-medium leading-relaxed">
           Auto-filter <strong>Automation</strong>-tagged test cases, group by feature, and generate
           production-ready <strong>Playwright Page Object Model</strong> scripts in both <strong>JavaScript</strong> and <strong>TypeScript</strong>,
@@ -598,12 +618,20 @@ IMPORTANT:
                         {selected ? 'check_box' : 'check_box_outline_blank'}
                       </span>
                       <div className="flex-1 min-w-0">
-                        <div className="font-bold text-sm text-on-surface truncate">{g.label}</div>
-                        <div className="text-[10px] text-on-surface-variant">{g.cases.length} test case{g.cases.length > 1 ? 's' : ''}</div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm text-on-surface truncate">{g.label}</span>
+                          <span className="text-[10px] font-bold bg-app-red/10 text-app-red px-1.5 py-0.5 rounded-full whitespace-nowrap">
+                            {g.cases.length} TC{g.cases.length > 1 ? 's' : ''}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {g.cases.map((c) => (
+                            <span key={c['SRL No.']} className="text-[10px] font-mono text-on-surface-variant bg-surface-container-highest px-1.5 py-0.5 rounded">
+                              {c['SRL No.']}
+                            </span>
+                          ))}
+                        </div>
                       </div>
-                      <span className="text-xs font-mono text-on-surface-variant bg-surface-container-highest px-2 py-0.5 rounded">
-                        {g.cases.map((c) => c['SRL No.']).join(', ')}
-                      </span>
                     </button>
                   );
                 })}
@@ -625,7 +653,7 @@ IMPORTANT:
                   className="w-full py-3.5 bg-app-red text-white font-bold rounded-xl flex items-center justify-center gap-3 shadow-lg shadow-app-red/20 hover:bg-app-dark-red transition-all active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>bolt</span>
-                  {busy === 'generate' ? 'Generating POM...' : `Generate POM (${selectedCaseCount} TCs)`}
+                  {busy === 'generate' ? 'Generating...' : `Generate Page Object Scripts (${selectedCaseCount} TCs)`}
                 </button>
                 {genProgress && (
                   <p className="text-xs text-on-surface-variant italic text-center">{genProgress}</p>
@@ -750,7 +778,7 @@ IMPORTANT:
                 ) : (
                   <div className="flex flex-col items-center justify-center h-full gap-3 text-white/20">
                     <span className="material-symbols-outlined text-6xl">account_tree</span>
-                    <p className="text-xs font-medium">Select feature groups and generate to see POM output</p>
+                    <p className="text-xs font-medium">Select feature groups and generate to see Page Object scripts</p>
                     <div className="flex gap-4 mt-4 text-[10px] text-white/15">
                       <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-400/30" /> .js Page Objects</div>
                       <div className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-400/30" /> .ts Page Objects</div>

@@ -9,9 +9,9 @@ const navItems = [
 ];
 
 const automationChildren = [
-  { id: 'selenium-bdd', icon: 'terminal', label: 'Selenium BDD' },
-  { id: 'playwright-js', icon: 'code', label: 'PW TS + BDD' },
-  { id: 'playwright-pom', icon: 'account_tree', label: 'PW JS/TS + POM' },
+  { id: 'selenium-bdd', icon: 'terminal', label: 'Selenium · Cucumber' },
+  { id: 'playwright-js', icon: 'code', label: 'Playwright · BDD' },
+  { id: 'playwright-pom', icon: 'account_tree', label: 'Playwright · Page Objects' },
 ];
 
 const bottomItems = [

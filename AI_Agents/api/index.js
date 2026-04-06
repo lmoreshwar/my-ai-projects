@@ -256,24 +256,59 @@ SUMMARY: ${reqData.issueData.summary || 'N/A'}
 REQUIREMENT / INPUT:
 ${reqData.issueData.description || 'N/A'}`;
         } else {
-            // Default: Test Plan / Test Cases / Review generation
-            systemPrompt = "You are an expert QA Strategic Lead. Generate a professional and comprehensive Test Plan.";
-            userPrompt = `Generate a detailed Test Plan based on the following Jira requirement:
+            // Default: Test Plan generation with STRICT anti-hallucination rules
+            systemPrompt = `You are an expert QA Strategic Lead operating under STRICT anti-hallucination rules.
 
+ANTI-HALLUCINATION RULES (MANDATORY):
+1. You may ONLY use information explicitly provided in the JIRA ticket data or user input below.
+2. DO NOT invent features, APIs, error codes, UI elements, system behavior, or test data.
+3. DO NOT assume default or "typical" system behavior that is not described in the input.
+4. If a field is missing, empty, or marked "N/A", you MUST acknowledge it as "Insufficient information" — do NOT fabricate content for it.
+5. Every test scenario, step, and expected result MUST be directly traceable to the provided input.
+6. If information is insufficient to create a section, write: "⚠ Insufficient information — this section cannot be completed without additional details."
+7. Output must be deterministic and repeatable.
+
+PROCESS:
+Step 1: Extract verifiable facts from the input.
+Step 2: Identify and list missing or unknown information.
+Step 3: Generate the test plan ONLY from Step 1 facts.
+Step 4: Perform a self-check — remove any hallucinated or assumed content.
+
+Generate a professional and comprehensive Test Plan.`;
+
+            // Build fact inventory for the prompt
+            const descriptionText = reqData.issueData.description && reqData.issueData.description.trim().length > 5
+                ? reqData.issueData.description
+                : '⚠ NOT PROVIDED';
+            const summaryText = reqData.issueData.summary && reqData.issueData.summary.trim().length > 3
+                ? reqData.issueData.summary
+                : '⚠ NOT PROVIDED';
+            const additionalCtx = reqData.issueData.additional_context && reqData.issueData.additional_context.trim().length > 0
+                ? reqData.issueData.additional_context
+                : 'None';
+            const isManual = reqData.issueData.inputMode === 'manual';
+
+            userPrompt = `Generate a detailed Test Plan based on the following ${isManual ? 'manually provided requirement' : 'Jira requirement'}:
+
+${isManual ? 'SOURCE: Manual User Input' : `JIRA ID: ${reqData.issueData.id || 'N/A'}`}
 PRODUCT: ${reqData.issueData.product || 'Unknown Product'}
-JIRA ID: ${reqData.issueData.id || 'N/A'}
-SUMMARY: ${reqData.issueData.summary || 'N/A'}
-DESCRIPTION: ${reqData.issueData.description || 'N/A'}
-ADDITIONAL CONTEXT: ${reqData.issueData.additional_context || 'None'}
+SUMMARY: ${summaryText}
+DESCRIPTION: ${descriptionText}
+ADDITIONAL CONTEXT: ${additionalCtx}
+
+IMPORTANT: Before generating, list the "Verified Facts" and "Missing Information" at the top.
 
 Please structure the output as follows:
-1. INTRODUCTION & OBJECTIVES
-2. SCOPE (In-scope and Out-of-scope)
-3. TEST STRATEGY (Types of testing, Environment, Tools)
-4. TEST SCENARIOS (High-level scenarios mapping to requirements)
-5. RISKS & ASSUMPTIONS
+## VERIFIED FACTS (from input)
+## MISSING INFORMATION (fields not provided)
+## 1. INTRODUCTION & OBJECTIVES
+## 2. SCOPE (In-scope and Out-of-scope)
+## 3. TEST STRATEGY (Types of testing, Environment, Tools)
+## 4. TEST SCENARIOS (High-level scenarios mapping ONLY to provided requirements)
+## 5. RISKS & ASSUMPTIONS
 
-Use professional tone. Do not use markdown formatting in the final text (just plain text or bullet points) as it will be inserted into a Word document.`;
+For any section where input data is insufficient, explicitly state: "⚠ Insufficient information to determine."
+Do NOT fabricate test scenarios for features not mentioned in the input.`;
         }
 
         console.log(`[generate-plan] Product: "${reqData.issueData.product}", Using ${isAutomation ? 'automation' : 'default'} prompt`);

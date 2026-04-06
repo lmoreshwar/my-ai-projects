@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
+import CustomSelect from './CustomSelect';
 import ReactMarkdown from 'react-markdown';
 import * as XLSX from 'xlsx';
 
@@ -926,13 +927,12 @@ Then the full test case table.`;
                                   </td>
                                   <td className="px-4 py-4 text-center">
                                     {isEditing ? (
-                                      <select
-                                        className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded px-2 py-1 text-[11px] font-bold focus:ring-2 focus:ring-app-red/40"
+                                      <CustomSelect
                                         value={editRow.type}
-                                        onChange={(e) => setEditRow(p => ({ ...p, type: e.target.value }))}
-                                      >
-                                        {CASE_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-                                      </select>
+                                        onChange={(val) => setEditRow(p => ({ ...p, type: val }))}
+                                        options={CASE_TYPES}
+                                        size="sm"
+                                      />
                                     ) : (
                                       <span className={`px-2 py-1 text-[10px] font-bold rounded uppercase ${getTypeBadge(row.type)}`}>{row.type}</span>
                                     )}
@@ -973,13 +973,12 @@ Then the full test case table.`;
                                   </td>
                                   <td className="px-4 py-4 text-center">
                                     {isEditing ? (
-                                      <select
-                                        className="bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded px-2 py-1 text-[11px] font-bold focus:ring-2 focus:ring-app-red/40"
+                                      <CustomSelect
                                         value={editRow.priority}
-                                        onChange={(e) => setEditRow(p => ({ ...p, priority: e.target.value }))}
-                                      >
-                                        {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
-                                      </select>
+                                        onChange={(val) => setEditRow(p => ({ ...p, priority: val }))}
+                                        options={PRIORITIES}
+                                        size="sm"
+                                      />
                                     ) : (
                                       <span className={`px-2 py-1 text-[10px] font-bold rounded uppercase ${getPriorityBadge(row.priority)}`}>{row.priority}</span>
                                     )}

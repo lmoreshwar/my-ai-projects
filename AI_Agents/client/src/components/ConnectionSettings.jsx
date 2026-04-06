@@ -1,13 +1,21 @@
 import { useState, useEffect } from 'react';
+import CustomSelect from './CustomSelect';
 
 export default function ConnectionSettings({ connections, setConnections, apiBase, onResetGenerated }) {
   const [testing, setTesting] = useState({ jira: false, llm: false, zephyr: false, github: false });
   const [fetchingBranches, setFetchingBranches] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
 
+  const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
   const saveConnection = (section) => {
-    // Connections are auto-persisted to localStorage via App.jsx useEffect,
-    // but we trigger a manual save + show confirmation.
+    // Only persist credentials on localhost — deployed Render app stays clean
+    if (!isLocal) {
+      const names = { jira: 'JIRA', llm: 'LLM', zephyr: 'Zephyr', github: 'GitHub' };
+      setSavedMsg(`${names[section]} credentials applied for this session (not saved on deployed app)`);
+      setTimeout(() => setSavedMsg(''), 4000);
+      return;
+    }
     const STORAGE_KEY = 'ai_test_agent_connections';
     try {
       const existing = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
@@ -34,7 +42,7 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
       existing[section] = { ...existing[section], ...sectionData };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
       const names = { jira: 'JIRA', llm: 'LLM', zephyr: 'Zephyr', github: 'GitHub' };
-      setSavedMsg(`${names[section]} connection saved successfully!`);
+      setSavedMsg(`${names[section]} connection saved locally! Will persist across refreshes.`);
       setTimeout(() => setSavedMsg(''), 3000);
     } catch {
       setSavedMsg('Failed to save connection');
@@ -300,16 +308,18 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
               <label className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500 ml-1">
                 LLM PROVIDER
               </label>
-              <select
-                className="w-full h-12 px-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded focus:border-app-red focus:ring-1 focus:ring-app-red transition-all text-sm text-on-surface dark:text-white appearance-none"
+              <CustomSelect
                 value={connections.llm.platform}
-                onChange={(e) => updateConn('llm', 'platform', e.target.value)}
-              >
-                <option value="groq">Groq</option>
-                <option value="ollama">Ollama (Local)</option>
-                <option value="grok">Grok (xAI)</option>
-                <option value="gemini">Gemini</option>
-              </select>
+                onChange={(val) => updateConn('llm', 'platform', val)}
+                options={[
+                  { value: 'groq', label: 'Groq' },
+                  { value: 'ollama', label: 'Ollama (Local)' },
+                  { value: 'grok', label: 'Grok (xAI)' },
+                  { value: 'gemini', label: 'Gemini' },
+                ]}
+                placeholder="Select LLM Provider"
+                className="w-full"
+              />
             </div>
             <div className="space-y-2">
               <label className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500 ml-1">

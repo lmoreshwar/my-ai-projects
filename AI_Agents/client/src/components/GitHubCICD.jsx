@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import CustomSelect from './CustomSelect';
 
 export default function GitHubCICD({ connections, apiBase, cicdState, setCicdState }) {
   /* ── Lifted state from App.jsx for persistence ── */
@@ -341,7 +342,19 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
     <div className="max-w-7xl mx-auto px-6 pt-8 pb-16">
       {/* Header */}
       <div className="mb-10">
-        <h1 className="text-4xl font-black tracking-tight text-app-red mb-2">GitHub CICD Dashboard</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-4xl font-black tracking-tight text-app-red mb-2">GitHub CICD Dashboard</h1>
+          {(cicdState.activeRun || cicdState.jobs.length > 0 || cicdState.reportData || cicdState.logLines.length > 0) && (
+            <button
+              onClick={() => { if (confirm('Clear all CI/CD data? This will reset run results, jobs, logs, report, and artifacts.')) { setCicdState(s => ({ ...s, activeRun: null, jobs: [], artifacts: [], logLines: [], htmlReport: null, reportData: null, testResults: { passed: 0, failed: 0, skipped: 0, total: 0 }, showReport: false })); } }}
+              disabled={polling}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white rounded-sm text-[0.8125rem] font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors active:scale-95 disabled:opacity-50"
+            >
+              <span className="material-symbols-outlined text-base">restart_alt</span>
+              Clear All
+            </button>
+          )}
+        </div>
         <p className="text-on-surface-variant dark:text-slate-400 font-medium italic opacity-80">
           Orchestrate enterprise-grade automation pipelines with precision.
         </p>
@@ -389,56 +402,41 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
               {/* Repository */}
               <div>
                 <label className="block text-xs font-bold text-secondary dark:text-slate-400 mb-2 uppercase tracking-wide">Select Repository</label>
-                <div className="relative">
-                  <select
+                <CustomSelect
                     value={selectedRepo}
-                    onChange={(e) => { setSelectedRepo(e.target.value); setSelectedBranch(''); setWorkflows([]); setSelectedWorkflow(''); }}
+                    onChange={(val) => { setSelectedRepo(val); setSelectedBranch(''); setWorkflows([]); setSelectedWorkflow(''); }}
                     disabled={!isConnected}
-                    className="w-full appearance-none bg-surface-container-highest dark:bg-slate-800 border-b-2 border-app-red border-t-0 border-x-0 rounded-none px-4 py-3 focus:ring-0 focus:border-app-dark-red font-medium text-on-surface dark:text-white transition-all disabled:opacity-50"
-                  >
-                    <option value="">— Select Repository —</option>
-                    {repos.map(r => {
+                    placeholder="— Select Repository —"
+                    options={repos.map(r => {
                       const name = typeof r === 'string' ? r : r.name;
                       const label = typeof r === 'string' ? r : `${r.name} (${r.visibility})`;
-                      return <option key={name} value={name}>{label}</option>;
+                      return { value: name, label };
                     })}
-                  </select>
-                  <span className="material-symbols-outlined absolute right-3 top-3 pointer-events-none text-outline">expand_more</span>
-                </div>
+                  />
               </div>
 
               {/* Branch */}
               <div>
                 <label className="block text-xs font-bold text-secondary dark:text-slate-400 mb-2 uppercase tracking-wide">Select Branch</label>
-                <div className="relative">
-                  <select
+                <CustomSelect
                     value={selectedBranch}
-                    onChange={(e) => setSelectedBranch(e.target.value)}
+                    onChange={(val) => setSelectedBranch(val)}
                     disabled={!selectedRepo}
-                    className="w-full appearance-none bg-surface-container-highest dark:bg-slate-800 border-b-2 border-app-red border-t-0 border-x-0 rounded-none px-4 py-3 focus:ring-0 focus:border-app-dark-red font-medium text-on-surface dark:text-white transition-all disabled:opacity-50"
-                  >
-                    <option value="">— Select Branch —</option>
-                    {branches.map(b => <option key={b} value={b}>{b}</option>)}
-                  </select>
-                  <span className="material-symbols-outlined absolute right-3 top-3 pointer-events-none text-outline">expand_more</span>
-                </div>
+                    placeholder="— Select Branch —"
+                    options={branches.map(b => ({ value: b, label: b }))}
+                  />
               </div>
 
               {/* Workflow */}
               <div>
                 <label className="block text-xs font-bold text-secondary dark:text-slate-400 mb-2 uppercase tracking-wide">Select Workflow</label>
-                <div className="relative">
-                  <select
+                <CustomSelect
                     value={selectedWorkflow}
-                    onChange={(e) => setSelectedWorkflow(e.target.value)}
+                    onChange={(val) => setSelectedWorkflow(val)}
                     disabled={!workflows.length}
-                    className="w-full appearance-none bg-surface-container-highest dark:bg-slate-800 border-b-2 border-app-red border-t-0 border-x-0 rounded-none px-4 py-3 focus:ring-0 focus:border-app-dark-red font-medium text-on-surface dark:text-white transition-all disabled:opacity-50"
-                  >
-                    <option value="">— Select Workflow —</option>
-                    {workflows.map(w => <option key={w.id} value={w.id}>{w.name} ({w.path})</option>)}
-                  </select>
-                  <span className="material-symbols-outlined absolute right-3 top-3 pointer-events-none text-outline">expand_more</span>
-                </div>
+                    placeholder="— Select Workflow —"
+                    options={workflows.map(w => ({ value: w.id, label: `${w.name} (${w.path})` }))}
+                  />
               </div>
             </div>
 

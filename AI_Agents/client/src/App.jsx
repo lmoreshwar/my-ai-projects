@@ -16,6 +16,13 @@ import GitHubCICD from './components/GitHubCICD';
 
 const STORAGE_KEY = 'ai_test_agent_connections';
 const TC_STORAGE_KEY = 'ai_test_agent_testcases';
+const LIFTED_STATE_KEY = 'ai_test_agent_lifted_state';
+
+// Helper: safe JSON parse
+const safeParse = (key, fallback) => {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+  catch { return fallback; }
+};
 
 function App() {
   const [activePage, setActivePage] = useState('connections');
@@ -25,23 +32,30 @@ function App() {
     try { return localStorage.getItem(TC_STORAGE_KEY) || ''; } catch { return ''; }
   });
 
+  // ── Load lifted state from localStorage on mount ──
+  const liftedInit = safeParse(LIFTED_STATE_KEY, {});
+
   // ── Lifted state for tab persistence ──
   // Playwright POM
-  const [pomFiles, setPomFiles] = useState([]);
-  const [pomActiveIdx, setPomActiveIdx] = useState(0);
-  const [pomSelectedGroups, setPomSelectedGroups] = useState(new Set());
-  const [pomLangFilter, setPomLangFilter] = useState('all');
+  const [pomFiles, setPomFiles] = useState(liftedInit.pomFiles || []);
+  const [pomActiveIdx, setPomActiveIdx] = useState(liftedInit.pomActiveIdx || 0);
+  const [pomSelectedGroups, setPomSelectedGroups] = useState(new Set(liftedInit.pomSelectedGroups || []));
+  const [pomLangFilter, setPomLangFilter] = useState(liftedInit.pomLangFilter || 'all');
 
   // Playwright TS + BDD
-  const [bddFiles, setBddFiles] = useState([]);
-  const [bddActiveIdx, setBddActiveIdx] = useState(0);
-  const [bddSelectedGroups, setBddSelectedGroups] = useState(new Set());
+  const [bddFiles, setBddFiles] = useState(liftedInit.bddFiles || []);
+  const [bddActiveIdx, setBddActiveIdx] = useState(liftedInit.bddActiveIdx || 0);
+  const [bddSelectedGroups, setBddSelectedGroups] = useState(new Set(liftedInit.bddSelectedGroups || []));
 
   // Selenium BDD
-  const [seleniumOutput, setSeleniumOutput] = useState('');
+  const [seleniumOutput, setSeleniumOutput] = useState(liftedInit.seleniumOutput || '');
+  const [seleniumSelectedGroups, setSeleniumSelectedGroups] = useState(new Set(liftedInit.seleniumSelectedGroups || []));
+
+  // Selenium BDD - lifted local state for tab persistence
+  const [seleniumLocalState, setSeleniumLocalState] = useState(liftedInit.seleniumLocalState || { ticketId: '', manualReq: '', selectedImported: '', issueData: null });
 
   // GitHub CI/CD
-  const [cicdState, setCicdState] = useState({
+  const [cicdState, setCicdState] = useState(liftedInit.cicdState || {
     workflows: [], selectedWorkflow: '', activeRun: null,
     jobs: [], artifacts: [], logLines: [], htmlReport: null,
     reportData: null, testResults: { passed: 0, failed: 0, skipped: 0, total: 0 },
@@ -49,20 +63,41 @@ function App() {
   });
 
   // Review Test Cases
-  const [reviewCoverage, setReviewCoverage] = useState(null);
+  const [reviewCoverage, setReviewCoverage] = useState(liftedInit.reviewCoverage || null);
+
+  // Review Test Cases - lifted local state for tab persistence
+  const [reviewLocalState, setReviewLocalState] = useState(liftedInit.reviewLocalState || { ticketId: '', manualReq: '', issueData: null });
+
+  // ── Persist all lifted state to localStorage ──
+  useEffect(() => {
+    try {
+      const toSave = {
+        pomFiles, pomActiveIdx, pomSelectedGroups: [...pomSelectedGroups], pomLangFilter,
+        bddFiles, bddActiveIdx, bddSelectedGroups: [...bddSelectedGroups],
+        seleniumOutput, seleniumSelectedGroups: [...seleniumSelectedGroups], seleniumLocalState,
+        cicdState: { ...cicdState, htmlReport: null }, // skip large HTML blobs
+        reviewCoverage, reviewLocalState,
+      };
+      localStorage.setItem(LIFTED_STATE_KEY, JSON.stringify(toSave));
+    } catch { /* localStorage full or unavailable */ }
+  }, [pomFiles, pomActiveIdx, pomSelectedGroups, pomLangFilter,
+      bddFiles, bddActiveIdx, bddSelectedGroups,
+      seleniumOutput, seleniumSelectedGroups, seleniumLocalState,
+      cicdState, reviewCoverage, reviewLocalState]);
 
   // ── Reset all generated data when user reconnects ──
   const handleResetGenerated = () => {
     setPomFiles([]); setPomActiveIdx(0); setPomSelectedGroups(new Set()); setPomLangFilter('all');
     setBddFiles([]); setBddActiveIdx(0); setBddSelectedGroups(new Set());
-    setSeleniumOutput('');
+    setSeleniumOutput(''); setSeleniumSelectedGroups(new Set()); setSeleniumLocalState({ ticketId: '', manualReq: '', selectedImported: '', issueData: null });
     setCicdState({
       workflows: [], selectedWorkflow: '', activeRun: null,
       jobs: [], artifacts: [], logLines: [], htmlReport: null,
       reportData: null, testResults: { passed: 0, failed: 0, skipped: 0, total: 0 },
       showReport: false, reportView: 'dashboard', reportFilter: 'all',
     });
-    setReviewCoverage(null);
+    setReviewCoverage(null); setReviewLocalState({ ticketId: '', manualReq: '', issueData: null });
+    try { localStorage.removeItem(LIFTED_STATE_KEY); } catch {}
   };
 
   const [connections, setConnections] = useState({
@@ -73,9 +108,11 @@ function App() {
   });
 
   const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '/api';
+  const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
-  // Load saved connections from localStorage
+  // Load saved connections from localStorage (only on localhost)
   useEffect(() => {
+    if (!isLocal) return;
     const saved = localStorage.getItem(STORAGE_KEY);
     if (saved) {
       try {
@@ -92,8 +129,9 @@ function App() {
     }
   }, []);
 
-  // Persist connections (without transient state)
+  // Persist connections (without transient state) — only on localhost
   useEffect(() => {
+    if (!isLocal) return;
     const toSave = {
       jira: { url: connections.jira.url, email: connections.jira.email, token: connections.jira.token },
       llm: { platform: connections.llm.platform, apiKey: connections.llm.apiKey, endpoint: connections.llm.endpoint, model: connections.llm.model },
@@ -135,11 +173,11 @@ function App() {
       case 'test-scenarios':
         return <TestScenarioGenerator connections={connections} apiBase={API_BASE} />;
       case 'review-cases':
-        return <ReviewTestCases connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} reviewCoverage={reviewCoverage} setReviewCoverage={setReviewCoverage} />;
+        return <ReviewTestCases connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} reviewCoverage={reviewCoverage} setReviewCoverage={setReviewCoverage} localState={reviewLocalState} setLocalState={setReviewLocalState} />;
       case 'zephyr-dashboard':
         return <ZephyrDashboard connections={connections} />;
       case 'selenium-bdd':
-        return <SeleniumBDD connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} seleniumOutput={seleniumOutput} setSeleniumOutput={setSeleniumOutput} />;
+        return <SeleniumBDD connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} seleniumOutput={seleniumOutput} setSeleniumOutput={setSeleniumOutput} selectedGroups={seleniumSelectedGroups} setSelectedGroups={setSeleniumSelectedGroups} localState={seleniumLocalState} setLocalState={setSeleniumLocalState} />;
       case 'playwright-js':
         return <PlaywrightJS connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={bddFiles} setGeneratedFiles={setBddFiles} activeFileIdx={bddActiveIdx} setActiveFileIdx={setBddActiveIdx} selectedGroups={bddSelectedGroups} setSelectedGroups={setBddSelectedGroups} />;
       case 'playwright-pom':

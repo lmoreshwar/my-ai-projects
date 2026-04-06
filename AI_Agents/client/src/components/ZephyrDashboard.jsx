@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import CustomSelect from './CustomSelect';
 
 /* ── Mock Data (mirroring screenshot) ── */
 const MOCK_RELEASES = [
@@ -84,15 +85,12 @@ export default function ZephyrDashboard({ connections }) {
             <label className="block text-[10px] font-bold uppercase tracking-widest text-secondary dark:text-slate-500 mb-1">
               Select Release
             </label>
-            <select
-              className="w-full bg-surface-container-highest dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-on-surface dark:text-white font-semibold py-2 px-3 rounded text-sm focus:ring-1 focus:ring-app-red focus:border-app-red"
+            <CustomSelect
               value={selectedRelease}
-              onChange={(e) => setSelectedRelease(e.target.value)}
-            >
-              {MOCK_RELEASES.map((r) => (
-                <option key={r.value} value={r.value}>{r.name}</option>
-              ))}
-            </select>
+              onChange={(val) => setSelectedRelease(val)}
+              options={MOCK_RELEASES.map((r) => ({ value: r.value, label: r.name }))}
+              placeholder="Select Release"
+            />
           </div>
         </div>
       </div>
