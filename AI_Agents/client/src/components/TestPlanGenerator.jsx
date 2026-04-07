@@ -137,8 +137,110 @@ export default function TestPlanGenerator({ connections, apiBase }) {
     setLoading('');
   };
 
-  const pushToConfluence = () => {
-    alert('Confluence publishing will be available once connection settings are configured. Coming soon!');
+  const [confluenceModal, setConfluenceModal] = useState(false);
+  const [confluenceForm, setConfluenceForm] = useState({ spaceKey: '', title: '', parentPageId: '' });
+  const [confluenceSpaces, setConfluenceSpaces] = useState([]);
+  const [confluencePages, setConfluencePages] = useState([]);
+  const [confluenceStatus, setConfluenceStatus] = useState({ loading: false, message: '', type: '' });
+  const [confluencePageSearch, setConfluencePageSearch] = useState('');
+
+  // Fetch Confluence spaces when modal opens
+  const openConfluenceModal = async () => {
+    if (connections.jira.status !== 'connected') {
+      return alert('Connect to JIRA first in Settings — Confluence uses the same Atlassian credentials.');
+    }
+    if (!plan) return alert('Generate a test plan first.');
+
+    // Default title from issue data
+    const defaultTitle = issueData
+      ? `Test Plan - ${issueData.id}: ${issueData.summary}`
+      : `Test Plan - ${new Date().toISOString().split('T')[0]}`;
+    setConfluenceForm({ spaceKey: '', title: defaultTitle, parentPageId: '' });
+    setConfluenceSpaces([]);
+    setConfluencePages([]);
+    setConfluenceStatus({ loading: true, message: 'Fetching Confluence spaces...', type: 'info' });
+    setConfluenceModal(true);
+
+    try {
+      const res = await fetch(`${apiBase}/confluence-spaces`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: connections.jira.url,
+          email: connections.jira.email,
+          token: connections.jira.token,
+        }),
+      });
+      const data = await res.json();
+      if (data.status === 'success' && data.spaces) {
+        setConfluenceSpaces(data.spaces);
+        setConfluenceStatus({ loading: false, message: `${data.spaces.length} spaces found`, type: 'success' });
+      } else {
+        setConfluenceStatus({ loading: false, message: data.message || 'Failed to fetch spaces', type: 'error' });
+      }
+    } catch (e) {
+      setConfluenceStatus({ loading: false, message: `Network error: ${e.message}`, type: 'error' });
+    }
+  };
+
+  // Search pages in selected space for parent page picker
+  const searchConfluencePages = async (query) => {
+    if (!confluenceForm.spaceKey) return;
+    setConfluencePageSearch(query);
+    if (!query.trim() && query !== '') return;
+    try {
+      const res = await fetch(`${apiBase}/confluence-pages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: connections.jira.url,
+          email: connections.jira.email,
+          token: connections.jira.token,
+          spaceKey: confluenceForm.spaceKey,
+          query: query.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        setConfluencePages(data.pages || []);
+      }
+    } catch { /* ignore search errors */ }
+  };
+
+  // Push test plan to Confluence
+  const pushToConfluence = async () => {
+    if (!confluenceForm.spaceKey) return alert('Select a Confluence space.');
+    if (!confluenceForm.title.trim()) return alert('Enter a page title.');
+    setConfluenceStatus({ loading: true, message: 'Publishing to Confluence...', type: 'info' });
+
+    try {
+      const res = await fetch(`${apiBase}/push-confluence`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: connections.jira.url,
+          email: connections.jira.email,
+          token: connections.jira.token,
+          spaceKey: confluenceForm.spaceKey,
+          title: confluenceForm.title.trim(),
+          content: plan,
+          parentPageId: confluenceForm.parentPageId || null,
+        }),
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        setConfluenceStatus({
+          loading: false,
+          message: `Page ${data.action}! "${data.title}"`,
+          type: 'success',
+          url: data.url,
+        });
+      } else {
+        setConfluenceStatus({ loading: false, message: data.message || 'Publish failed', type: 'error' });
+      }
+    } catch (e) {
+      setConfluenceStatus({ loading: false, message: `Network error: ${e.message}`, type: 'error' });
+    }
   };
 
   return (
@@ -254,7 +356,7 @@ export default function TestPlanGenerator({ connections, apiBase }) {
               {loading === 'generate' ? 'Generating...' : 'Generate Test Plan'}
             </button>
             <button
-              onClick={pushToConfluence}
+              onClick={openConfluenceModal}
               disabled={!plan}
               className="w-full py-4 bg-surface-container-high text-on-surface dark:text-white rounded-sm font-bold text-[1rem] flex items-center justify-center gap-3 hover:bg-surface-container transition-colors active:scale-95 disabled:opacity-50"
             >
@@ -412,6 +514,149 @@ export default function TestPlanGenerator({ connections, apiBase }) {
           </div>
         </div>
       </div>
+
+      {/* ── Confluence Push Modal ── */}
+      {confluenceModal && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => !confluenceStatus.loading && setConfluenceModal(false)}>
+          <div className="bg-white dark:bg-slate-900 rounded-lg shadow-2xl w-full max-w-lg" onClick={e => e.stopPropagation()}>
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-outline-variant/20">
+              <div className="flex items-center gap-3">
+                <span className="material-symbols-outlined text-blue-600 text-2xl">cloud_upload</span>
+                <h2 className="text-lg font-bold dark:text-white">Push to Confluence</h2>
+              </div>
+              <button onClick={() => !confluenceStatus.loading && setConfluenceModal(false)} className="p-1 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-full">
+                <span className="material-symbols-outlined text-gray-500">close</span>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="px-6 py-5 space-y-4">
+              <p className="text-[0.8125rem] text-secondary dark:text-slate-400">
+                Publish the generated test plan to Confluence using your JIRA/Atlassian credentials.
+              </p>
+
+              {/* Space Selector */}
+              <div>
+                <label className="block text-[0.6875rem] font-bold uppercase tracking-widest text-on-surface-variant mb-2">
+                  Confluence Space *
+                </label>
+                <select
+                  className="w-full bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-sm px-4 py-3 text-[0.875rem] focus:ring-2 focus:ring-blue-500 dark:text-white"
+                  value={confluenceForm.spaceKey}
+                  onChange={(e) => {
+                    setConfluenceForm(f => ({ ...f, spaceKey: e.target.value, parentPageId: '' }));
+                    setConfluencePages([]);
+                    setConfluencePageSearch('');
+                  }}
+                >
+                  <option value="">— Select a space —</option>
+                  {confluenceSpaces.map(s => (
+                    <option key={s.key} value={s.key}>{s.name} ({s.key})</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Page Title */}
+              <div>
+                <label className="block text-[0.6875rem] font-bold uppercase tracking-widest text-on-surface-variant mb-2">
+                  Page Title *
+                </label>
+                <input
+                  className="w-full bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-sm px-4 py-3 text-[0.875rem] focus:ring-2 focus:ring-blue-500 dark:text-white"
+                  value={confluenceForm.title}
+                  onChange={(e) => setConfluenceForm(f => ({ ...f, title: e.target.value }))}
+                  placeholder="Test Plan - QA-1234: Login Feature"
+                />
+              </div>
+
+              {/* Parent Page (Optional) */}
+              {confluenceForm.spaceKey && (
+                <div>
+                  <label className="block text-[0.6875rem] font-bold uppercase tracking-widest text-on-surface-variant mb-2">
+                    Parent Page (Optional)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      className="flex-1 bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-sm px-4 py-3 text-[0.875rem] focus:ring-2 focus:ring-blue-500 dark:text-white"
+                      placeholder="Search for a parent page..."
+                      value={confluencePageSearch}
+                      onChange={(e) => searchConfluencePages(e.target.value)}
+                    />
+                    {confluenceForm.parentPageId && (
+                      <button
+                        onClick={() => { setConfluenceForm(f => ({ ...f, parentPageId: '' })); setConfluencePageSearch(''); setConfluencePages([]); }}
+                        className="px-3 text-gray-500 hover:text-red-500"
+                        title="Clear parent"
+                      >
+                        <span className="material-symbols-outlined text-lg">close</span>
+                      </button>
+                    )}
+                  </div>
+                  {confluencePages.length > 0 && !confluenceForm.parentPageId && (
+                    <div className="mt-1 max-h-32 overflow-y-auto bg-gray-50 dark:bg-slate-800 border border-gray-200 dark:border-slate-700 rounded-sm">
+                      {confluencePages.map(p => (
+                        <button
+                          key={p.id}
+                          onClick={() => {
+                            setConfluenceForm(f => ({ ...f, parentPageId: p.id }));
+                            setConfluencePageSearch(p.title);
+                            setConfluencePages([]);
+                          }}
+                          className="w-full text-left px-4 py-2 text-[0.8125rem] hover:bg-blue-50 dark:hover:bg-slate-700 dark:text-white border-b border-gray-100 dark:border-slate-700 last:border-0"
+                        >
+                          {p.title}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {confluenceForm.parentPageId && (
+                    <p className="text-[0.75rem] text-green-600 mt-1">✓ Parent page selected: {confluencePageSearch}</p>
+                  )}
+                </div>
+              )}
+
+              {/* Status Message */}
+              {confluenceStatus.message && (
+                <div className={`p-3 rounded-sm text-[0.8125rem] ${
+                  confluenceStatus.type === 'success' ? 'bg-green-50 dark:bg-green-900/20 text-green-700 dark:text-green-300 border border-green-200 dark:border-green-800' :
+                  confluenceStatus.type === 'error' ? 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 border border-red-200 dark:border-red-800' :
+                  'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800'
+                }`}>
+                  {confluenceStatus.loading && (
+                    <span className="material-symbols-outlined text-sm animate-spin mr-2 align-middle">progress_activity</span>
+                  )}
+                  {confluenceStatus.message}
+                  {confluenceStatus.url && (
+                    <a href={confluenceStatus.url} target="_blank" rel="noopener noreferrer" className="block mt-2 underline font-bold">
+                      → Open in Confluence
+                    </a>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className="flex justify-end gap-3 px-6 py-4 border-t border-outline-variant/20">
+              <button
+                onClick={() => setConfluenceModal(false)}
+                disabled={confluenceStatus.loading}
+                className="px-5 py-2.5 text-[0.875rem] font-bold rounded-sm hover:bg-gray-100 dark:hover:bg-slate-800 dark:text-white disabled:opacity-50"
+              >
+                {confluenceStatus.type === 'success' && confluenceStatus.url ? 'Done' : 'Cancel'}
+              </button>
+              <button
+                onClick={pushToConfluence}
+                disabled={confluenceStatus.loading || !confluenceForm.spaceKey || !confluenceForm.title.trim()}
+                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-[0.875rem] font-bold rounded-sm flex items-center gap-2 disabled:opacity-50 active:scale-95 transition-all"
+              >
+                <span className="material-symbols-outlined text-sm">publish</span>
+                {confluenceStatus.loading ? 'Publishing...' : 'Publish'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

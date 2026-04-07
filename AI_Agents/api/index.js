@@ -7,6 +7,7 @@ const { v4: uuidv4 } = require('uuid');
 const JiraTool = require('./_tools/jira_tool');
 const LLMConnector = require('./_tools/llm_connector');
 const DocxGenerator = require('./_tools/docx_generator');
+const ConfluenceTool = require('./_tools/confluence_tool');
 
 const app = express();
 
@@ -317,6 +318,60 @@ app.post('/github-compare', async (req, res) => {
     } catch (error) {
         const msg = error.response ? `GitHub API ${error.response.status}: ${error.response.data?.message || 'Error'}` : error.message;
         return res.status(400).json({ status: 'error', message: msg });
+    }
+});
+
+// ── Confluence Integration (uses same JIRA/Atlassian credentials) ──
+
+// Test Confluence connectivity
+app.post('/test-confluence', async (req, res) => {
+    try {
+        const { url, email, token } = req.body;
+        const tool = new ConfluenceTool(url, email, token);
+        const user = await tool.testConnection();
+        return res.json({ status: 'success', message: `Confluence connected as ${user.displayName || user.username || 'User'}` });
+    } catch (error) {
+        return res.status(400).json({ status: 'error', message: error.message });
+    }
+});
+
+// List Confluence spaces
+app.post('/confluence-spaces', async (req, res) => {
+    try {
+        const { url, email, token } = req.body;
+        const tool = new ConfluenceTool(url, email, token);
+        const spaces = await tool.listSpaces();
+        return res.json({ status: 'success', spaces });
+    } catch (error) {
+        return res.status(400).json({ status: 'error', message: error.message });
+    }
+});
+
+// Search pages in a Confluence space (for parent page picker)
+app.post('/confluence-pages', async (req, res) => {
+    try {
+        const { url, email, token, spaceKey, query } = req.body;
+        const tool = new ConfluenceTool(url, email, token);
+        const pages = await tool.searchPages(spaceKey, query || '');
+        return res.json({ status: 'success', pages });
+    } catch (error) {
+        return res.status(400).json({ status: 'error', message: error.message });
+    }
+});
+
+// Push content to Confluence (create or update page)
+app.post('/push-confluence', async (req, res) => {
+    try {
+        const { url, email, token, spaceKey, title, content, parentPageId } = req.body;
+        if (!spaceKey || !title || !content) {
+            return res.status(400).json({ status: 'error', message: 'spaceKey, title, and content are required' });
+        }
+        const tool = new ConfluenceTool(url, email, token);
+        const result = await tool.publishPage(spaceKey, title, content, parentPageId || null);
+        console.log(`[Confluence] Page ${result.action}: ${result.title} (ID: ${result.id})`);
+        return res.json({ status: 'success', ...result });
+    } catch (error) {
+        return res.status(400).json({ status: 'error', message: error.message });
     }
 });
 
