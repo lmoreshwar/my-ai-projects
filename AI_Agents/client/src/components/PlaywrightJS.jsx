@@ -513,15 +513,6 @@ IMPORTANT:
           <h1 className="text-3xl lg:text-4xl font-black text-app-red tracking-tight mb-2">
             Playwright TS + BDD Architect
           </h1>
-          {(generatedFiles.length > 0 || selectedGroups.size > 0) && (
-            <button
-              onClick={() => { if (confirm('Clear all Playwright BDD data? This will reset generated files and selections.')) { setGeneratedFiles([]); setActiveFileIdx(0); setSelectedGroups(new Set()); } }}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white rounded-sm text-[0.8125rem] font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors active:scale-95"
-            >
-              <span className="material-symbols-outlined text-base">restart_alt</span>
-              Clear All
-            </button>
-          )}
         </div>
         <p className="text-on-surface-variant max-w-3xl font-medium leading-relaxed">
           Auto-filter <strong>Automation</strong>-tagged test cases, group by feature, and generate
@@ -641,21 +632,30 @@ IMPORTANT:
 
             {/* ── Output Actions ── */}
             {generatedFiles.length > 0 && (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={handleDownload}
+                    disabled={busy === 'download'}
+                    className="py-3 bg-surface-container-highest text-on-surface font-bold rounded-lg flex items-center justify-center gap-2 hover:bg-surface-container-high transition-all text-sm"
+                  >
+                    <span className="material-symbols-outlined text-base">download</span>
+                    {busy === 'download' ? 'Zipping...' : 'Download ZIP'}
+                  </button>
+                  <button
+                    onClick={handlePush}
+                    className="py-3 bg-secondary text-white font-bold rounded-lg flex items-center justify-center gap-2 hover:bg-secondary/80 transition-all text-sm"
+                  >
+                    <span className="material-symbols-outlined text-base">cloud_upload</span>
+                    Push to GitHub
+                  </button>
+                </div>
                 <button
-                  onClick={handleDownload}
-                  disabled={busy === 'download'}
-                  className="py-3 bg-surface-container-highest text-on-surface font-bold rounded-lg flex items-center justify-center gap-2 hover:bg-surface-container-high transition-all text-sm"
+                  onClick={() => { if (confirm('Clear all generated scripts? You can re-select groups and generate again.')) { setGeneratedFiles([]); setActiveFileIdx(0); } }}
+                  className="w-full py-2.5 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white font-bold rounded-lg flex items-center justify-center gap-2 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all text-sm active:scale-[0.98]"
                 >
-                  <span className="material-symbols-outlined text-base">download</span>
-                  {busy === 'download' ? 'Zipping...' : 'Download ZIP'}
-                </button>
-                <button
-                  onClick={handlePush}
-                  className="py-3 bg-secondary text-white font-bold rounded-lg flex items-center justify-center gap-2 hover:bg-secondary/80 transition-all text-sm"
-                >
-                  <span className="material-symbols-outlined text-base">cloud_upload</span>
-                  Push to GitHub
+                  <span className="material-symbols-outlined text-base">restart_alt</span>
+                  Clear All Scripts
                 </button>
               </div>
             )}

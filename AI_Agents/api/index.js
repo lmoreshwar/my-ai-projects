@@ -48,11 +48,6 @@ app.post('/test-connection', async (req, res) => {
             // Use user's model if provided, otherwise let connector use its default
             let userModel = conn.config.model && conn.config.model.trim() ? conn.config.model.trim() : null;
             console.log(`[Connection Test] Platform: ${conn.config.platform}, Model: ${userModel || 'default'}, Endpoint: ${conn.config.endpoint || 'default'}`);
-            // Auto-remap deprecated Gemini models
-            if (conn.config.platform === 'gemini' && userModel === 'gemini-2.0-flash') {
-                userModel = 'gemini-2.5-flash';
-                console.log(`[Connection Test] Auto-remapped gemini-2.0-flash → gemini-2.5-flash`);
-            }
             const result = await connector.generateContent("Say only the word 'Connected' and nothing else.", undefined, userModel);
             const response = typeof result === 'object' ? result.content : result;
             console.log(`LLM Connection Test Response (model: ${userModel || 'default'}): ${response}`);
@@ -164,6 +159,161 @@ app.post('/github-branches', async (req, res) => {
         const branches = branchRes.data.map(b => b.name);
 
         return res.json({ status: 'success', branches });
+    } catch (error) {
+        const msg = error.response ? `GitHub API ${error.response.status}: ${error.response.data?.message || 'Error'}` : error.message;
+        return res.status(400).json({ status: 'error', message: msg });
+    }
+});
+
+// GitHub – Create a new branch from an existing one
+app.post('/github-create-branch', async (req, res) => {
+    try {
+        const { token, apiUrl, repo, baseBranch, newBranch } = req.body;
+        const axios = require('axios');
+        const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
+        const authHeader = `Bearer ${token}`;
+
+        // 1. Get the SHA of the base branch
+        const refRes = await axios.get(`${baseUrl}/repos/${repo}/git/ref/heads/${baseBranch}`, {
+            headers: { Authorization: authHeader, Accept: 'application/vnd.github+json' },
+            timeout: 10000,
+        });
+        const sha = refRes.data.object.sha;
+
+        // 2. Create new branch ref
+        await axios.post(`${baseUrl}/repos/${repo}/git/refs`, {
+            ref: `refs/heads/${newBranch}`,
+            sha,
+        }, {
+            headers: { Authorization: authHeader, Accept: 'application/vnd.github+json' },
+            timeout: 10000,
+        });
+
+        return res.json({ status: 'success', message: `Branch "${newBranch}" created from "${baseBranch}"` });
+    } catch (error) {
+        const msg = error.response ? `GitHub API ${error.response.status}: ${error.response.data?.message || 'Error'}` : error.message;
+        return res.status(400).json({ status: 'error', message: msg });
+    }
+});
+
+// GitHub – Get file content from repo (for conflict comparison)
+app.post('/github-file-content', async (req, res) => {
+    try {
+        const { token, apiUrl, repo, branch, filePath } = req.body;
+        const axios = require('axios');
+        const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
+        const authHeader = `Bearer ${token}`;
+
+        const fileRes = await axios.get(`${baseUrl}/repos/${repo}/contents/${filePath}?ref=${branch}`, {
+            headers: { Authorization: authHeader, Accept: 'application/vnd.github+json' },
+            timeout: 10000,
+        });
+        const content = Buffer.from(fileRes.data.content, 'base64').toString('utf-8');
+        return res.json({ status: 'success', content, sha: fileRes.data.sha, size: fileRes.data.size });
+    } catch (error) {
+        if (error.response?.status === 404) {
+            return res.json({ status: 'not_found' });
+        }
+        const msg = error.response ? `GitHub API ${error.response.status}: ${error.response.data?.message || 'Error'}` : error.message;
+        return res.status(400).json({ status: 'error', message: msg });
+    }
+});
+
+// GitHub – Atomic push via Git Tree API (create blobs → tree → commit → update ref)
+app.post('/github-push-tree', async (req, res) => {
+    try {
+        const { token, apiUrl, repo, branch, commitMessage, files } = req.body;
+        // files: [{ path, content }]
+        const axios = require('axios');
+        const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
+        const authHeader = `Bearer ${token}`;
+        const headers = { Authorization: authHeader, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' };
+
+        console.log(`[GitHub Push Tree] ${files.length} files → ${repo}@${branch}`);
+
+        // 1. Get latest commit SHA on the branch
+        const refRes = await axios.get(`${baseUrl}/repos/${repo}/git/ref/heads/${branch}`, { headers, timeout: 10000 });
+        const latestCommitSha = refRes.data.object.sha;
+
+        // 2. Get the tree SHA from the latest commit
+        const commitRes = await axios.get(`${baseUrl}/repos/${repo}/git/commits/${latestCommitSha}`, { headers, timeout: 10000 });
+        const baseTreeSha = commitRes.data.tree.sha;
+
+        // 3. Create blobs for all files
+        const treeItems = [];
+        for (const file of files) {
+            const blobRes = await axios.post(`${baseUrl}/repos/${repo}/git/blobs`, {
+                content: file.content,
+                encoding: 'utf-8',
+            }, { headers, timeout: 15000 });
+            treeItems.push({
+                path: file.path,
+                mode: '100644',
+                type: 'blob',
+                sha: blobRes.data.sha,
+            });
+        }
+
+        // 4. Create new tree
+        const treeRes = await axios.post(`${baseUrl}/repos/${repo}/git/trees`, {
+            base_tree: baseTreeSha,
+            tree: treeItems,
+        }, { headers, timeout: 15000 });
+        const newTreeSha = treeRes.data.sha;
+
+        // 5. Create new commit
+        const newCommitRes = await axios.post(`${baseUrl}/repos/${repo}/git/commits`, {
+            message: commitMessage,
+            tree: newTreeSha,
+            parents: [latestCommitSha],
+        }, { headers, timeout: 15000 });
+        const newCommitSha = newCommitRes.data.sha;
+
+        // 6. Update branch ref
+        await axios.patch(`${baseUrl}/repos/${repo}/git/refs/heads/${branch}`, {
+            sha: newCommitSha,
+        }, { headers, timeout: 10000 });
+
+        console.log(`[GitHub Push Tree] Success → commit ${newCommitSha.substring(0, 7)}`);
+        return res.json({ status: 'success', commitSha: newCommitSha, message: `Pushed ${files.length} files in 1 atomic commit` });
+    } catch (error) {
+        console.error('[GitHub Push Tree] Error:', error.response?.status, error.response?.data || error.message);
+        const msg = error.response ? `GitHub API ${error.response.status}: ${error.response.data?.message || 'Error'}` : error.message;
+        return res.status(400).json({ status: 'error', message: msg });
+    }
+});
+
+// GitHub – Compare: check if branch has diverged (detect conflicts)
+app.post('/github-compare', async (req, res) => {
+    try {
+        const { token, apiUrl, repo, branch, filePaths } = req.body;
+        // filePaths: [{ remotePath, localContent }]
+        const axios = require('axios');
+        const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
+        const authHeader = `Bearer ${token}`;
+        const headers = { Authorization: authHeader, Accept: 'application/vnd.github+json' };
+
+        const results = [];
+        for (const fp of filePaths) {
+            try {
+                const fileRes = await axios.get(`${baseUrl}/repos/${repo}/contents/${fp.remotePath}?ref=${branch}`, { headers, timeout: 10000 });
+                const remoteContent = Buffer.from(fileRes.data.content, 'base64').toString('utf-8');
+                const remoteSha = fileRes.data.sha;
+
+                if (remoteContent.trim() === fp.localContent.trim()) {
+                    results.push({ path: fp.remotePath, status: 'unchanged', remoteSha });
+                } else {
+                    results.push({ path: fp.remotePath, status: 'modified', remoteSha, remoteContent });
+                }
+            } catch (err) {
+                if (err.response?.status === 404) {
+                    results.push({ path: fp.remotePath, status: 'new', remoteSha: null, remoteContent: null });
+                } else {
+                    results.push({ path: fp.remotePath, status: 'error', error: err.message });
+                }
+            }
+        }
+        return res.json({ status: 'success', results });
     } catch (error) {
         const msg = error.response ? `GitHub API ${error.response.status}: ${error.response.data?.message || 'Error'}` : error.message;
         return res.status(400).json({ status: 'error', message: msg });

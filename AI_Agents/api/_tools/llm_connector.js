@@ -55,17 +55,21 @@ class LLMConnector {
         if (!model) {
             if (this.platform === 'groq') model = 'llama-3.3-70b-versatile';
             else if (this.platform === 'ollama') model = 'llama3';
-            else if (this.platform === 'gemini') model = 'gemini-2.5-flash';
+            else if (this.platform === 'gemini') model = 'gemini-2.0-flash';
             else if (this.platform === 'grok') model = 'grok-2';
         }
-        // Auto-remap deprecated Gemini models
-        if (this.platform === 'gemini') {
-            const GEMINI_REMAP = { 'gemini-2.0-flash': 'gemini-2.5-flash', 'gemini-1.5-flash': 'gemini-2.5-flash', 'gemini-1.5-pro': 'gemini-2.5-pro' };
-            if (GEMINI_REMAP[model]) {
-                console.log(`[LLM] Auto-remapped deprecated model ${model} → ${GEMINI_REMAP[model]}`);
-                model = GEMINI_REMAP[model];
-            }
-        }
+
+        // Gemini fallback chain — if the primary model is unavailable (503),
+        // we'll try alternatives automatically
+        const GEMINI_FALLBACK_CHAIN = {
+            'gemini-2.5-flash':   ['gemini-2.0-flash', 'gemini-1.5-flash'],
+            'gemini-2.5-pro':     ['gemini-2.0-flash', 'gemini-1.5-pro'],
+            'gemini-2.0-flash':   ['gemini-2.5-flash', 'gemini-1.5-flash'],
+            'gemini-1.5-flash':   ['gemini-2.0-flash', 'gemini-2.5-flash'],
+            'gemini-1.5-pro':     ['gemini-2.5-pro', 'gemini-2.0-flash'],
+        };
+
+        console.log(`[LLM] Using model: ${model}, Platform: ${this.platform}`);
 
         // Platform-aware token limits — safe for both free-tier and licensed
         const PLATFORM_LIMITS = {
@@ -148,12 +152,12 @@ class LLMConnector {
             return last ? parseInt(last[1], 10) : 0;
         };
 
-        /* ── Single LLM call with automatic retry on 429 ── */
-        const callLLM = async (msgs, retries = 2) => {
+        /* ── Single LLM call with retry + Gemini model fallback ── */
+        const callLLMSingle = async (msgs, useModel, retries = 3) => {
             // Gemini's OpenAI-compatible API does not support 'seed' or 'top_p'
             const callParams = {
                 messages: msgs,
-                model,
+                model: useModel,
                 temperature: 0,
                 max_tokens: MAX_TOKENS
             };
@@ -166,6 +170,7 @@ class LLMConnector {
             let lastError;
             for (let attempt = 1; attempt <= retries; attempt++) {
                 try {
+                    console.log(`[LLM] Calling ${useModel} (attempt ${attempt}/${retries})...`);
                     const resp = await this.client.chat.completions.create(callParams);
                     return (() => { // extract result from resp
                         const c = resp.choices[0];
@@ -181,9 +186,9 @@ class LLMConnector {
                 } catch (err) {
                     lastError = err;
                     const status = err.status || err.statusCode || 0;
-                    if (status === 429 && attempt < retries) {
-                        const wait = attempt * 5000; // 5s, 10s (reduced for Vercel free-tier 10s limit)
-                        console.warn(`[LLM] Rate limited (429). Retrying in ${wait / 1000}s (attempt ${attempt}/${retries})...`);
+                    if ((status === 429 || status === 503 || status === 502) && attempt < retries) {
+                        const wait = status === 429 ? attempt * 5000 : attempt * 3000;
+                        console.warn(`[LLM] ${status === 429 ? 'Rate limited' : 'Service unavailable'} (${status}) for ${useModel}. Retrying in ${wait / 1000}s (attempt ${attempt}/${retries})...`);
                         await new Promise(r => setTimeout(r, wait));
                         continue;
                     }
@@ -191,6 +196,35 @@ class LLMConnector {
                 }
             }
             throw lastError;
+        };
+
+        /* ── callLLM with Gemini model fallback chain ── */
+        const callLLM = async (msgs, retries = 3) => {
+            try {
+                return await callLLMSingle(msgs, model, retries);
+            } catch (primaryErr) {
+                const status = primaryErr.status || primaryErr.statusCode || 0;
+                // Only fallback on 503/502 (service unavailable), not on auth or other errors
+                if (this.platform === 'gemini' && (status === 503 || status === 502)) {
+                    const fallbacks = GEMINI_FALLBACK_CHAIN[model] || [];
+                    for (const fallbackModel of fallbacks) {
+                        console.warn(`[LLM] Model ${model} returned ${status}. Trying fallback: ${fallbackModel}...`);
+                        try {
+                            const result = await callLLMSingle(msgs, fallbackModel, 2);
+                            // Update the model variable so continuation rounds use the working model
+                            model = fallbackModel;
+                            console.log(`[LLM] Fallback to ${fallbackModel} succeeded!`);
+                            return result;
+                        } catch (fallbackErr) {
+                            const fbStatus = fallbackErr.status || fallbackErr.statusCode || 0;
+                            console.warn(`[LLM] Fallback ${fallbackModel} also failed (${fbStatus}). Trying next...`);
+                            continue;
+                        }
+                    }
+                    throw new Error(`All Gemini models unavailable (503). Tried: ${model}, ${fallbacks.join(', ')}. Google's API may be temporarily overloaded — please try again in a few minutes.`);
+                }
+                throw primaryErr;
+            }
         };
 
         /* ── Build continuation prompt per type ── */
@@ -423,13 +457,20 @@ Output ONLY the additional numbered scenarios (no header, no title, no explanati
 
             return { content: allContent, meta };
         } catch (error) {
-            console.error("LLM Error:", error.message);
+            console.error(`LLM Error [${this.platform}/${model}]:`, error.message, error.status || '');
             const msg = error.message || '';
+            const status = error.status || error.statusCode || 0;
             if (msg.includes('maximum context length') || msg.includes('max_tokens') || msg.includes('token')) {
                 throw new Error(`Token limit exceeded: ${msg}. Try a different model with higher token capacity or reduce the input size.`);
             }
-            if (msg.includes('rate_limit') || msg.includes('429')) {
+            if (msg.includes('rate_limit') || msg.includes('429') || status === 429) {
                 throw new Error(`Rate limit reached: ${msg}. Wait a moment and try again, or switch to a different LLM provider.`);
+            }
+            if (status === 503 || status === 502) {
+                throw new Error(`LLM service unavailable (${status}) for model ${model}. Google's Gemini API may be temporarily overloaded. Try again in a minute or use a different model.`);
+            }
+            if (status === 400) {
+                throw new Error(`LLM Bad Request (400): ${msg}. The model "${model}" may not exist or the request format may be unsupported.`);
             }
             throw new Error(`LLM Error: ${msg}`);
         }

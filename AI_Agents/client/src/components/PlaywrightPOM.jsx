@@ -243,12 +243,8 @@ function parseFileBlocks(output) {
 /* ═══════════════════════════════════════════════════════════════════════
    COMPONENT
    ═══════════════════════════════════════════════════════════════════════ */
-export default function PlaywrightPOM({ connections, apiBase, generatedTestCases, generatedFiles, setGeneratedFiles, activeFileIdx, setActiveFileIdx, selectedGroups, setSelectedGroups, langFilter, setLangFilter }) {
+export default function PlaywrightPOM({ connections, apiBase, generatedTestCases, generatedFiles, setGeneratedFiles, activeFileIdx, setActiveFileIdx, selectedGroups, setSelectedGroups, langFilter, setLangFilter, onNavigate, onPushFiles }) {
   const [busy, setBusy] = useState('');
-  const [pushStatus, setPushStatus] = useState('');
-  const [pushBranch, setPushBranch] = useState('');
-  const [pushPath, setPushPath] = useState('tests');
-  const [showPushModal, setShowPushModal] = useState(false);
   const [genProgress, setGenProgress] = useState('');
 
   // ── Parse & filter automation-tagged test cases ──
@@ -409,51 +405,18 @@ IMPORTANT:
   };
 
   /* ────────────────────────────────────────────────────────────────────
-     GITHUB PUSH
+     PUSH TO GIT REPO — Navigate to GitHub Integration with files
      ──────────────────────────────────────────────────────────────────── */
-  const handlePush = async () => {
+  const handlePush = () => {
     if (!connections.github || connections.github.status !== 'connected') return alert('Connect GitHub first in Connection Settings');
-    if (!connections.github.selectedRepo) return alert('Select a repository in Connection Settings');
-    setShowPushModal(true);
-    setPushBranch(connections.github.selectedBranch || 'main');
-  };
-
-  const executePush = async () => {
-    setPushStatus('pushing');
-    try {
-      const token = connections.github.token;
-      const repo = connections.github.selectedRepo;
-      const branch = pushBranch || 'main';
-      const apiUrl = connections.github.apiUrl || 'https://api.github.com';
-
-      // Use displayedFiles (filtered by language + cleaned) instead of all generatedFiles
-      for (const file of displayedFiles) {
-        const cleanContent = cleanCodeContent(file.content);
-        const filePath = pushPath ? `${pushPath.replace(/\/+$/, '')}/${file.path}` : file.path;
-        const content = btoa(unescape(encodeURIComponent(cleanContent)));
-        let sha;
-        try {
-          const existing = await fetch(`${apiUrl}/repos/${repo}/contents/${filePath}?ref=${branch}`, {
-            headers: { Authorization: `token ${token}` },
-          });
-          if (existing.ok) { sha = (await existing.json()).sha; }
-        } catch { /* file doesn't exist */ }
-
-        const body = { message: `chore: add Playwright POM test — ${file.path}`, content, branch };
-        if (sha) body.sha = sha;
-
-        const resp = await fetch(`${apiUrl}/repos/${repo}/contents/${filePath}`, {
-          method: 'PUT',
-          headers: { Authorization: `token ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
-        });
-        if (!resp.ok) throw new Error(`Failed to push ${filePath}: ${(await resp.json()).message}`);
-      }
-      setPushStatus('success');
-      setTimeout(() => { setShowPushModal(false); setPushStatus(''); }, 2000);
-    } catch (e) {
-      setPushStatus(`error: ${e.message}`);
-    }
+    if (displayedFiles.length === 0) return alert('Generate scripts first');
+    // Clean file contents and pass to GitHub Integration page
+    const cleanedFiles = displayedFiles.map(f => ({
+      path: f.path,
+      content: cleanCodeContent(f.content),
+    }));
+    if (onPushFiles) onPushFiles(cleanedFiles);
+    if (onNavigate) onNavigate('github');
   };
 
   /* ────────────────────────────────────────────────────────────────────
@@ -534,15 +497,6 @@ IMPORTANT:
           <h1 className="text-3xl lg:text-4xl font-black text-app-red tracking-tight mb-2">
             Playwright JS/TS + POM Architect
           </h1>
-          {(generatedFiles.length > 0 || selectedGroups.size > 0) && (
-            <button
-              onClick={() => { if (confirm('Clear all Playwright POM data? This will reset generated files, selections, and filter.')) { setGeneratedFiles([]); setActiveFileIdx(0); setSelectedGroups(new Set()); setLangFilter('all'); } }}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white rounded-sm text-[0.8125rem] font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors active:scale-95"
-            >
-              <span className="material-symbols-outlined text-base">restart_alt</span>
-              Clear All
-            </button>
-          )}
         </div>
         <p className="text-on-surface-variant max-w-3xl font-medium leading-relaxed">
           Auto-filter <strong>Automation</strong>-tagged test cases, group by feature, and generate
@@ -663,21 +617,30 @@ IMPORTANT:
 
             {/* ── Output Actions ── */}
             {generatedFiles.length > 0 && (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    onClick={handleDownload}
+                    disabled={busy === 'download'}
+                    className="py-3 bg-surface-container-highest text-on-surface font-bold rounded-lg flex items-center justify-center gap-2 hover:bg-surface-container-high transition-all text-sm"
+                  >
+                    <span className="material-symbols-outlined text-base">download</span>
+                    {busy === 'download' ? 'Zipping...' : 'Download ZIP'}
+                  </button>
+                  <button
+                    onClick={handlePush}
+                    className="py-3 bg-secondary text-white font-bold rounded-lg flex items-center justify-center gap-2 hover:bg-secondary/80 transition-all text-sm"
+                  >
+                    <span className="material-symbols-outlined text-base">cloud_upload</span>
+                    Push to Git Repo
+                  </button>
+                </div>
                 <button
-                  onClick={handleDownload}
-                  disabled={busy === 'download'}
-                  className="py-3 bg-surface-container-highest text-on-surface font-bold rounded-lg flex items-center justify-center gap-2 hover:bg-surface-container-high transition-all text-sm"
+                  onClick={() => { if (confirm('Clear all generated scripts? You can re-select groups and generate again.')) { setGeneratedFiles([]); setActiveFileIdx(0); setLangFilter('all'); } }}
+                  className="w-full py-2.5 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white font-bold rounded-lg flex items-center justify-center gap-2 hover:bg-slate-200 dark:hover:bg-slate-700 transition-all text-sm active:scale-[0.98]"
                 >
-                  <span className="material-symbols-outlined text-base">download</span>
-                  {busy === 'download' ? 'Zipping...' : 'Download ZIP'}
-                </button>
-                <button
-                  onClick={handlePush}
-                  className="py-3 bg-secondary text-white font-bold rounded-lg flex items-center justify-center gap-2 hover:bg-secondary/80 transition-all text-sm"
-                >
-                  <span className="material-symbols-outlined text-base">cloud_upload</span>
-                  Push to GitHub
+                  <span className="material-symbols-outlined text-base">restart_alt</span>
+                  Clear All Scripts
                 </button>
               </div>
             )}
@@ -837,66 +800,6 @@ IMPORTANT:
         </div>
       )}
 
-      {/* ── GitHub Push Modal ── */}
-      {showPushModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md p-6 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="font-bold text-lg text-on-surface">Push to GitHub</h3>
-              <button onClick={() => { setShowPushModal(false); setPushStatus(''); }} className="p-1 hover:bg-surface-container-highest rounded-full">
-                <span className="material-symbols-outlined">close</span>
-              </button>
-            </div>
-            <div className="space-y-3">
-              <div>
-                <label className="text-xs font-bold text-secondary uppercase block mb-1">Repository</label>
-                <div className="text-sm font-mono bg-surface-container-low rounded-lg px-3 py-2">{connections.github.selectedRepo}</div>
-              </div>
-              <div>
-                <label className="text-xs font-bold text-secondary uppercase block mb-1">Branch</label>
-                <input
-                  value={pushBranch}
-                  onChange={(e) => setPushBranch(e.target.value)}
-                  className="w-full bg-white dark:bg-slate-800 border border-outline-variant rounded-lg px-3 py-2 text-sm focus:border-app-red focus:ring-1 focus:ring-app-red outline-none"
-                />
-              </div>
-              <div>
-                <label className="text-xs font-bold text-secondary uppercase block mb-1">Base Path</label>
-                <input
-                  value={pushPath}
-                  onChange={(e) => setPushPath(e.target.value)}
-                  className="w-full bg-white dark:bg-slate-800 border border-outline-variant rounded-lg px-3 py-2 text-sm focus:border-app-red focus:ring-1 focus:ring-app-red outline-none font-mono"
-                  placeholder="tests"
-                />
-              </div>
-            </div>
-            <div className="flex gap-3">
-              <button
-                onClick={() => { setShowPushModal(false); setPushStatus(''); }}
-                className="flex-1 py-2.5 border border-outline-variant rounded-lg font-bold text-sm hover:bg-surface-container-highest transition-all"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={executePush}
-                disabled={pushStatus === 'pushing'}
-                className="flex-1 py-2.5 bg-app-red text-white rounded-lg font-bold text-sm hover:bg-app-dark-red transition-all disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {pushStatus === 'pushing' ? (
-                  <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Pushing...</>
-                ) : pushStatus === 'success' ? (
-                  <><span className="material-symbols-outlined text-sm">check_circle</span> Done!</>
-                ) : (
-                  <><span className="material-symbols-outlined text-sm">cloud_upload</span> Push {generatedFiles.length} Files</>
-                )}
-              </button>
-            </div>
-            {pushStatus && pushStatus.startsWith('error') && (
-              <p className="text-xs text-red-600 bg-red-50 p-2 rounded">{pushStatus}</p>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

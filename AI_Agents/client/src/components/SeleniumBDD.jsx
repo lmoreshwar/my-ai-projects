@@ -269,16 +269,6 @@ IMPORTANT:
         </div>
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">Selenium · Cucumber Generator</h1>
-          {gherkinOutput && (
-            <button
-              onClick={() => { if (confirm('Clear generated output?')) { setGherkinOutput(''); } }}
-              disabled={!!busy}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white rounded-sm text-[0.8125rem] font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors active:scale-95 disabled:opacity-50"
-            >
-              <span className="material-symbols-outlined text-base">restart_alt</span>
-              Clear Output
-            </button>
-          )}
         </div>
         <p className="text-on-surface-variant dark:text-slate-400 max-w-2xl font-medium leading-relaxed">
           Generate Gherkin feature files and Java step definitions from your automation-tagged test cases.
