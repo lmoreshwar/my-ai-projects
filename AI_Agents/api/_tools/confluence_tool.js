@@ -43,11 +43,12 @@ class ConfluenceTool {
     /**
      * List available Confluence spaces (for space picker)
      */
-    async listSpaces(limit = 50) {
+    async listSpaces(limit = 100) {
         try {
+            // Remove 'type: global' to fetch all types of spaces including personal
             const response = await axios.get(`${this.wikiApi}/space`, {
                 headers: this.headers,
-                params: { limit, type: 'global', status: 'current' },
+                params: { limit, status: 'current' },
                 timeout: 15000
             });
             const spaces = (response.data.results || []).map(s => ({
