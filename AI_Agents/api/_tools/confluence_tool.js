@@ -360,6 +360,79 @@ class ConfluenceTool {
     }
 
     /**
+     * Fetch the content of a specific Confluence page and return as plain text
+     * @param {string} pageId - The Confluence page ID
+     * @returns {object} - { id, title, content (plain text), version }
+     */
+    async fetchPageContent(pageId) {
+        try {
+            const response = await axios.get(`${this.wikiApi}/content/${pageId}`, {
+                headers: this.headers,
+                params: { expand: 'body.storage,version' },
+                timeout: 15000
+            });
+            const page = response.data;
+            const storageHtml = page.body?.storage?.value || '';
+            const plainText = this._storageToPlainText(storageHtml);
+            return {
+                id: page.id,
+                title: page.title,
+                content: plainText,
+                version: page.version?.number
+            };
+        } catch (error) {
+            const errStr = error.response
+                ? `${error.response.status} - ${JSON.stringify(error.response.data)}`
+                : error.message;
+            throw new Error(`Failed to fetch Confluence page content: ${errStr}`);
+        }
+    }
+
+    /**
+     * Convert Confluence storage format (XHTML) to readable plain text / markdown
+     */
+    _storageToPlainText(html) {
+        if (!html) return '';
+        let text = html;
+        // Headings → markdown
+        text = text.replace(/<h([1-6])[^>]*>(.*?)<\/h[1-6]>/gi, (_, level, content) => {
+            return '\n' + '#'.repeat(parseInt(level)) + ' ' + content.replace(/<[^>]+>/g, '').trim() + '\n';
+        });
+        // Table rows
+        text = text.replace(/<tr[^>]*>/gi, '\n| ');
+        text = text.replace(/<\/tr>/gi, '');
+        text = text.replace(/<t[hd][^>]*>(.*?)<\/t[hd]>/gi, (_, content) => {
+            return content.replace(/<[^>]+>/g, '').trim() + ' | ';
+        });
+        // List items
+        text = text.replace(/<li[^>]*>(.*?)<\/li>/gi, (_, content) => {
+            return '\n- ' + content.replace(/<[^>]+>/g, '').trim();
+        });
+        // Line breaks and paragraphs
+        text = text.replace(/<br\s*\/?>/gi, '\n');
+        text = text.replace(/<\/p>/gi, '\n');
+        text = text.replace(/<p[^>]*>/gi, '');
+        // Horizontal rules
+        text = text.replace(/<hr\s*\/?>/gi, '\n---\n');
+        // Bold/italic
+        text = text.replace(/<strong[^>]*>(.*?)<\/strong>/gi, '**$1**');
+        text = text.replace(/<em[^>]*>(.*?)<\/em>/gi, '*$1*');
+        // Code blocks
+        text = text.replace(/<ac:structured-macro ac:name="code"[^>]*>[\s\S]*?<ac:plain-text-body><!\[CDATA\[([\s\S]*?)\]\]><\/ac:plain-text-body>[\s\S]*?<\/ac:structured-macro>/gi, '\n```\n$1\n```\n');
+        // Inline code
+        text = text.replace(/<code[^>]*>(.*?)<\/code>/gi, '`$1`');
+        // Links
+        text = text.replace(/<a[^>]*href="([^"]*)"[^>]*>(.*?)<\/a>/gi, '[$2]($1)');
+        // Strip remaining HTML tags
+        text = text.replace(/<[^>]+>/g, '');
+        // Decode XML entities
+        text = text.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+        // Clean up extra whitespace
+        text = text.replace(/\n{3,}/g, '\n\n').trim();
+        return text;
+    }
+
+    /**
      * Find page by title in a space
      */
     async _findPageByTitle(spaceKey, title) {

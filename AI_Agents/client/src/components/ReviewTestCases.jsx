@@ -319,6 +319,9 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
   const coverage = reviewCoverage;
   const setCoverage = setReviewCoverage;
   const [manualExpanded, setManualExpanded] = useState(false);
+  // Track whether user explicitly cleared test cases (persisted via localState)
+  const [testCasesCleared, setTestCasesCleared] = useState(localState?.testCasesCleared || false);
+  const prevGenRef = useRef(generatedTestCases);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterText, setFilterText] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -333,14 +336,19 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
 
   /* ── Sync local state up to App.jsx for tab persistence ── */
   useEffect(() => {
-    if (setLocalState) setLocalState({ ticketId, manualReq, issueData });
-  }, [ticketId, manualReq, issueData]);
+    if (setLocalState) setLocalState({ ticketId, manualReq, issueData, testCasesCleared });
+  }, [ticketId, manualReq, issueData, testCasesCleared]);
 
-  /* Auto-load test cases */
+  /* Auto-load test cases — respects user clear action */
   useEffect(() => {
     if (generatedTestCases && generatedTestCases.trim()) {
-      setTestCases(generatedTestCases);
-      setParsedCases(parseMarkdownTable(generatedTestCases));
+      // Only auto-load if: NOT cleared by user, OR the value genuinely changed (new generation)
+      if (!testCasesCleared || generatedTestCases !== prevGenRef.current) {
+        setTestCases(generatedTestCases);
+        setParsedCases(parseMarkdownTable(generatedTestCases));
+        setTestCasesCleared(false);
+      }
+      prevGenRef.current = generatedTestCases;
     }
   }, [generatedTestCases]);
 
@@ -1049,7 +1057,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
             {/* Filter & Clear controls */}
             <div className="flex items-center justify-end gap-3 px-5 py-3 bg-slate-50/50 dark:bg-slate-800/30">
               {parsedCases.length > 0 && (
-                <button onClick={() => { if (confirm('Clear all test cases?')) { setTestCases(''); setParsedCases([]); setCoverage(null); } }}
+                <button onClick={() => { if (confirm('Clear all test cases?')) { setTestCases(''); setParsedCases([]); setCoverage(null); setTestCasesCleared(true); } }}
                   className="text-[10px] font-bold text-slate-400 hover:text-red-500 flex items-center gap-0.5 transition" title="Clear all">
                   <span className="material-symbols-outlined text-xs">delete_sweep</span> Clear
                 </button>
@@ -1178,7 +1186,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
           onClick={() => {
             if (confirm('Clear all data? This will reset JIRA ID, uploaded files, manual input, and all review results.')) {
               setTicketId(''); setIssueData(null); setManualReq(''); setManualExpanded(false);
-              setTestCases(''); setParsedCases([]); setCoverage(null); setFilterText(''); setCurrentPage(1); setRiskExpanded(false); setRtmExpanded(false); setTestCasesExpanded(true);
+              setTestCases(''); setParsedCases([]); setCoverage(null); setFilterText(''); setCurrentPage(1); setRiskExpanded(false); setRtmExpanded(false); setTestCasesExpanded(true); setTestCasesCleared(true);
             }
           }}
           className="flex-1 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"

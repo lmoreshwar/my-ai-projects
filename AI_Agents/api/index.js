@@ -375,6 +375,21 @@ app.post('/push-confluence', async (req, res) => {
     }
 });
 
+// Fetch Confluence page content (for importing requirements)
+app.post('/confluence-page-content', async (req, res) => {
+    try {
+        const { url, email, token, pageId } = req.body;
+        if (!pageId) {
+            return res.status(400).json({ status: 'error', message: 'pageId is required' });
+        }
+        const tool = new ConfluenceTool(url, email, token);
+        const page = await tool.fetchPageContent(pageId);
+        return res.json({ status: 'success', ...page });
+    } catch (error) {
+        return res.status(400).json({ status: 'error', message: error.message });
+    }
+});
+
 // Fetch Issue logic mapping
 app.post('/fetch-issue', async (req, res) => {
     try {

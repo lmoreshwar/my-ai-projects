@@ -127,6 +127,16 @@ export default function TestCaseGenerator({ connections, apiBase, onTestCasesGen
   const [llmMeta, setLlmMeta] = useState(null);
   const abortRef = useRef(null);
 
+  /* ── Confluence import state ── */
+  const [confSpaces, setConfSpaces] = useState([]);
+  const [confSelectedSpace, setConfSelectedSpace] = useState('');
+  const [confPages, setConfPages] = useState([]);
+  const [confSelectedPage, setConfSelectedPage] = useState(null);
+  const [confPageSearch, setConfPageSearch] = useState('');
+  const [confBusy, setConfBusy] = useState('');
+  const [confExpanded, setConfExpanded] = useState(false);
+  const confSearchTimer = useRef(null);
+
   /* ── Stop / Abort generation ── */
   const stopGeneration = () => {
     if (abortRef.current) {
@@ -136,6 +146,79 @@ export default function TestCaseGenerator({ connections, apiBase, onTestCasesGen
     setBusy('');
     setGenError('Generation was stopped by user.');
   };
+
+  /* ── Confluence: Load spaces ── */
+  const loadConfSpaces = async () => {
+    if (connections.jira.status !== 'connected') return alert('Connect to JIRA first (Confluence uses the same credentials)');
+    setConfBusy('spaces');
+    try {
+      const r = await fetch(`${apiBase}/confluence-spaces`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: connections.jira.url, email: connections.jira.email, token: connections.jira.token }),
+      });
+      const data = await r.json();
+      if (data.status === 'success') {
+        setConfSpaces(data.spaces || []);
+        setConfExpanded(true);
+      } else {
+        alert(data.message || 'Failed to load Confluence spaces');
+      }
+    } catch (e) {
+      alert('Failed to connect to Confluence: ' + e.message);
+    }
+    setConfBusy('');
+  };
+
+  /* ── Confluence: Search pages in selected space ── */
+  const searchConfPages = async (query) => {
+    if (!confSelectedSpace) return;
+    setConfBusy('pages');
+    try {
+      const r = await fetch(`${apiBase}/confluence-pages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: connections.jira.url, email: connections.jira.email, token: connections.jira.token, spaceKey: confSelectedSpace, query }),
+      });
+      const data = await r.json();
+      if (data.status === 'success') setConfPages(data.pages || []);
+    } catch (e) {
+      console.error('Confluence page search failed:', e);
+    }
+    setConfBusy('');
+  };
+
+  /* ── Confluence: Fetch page content and populate requirement ── */
+  const fetchConfPageContent = async (page) => {
+    setConfBusy('content');
+    setConfSelectedPage(page);
+    try {
+      const r = await fetch(`${apiBase}/confluence-page-content`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: connections.jira.url, email: connections.jira.email, token: connections.jira.token, pageId: page.id }),
+      });
+      const data = await r.json();
+      if (data.status === 'success' && data.content) {
+        setManualReq(data.content);
+        setConfExpanded(false);
+      } else {
+        alert(data.message || 'Failed to fetch page content');
+      }
+    } catch (e) {
+      alert('Failed to fetch Confluence page: ' + e.message);
+    }
+    setConfBusy('');
+  };
+
+  /* ── Confluence: Auto-search pages when space changes ── */
+  useEffect(() => {
+    if (confSelectedSpace) {
+      searchConfPages('');
+    } else {
+      setConfPages([]);
+    }
+  }, [confSelectedSpace]);
 
   const ic =
     'w-full bg-white dark:bg-slate-800 border border-outline-variant/40 rounded-lg px-4 py-3 text-sm focus:ring-2 focus:ring-app-red/40 focus:border-app-red transition-all dark:text-white placeholder:text-secondary/60';
@@ -562,7 +645,94 @@ Then the full test case table.`;
                   )}
                 </div>
 
-                <Divider text="or paste below" />
+                <Divider text="or import from Confluence / paste below" />
+
+                {/* Confluence Import */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <Label>Import from Confluence</Label>
+                    {confExpanded ? (
+                      <button onClick={() => setConfExpanded(false)} className="text-[10px] font-bold text-slate-400 hover:text-red-500 flex items-center gap-0.5 transition">
+                        <span className="material-symbols-outlined text-xs">close</span> Close
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => { if (confSpaces.length > 0) setConfExpanded(true); else loadConfSpaces(); }}
+                        disabled={confBusy === 'spaces'}
+                        className="text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:text-blue-800 flex items-center gap-0.5 transition disabled:opacity-40"
+                      >
+                        <span className="material-symbols-outlined text-xs">{confBusy === 'spaces' ? 'hourglass_top' : 'cloud_download'}</span>
+                        {confBusy === 'spaces' ? 'Loading...' : 'Browse Confluence'}
+                      </button>
+                    )}
+                  </div>
+
+                  {confExpanded && (
+                    <div className="bg-blue-50/50 dark:bg-blue-900/10 border border-blue-200 dark:border-blue-800 rounded-xl p-4 space-y-3 animate-in">
+                      {/* Space selector */}
+                      <div>
+                        <label className="text-[10px] font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wider block mb-1">Space</label>
+                        <select
+                          className={`${ic} !bg-white dark:!bg-slate-800`}
+                          value={confSelectedSpace}
+                          onChange={(e) => { setConfSelectedSpace(e.target.value); setConfSelectedPage(null); setConfPageSearch(''); }}
+                        >
+                          <option value="">— Select a Confluence space —</option>
+                          {confSpaces.map(s => <option key={s.key} value={s.key}>{s.name} ({s.key})</option>)}
+                        </select>
+                      </div>
+
+                      {/* Page search + list */}
+                      {confSelectedSpace && (
+                        <div>
+                          <label className="text-[10px] font-semibold text-blue-700 dark:text-blue-400 uppercase tracking-wider block mb-1">Search Pages</label>
+                          <div className="flex gap-2">
+                            <input
+                              className={`${ic} !bg-white dark:!bg-slate-800`}
+                              placeholder="Search by page title..."
+                              value={confPageSearch}
+                              onChange={(e) => {
+                                setConfPageSearch(e.target.value);
+                                clearTimeout(confSearchTimer.current);
+                                confSearchTimer.current = setTimeout(() => searchConfPages(e.target.value), 400);
+                              }}
+                            />
+                            {confBusy === 'pages' && <div className="w-8 h-8 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin shrink-0 mt-1" />}
+                          </div>
+
+                          {confPages.length > 0 && (
+                            <div className="mt-2 max-h-48 overflow-y-auto border border-blue-100 dark:border-blue-800 rounded-lg divide-y divide-blue-100 dark:divide-blue-800">
+                              {confPages.map(p => (
+                                <button
+                                  key={p.id}
+                                  onClick={() => fetchConfPageContent(p)}
+                                  disabled={confBusy === 'content'}
+                                  className={`w-full text-left px-3 py-2.5 text-xs hover:bg-blue-100 dark:hover:bg-blue-900/30 transition flex items-center gap-2 ${confSelectedPage?.id === p.id ? 'bg-blue-100 dark:bg-blue-900/30' : ''} disabled:opacity-50`}
+                                >
+                                  <span className="material-symbols-outlined text-blue-500 text-sm shrink-0">
+                                    {confBusy === 'content' && confSelectedPage?.id === p.id ? 'hourglass_top' : 'description'}
+                                  </span>
+                                  <span className="font-medium text-on-surface dark:text-white truncate">{p.title}</span>
+                                </button>
+                              ))}
+                            </div>
+                          )}
+
+                          {confPages.length === 0 && confBusy !== 'pages' && confSelectedSpace && (
+                            <p className="text-[10px] text-secondary mt-2 italic">No pages found. Try a different search.</p>
+                          )}
+                        </div>
+                      )}
+
+                      {confSelectedPage && confBusy !== 'content' && (
+                        <div className="flex items-center gap-2 px-3 py-2 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg border border-emerald-200 dark:border-emerald-800">
+                          <span className="material-symbols-outlined text-emerald-600 text-sm">check_circle</span>
+                          <span className="text-[11px] font-semibold text-emerald-700 dark:text-emerald-400 truncate flex-1">Imported: {confSelectedPage.title}</span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
 
                 <div>
                   <div className="flex items-center justify-between mb-1.5">

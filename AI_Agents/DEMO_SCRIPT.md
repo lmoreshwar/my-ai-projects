@@ -31,15 +31,21 @@ E-Commerce Checkout Flow:
 
 ---
 
-### [0:00–0:15] HOOK — App Landing Page
+### [0:00–0:30] PROBLEM STATEMENT — Why B.L.A.S.T. Exists
 
-> *"AI won't take your job — but someone using AI will. The question is: are you using it, or watching others use it? I chose to build with it. This is B.L.A.S.T. — an AI-powered test automation agent that I built from scratch. Let me show you what it can do."*
+> *"Let me ask you something. How long does it take your team to go from a JIRA ticket to a fully reviewed test plan? A day? Two days? Now add writing test cases, reviewing coverage gaps, generating automation scripts, pushing to GitHub, and running CI/CD. That's a full sprint just for test planning."*
 
-**Action:** Show the app landing page, slowly scroll the sidebar to show all menu items.
+> *"The problem is clear — manual test planning is slow, error-prone, and disconnected. You write a test plan in Word, test cases in Excel, automation code in your IDE, push via terminal, and monitor pipelines on GitHub. Five tools, five context switches, five chances to miss something."*
+
+> *"I built B.L.A.S.T. to solve this. One platform — from requirement to running tests. AI-powered, anti-hallucination enforced, and fully integrated. Let me show you what it can do."*
+
+**Action:** Start with a split-screen or text overlay showing the pain points:
+- "JIRA → Word → Excel → IDE → Terminal → GitHub" (crossed out)  
+- Then show B.L.A.S.T. landing page appearing as the solution.
 
 ---
 
-### [0:10–0:25] SETTINGS — Connect LLM
+### [0:30–0:45] SETTINGS — Connect LLM
 
 > *"First, connect an LLM. I'm using Google Gemini 2.5 Flash. Enter the API key, select the model, click Test Connection — and we're connected."*
 
@@ -47,15 +53,15 @@ E-Commerce Checkout Flow:
 
 ---
 
-### [0:25–0:55] TEST PLAN — Generate
+### [0:45–1:15] TEST PLAN — Generate & Push to Confluence
 
-> *"Now go to Create Test Plan. I'll paste an e-commerce checkout requirement. Click Generate — and within seconds, B.L.A.S.T. creates a complete test plan with objectives, scope, risk assessment, and entry-exit criteria."*
+> *"Now go to Create Test Plan. I'll paste an e-commerce checkout requirement. Click Generate — and within seconds, B.L.A.S.T. creates a complete test plan with objectives, scope, risk assessment, and entry-exit criteria. And with one click — Push to Confluence — it's published directly to your team's wiki."*
 
-**Action:** Click "Create Test Plan" → Paste the requirement → Click Generate → Slowly scroll through the output.
+**Action:** Click "Create Test Plan" → Paste the requirement → Click Generate → Scroll through output → Click "Push to Confluence" → Show modal → Publish → Show success link.
 
 ---
 
-### [0:55–1:25] TEST CASES — Generate
+### [1:15–1:45] TEST CASES — Generate
 
 > *"Next, Create Test Cases. I'll type: generate 10 test cases for e-commerce checkout. Watch — it gives exactly 10. Each with ID, title, steps, expected results, priority, and type."*
 
@@ -63,7 +69,7 @@ E-Commerce Checkout Flow:
 
 ---
 
-### [1:25–1:55] REVIEW — Coverage Analysis
+### [1:45–2:15] REVIEW — Coverage Analysis
 
 > *"The Review page is where it gets intelligent. I enter the requirement, click Analyze — and B.L.A.S.T. runs AI-powered coverage analysis. It shows gap detection, risk intelligence, and a full requirement traceability matrix."*
 
@@ -71,7 +77,7 @@ E-Commerce Checkout Flow:
 
 ---
 
-### [1:55–2:20] AUTOMATION — Quick Flash
+### [2:15–2:40] AUTOMATION — Quick Flash
 
 > *"It also generates production-ready automation code. Playwright with Page Object Model — complete with config, page objects, and spec files. Or Selenium BDD with Cucumber. Download as a clean ZIP."*
 
@@ -79,7 +85,7 @@ E-Commerce Checkout Flow:
 
 ---
 
-### [2:20–2:40] CI/CD — Quick Flash
+### [2:40–3:00] CI/CD — Quick Flash
 
 > *"Push code to GitHub, trigger CI/CD, and monitor execution in real-time. Green check — tests passed."*
 
@@ -87,60 +93,101 @@ E-Commerce Checkout Flow:
 
 ---
 
-### [2:40–3:00] CLOSING
+### [3:00–3:20] CLOSING
 
-> *"This is B.L.A.S.T. — an AI test automation command center. Built by me from scratch. Deep dive coming in Part 2. Link in the description."*
+> *"This is B.L.A.S.T. — from problem to solution. One platform that replaces five tools. Built by me from scratch. Deep dive coming in Part 2. Link in the description."*
 
 **Action:** Show sidebar with all tabs → Smile at camera.
 
 ---
 ---
 
-# VIDEO 2 — Test Generation & Review Deep Dive (Target: 6-8 minutes)
+# VIDEO 2 — Test Plan, Test Cases & Review Deep Dive (Target: 6-8 minutes)
 
-**Title:** "AI Test Coverage Analysis & Risk Detection — B.L.A.S.T. Deep Dive (Part 2)"
+**Title:** "AI Generates Test Plans, Pushes to Confluence & Runs Coverage Analysis — B.L.A.S.T. Deep Dive (Part 2)"
 **Post on:** YouTube first, then LinkedIn
 
 ---
 
 ### [0:00–0:20] INTRO
 
-> *"In Part 1, I showed B.L.A.S.T. in 3 minutes. Now let's go deep into every feature — how it generates test plans, test cases, and runs intelligent coverage analysis."*
+> *"In Part 1, I showed B.L.A.S.T. in 3 minutes. Now let's go deep — how it creates test plans, pushes them directly to Confluence, generates structured test cases, and runs intelligent coverage analysis. This is the complete test planning workflow."*
 
-**Action:** App open on landing page.
-
----
-
-### [0:20–1:00] SETTINGS — Detailed
-
-> *"B.L.A.S.T. supports three LLM providers — Google Gemini, Groq, and Grok. Each has different strengths. Today I'm using Gemini 2.5 Flash.
-> Enter your API key, select the model from the dropdown, and click Test Connection. Green means we're good."*
-
-**Action:** Show platform dropdown (all 3 options) → Select Gemini → Enter key → Select model → Test → Green success.
-
-> *"If you switch to a different LLM later, it automatically resets your previous data so there's no confusion."*
+**Action:** App open on landing page. Dark mode ON.
 
 ---
 
-### [1:00–2:00] CREATE TEST PLAN — Detailed
+### [0:20–1:00] SETTINGS — Connect LLM + JIRA
 
-> *"Now Create Test Plan. I'll paste a real e-commerce checkout requirement."*
+> *"First, let's set up our connections. Under Settings, I'll connect two things — an LLM provider and JIRA."*
 
-**Action:** Paste the requirement.
+> *"For the LLM, I'm using Google Gemini 2.5 Flash. Enter your API key, select the model, click Test Connection. Green — connected."*
 
-> *"Click Generate. The AI analyzes the requirement and creates a structured test plan."*
+**Action:** Show platform dropdown → Select Gemini → Enter key → Test → Green success.
 
-**Action:** Click Generate → Wait for output.
+> *"Now JIRA. Enter your Atlassian URL, email, and API token. Same token works for both JIRA and Confluence — they share the same Atlassian credentials. Test Connection — connected."*
 
-> *"Look at what it generated — Test Objectives, Scope, Test Strategy, Risk Assessment. Notice the risk section — it identified payment gateway timeout as a high risk. That's not template filling — that's intelligent analysis specific to my requirement."*
+**Action:** Enter JIRA URL → Email → Token → Test → Green success.
 
-**Action:** Scroll slowly through each section. Pause on Risk Assessment and point it out.
+> *"These two connections unlock the entire test planning pipeline."*
 
 ---
 
-### [2:00–3:20] CREATE TEST CASES — Detailed
+### [1:00–2:30] CREATE TEST PLAN — Two Input Modes
 
-> *"Now the core feature — Create Test Cases. I'll type: generate 10 test cases for e-commerce checkout with payment and coupon validation."*
+> *"Now Create Test Plan. B.L.A.S.T. gives you two input modes."*
+
+> *"Mode 1 — JIRA Ticket. Enter a ticket ID like QA-101, click Search. It pulls the summary, description, acceptance criteria — everything from your JIRA ticket. The anti-hallucination system checks data completeness and warns you if fields are missing."*
+
+**Action:** Select JIRA Ticket mode → Type `QA-101` → Click Search → Show the preview with ticket details → Point to completeness warning if any.
+
+> *"Mode 2 — Manual Input. If you don't have a JIRA ticket, paste your requirement directly. I'll paste an e-commerce checkout flow."*
+
+**Action:** Switch to Manual Input → Paste the sample requirement.
+
+> *"Optionally, add context — like 'focus on payment edge cases' or 'include mobile scenarios'."*
+
+**Action:** Type something in Additional Context.
+
+> *"Click Generate Test Plan. The AI analyzes the requirement and creates a structured, professional-grade test plan."*
+
+**Action:** Click Generate → Wait → Show output rendering.
+
+> *"Look at what it produced — Test Objectives, Scope definition, Test Strategy with entry-exit criteria, Risk Assessment. Notice the risk section — it identified payment gateway timeout as a high-priority risk. That's not template filling — that's intelligent analysis specific to my requirement."*
+
+**Action:** Scroll slowly through each section. Pause on Risk Assessment.
+
+---
+
+### [2:30–3:30] PUSH TO CONFLUENCE — Live Demo
+
+> *"Now here's a powerful feature — Push to Confluence. Since we already connected JIRA, Confluence is ready. Same Atlassian credentials, no extra setup."*
+
+> *"Click Push to Confluence. It fetches your Confluence spaces. Select the space — I'll pick QA Test Plans. The title is auto-generated from the ticket ID and summary."*
+
+**Action:** Click Push to Confluence → Show modal → Show spaces dropdown populating → Select a space.
+
+> *"Optionally, search for a parent page to nest it under. I'll search for 'Sprint 24' and select it."*
+
+**Action:** Type in parent page search → Select a page from dropdown.
+
+> *"Click Publish."*
+
+**Action:** Click Publish → Show loading spinner → Show success message.
+
+> *"Done — page created. Click this link to open it directly in Confluence."*
+
+**Action:** Click the "Open in Confluence" link → Show the page rendered in Confluence in the browser.
+
+> *"From requirement to published test plan in under a minute. If I push again with the same title, it updates the existing page — no duplicates."*
+
+---
+
+### [3:30–4:30] CREATE TEST CASES — Detailed
+
+> *"Now the core feature — Create Test Cases."*
+
+> *"I can type a natural language prompt: 'generate 10 test cases for e-commerce checkout with payment and coupon validation'."*
 
 **Action:** Type the prompt.
 
@@ -150,102 +197,88 @@ E-Commerce Checkout Flow:
 
 > *"Each test case has an ID, title, description, preconditions, test steps, expected results, priority, and type. Look — it automatically classifies them as Functional, Negative, or Edge Case."*
 
-**Action:** Point to different columns.
+**Action:** Point to different columns. Click on a row to expand details.
 
-> *"You can paginate, filter by keyword, and delete individual cases."*
+> *"You can paginate through them, filter by keyword, and delete individual cases. These test cases also automatically flow into the Review page."*
 
-**Action:** Show pagination. Type something in filter. Delete one case.
+**Action:** Show pagination → Type in filter → Delete one case.
 
 ---
 
-### [3:20–3:50] CREATE TEST SCENARIOS
+### [4:30–5:00] CREATE TEST SCENARIOS — Quick
 
 > *"Test Scenarios work similarly. Paste a requirement, and it generates BDD-style Given-When-Then scenarios. Useful if your team follows Behavior Driven Development."*
 
-**Action:** Quick demo — paste requirement → generate → show output.
+**Action:** Quick demo — paste requirement → generate → show output briefly.
 
 ---
 
-### [3:50–4:20] REVIEW — Connect the Dots
+### [5:00–5:30] REVIEW — Introduction
 
 > *"Now the most powerful feature — Review Test Cases. This is where B.L.A.S.T. becomes truly intelligent."*
 
-> *"Notice it automatically loaded the 10 test cases we just generated. No copy-paste needed."*
+> *"Notice — it automatically loaded the 10 test cases we just generated. No copy-paste needed."*
 
 **Action:** Click "Review Test Cases" → Show the green banner saying "10 test cases loaded".
 
-> *"Now I need to provide the original requirement for comparison. Three options — JIRA ticket lookup, file upload, or manual paste. I'll paste manually."*
+> *"Now I provide the original requirement for comparison. Three options — JIRA ticket, or manual paste. I'll paste manually."*
 
 **Action:** Open Manual Input → Paste the requirement.
 
 ---
 
-### [4:20–4:50] REVIEW — Run Analysis
+### [5:30–6:00] REVIEW — Run Analysis
 
-> *"Click Analyze & Compare Coverage. The AI compares every test case against every requirement."*
+> *"Click Analyze & Compare Coverage. The AI compares every test case against every line of the requirement."*
 
-**Action:** Click the button → Show loading spinner.
-
-> *"And here are the results."*
+**Action:** Click the button → Show loading spinner → Results appear.
 
 ---
 
-### [4:50–5:20] REVIEW — Coverage Status
+### [6:00–6:30] REVIEW — Coverage Status Cards
 
 > *"Three coverage dimensions. Functional Pathways — are all business flows tested? Negative Scenarios — are failure cases covered? Edge Case Matrix — are boundary conditions handled?"*
 
-> *"Each shows Optimized, Partially Covered, or Gaps. In our case, functional is optimized but edge cases are partially covered."*
+> *"Each shows Optimized, Partially Covered, or Gaps. In our case, functional is optimized at 92%, but edge cases show gaps."*
 
-**Action:** Point to each of the 3 cards.
-
----
-
-### [5:20–6:00] REVIEW — AI Risk Intelligence
-
-> *"Now expand AI & Risk Intelligence. This section shows: AI Strategic Insights — a summary of overall test quality. Gap Analysis — specific missing scenarios with severity. Quality Issues — problems in existing test cases. And Duplicates if any."*
-
-> *"Look at Gap G1 — it says we're missing inventory check failure scenario. That's a real gap the AI found."*
-
-**Action:** Expand the section → Point to each card → Highlight a specific gap.
+**Action:** Point to each of the 3 cards slowly.
 
 ---
 
-### [6:00–6:40] REVIEW — RTM
+### [6:30–7:10] REVIEW — AI Risk Intelligence
+
+> *"Expand AI & Risk Intelligence. This is the brain of the review engine."*
+
+> *"AI Strategic Insights — overall quality summary. Gap Analysis — specific missing scenarios with severity ratings. Quality Issues — problems in existing test cases. Duplicates — if any test cases overlap."*
+
+> *"Look at Gap G1 — 'Missing inventory check failure scenario' with HIGH severity. That's a real gap the AI found that our test cases missed."*
+
+**Action:** Expand the section → Point to each panel → Highlight a specific gap.
+
+---
+
+### [7:10–7:40] REVIEW — RTM (Requirement Traceability Matrix)
 
 > *"The Requirement Traceability Matrix maps every requirement to its test cases. Coverage percentage, full or partial status, and comments."*
 
-> *"8 requirements — 6 fully covered, 1 partial, 1 uncovered. The formula is shown here."*
+> *"8 requirements — 6 fully covered, 1 partial, 1 uncovered. The coverage formula is calculated automatically."*
 
-**Action:** Expand RTM → Scroll through the table → Point to the summary stats.
-
----
-
-### [6:40–7:00] REVIEW — Requirement Status
-
-> *"At the bottom — Requirement Status bars. 29 of 33 functional requirements mapped. Visual progress."*
-
-**Action:** Scroll to bottom → Show progress bars.
+**Action:** Expand RTM → Scroll through table → Point to summary stats.
 
 ---
 
-### [7:00–7:20] REVIEW — Export & Clear
+### [7:40–8:00] CLOSING
 
-> *"When satisfied, click Approve & Export to save everything. Or Clear All to start fresh."*
+> *"That's the complete test planning and review workflow in B.L.A.S.T. From a JIRA ticket or a raw requirement — to a professional test plan published on Confluence — to structured test cases — to AI-powered coverage analysis. All in one tool."*
 
-**Action:** Show both buttons.
+> *"In Part 3, I'll show how B.L.A.S.T. generates Playwright and Selenium automation code, pushes to GitHub, and runs CI/CD pipelines. Subscribe so you don't miss it."*
 
----
-
-### [7:20–7:40] CLOSING
-
-> *"That's the complete test generation and review workflow. In Part 3, I'll show how B.L.A.S.T. generates Playwright and Selenium automation code and runs CI/CD pipelines. Subscribe so you don't miss it."*
-
-**Action:** Smile at camera.
+**Action:** Show sidebar → Smile → End.
 
 ---
 ---
 
-# VIDEO 3 — Automation Code & CI/CD (Target: 6-8 minutes)
+# VIDEO 3 — Automation Code, GitHub & CI/CD (Target: 6-8 minutes)
 
 **Title:** "AI Generates Playwright & Selenium Code + Runs CI/CD — B.L.A.S.T. (Part 3)"
 **Post on:** YouTube first, then LinkedIn
