@@ -147,7 +147,7 @@ export default function TestCaseGenerator({ connections, apiBase, onTestCasesGen
     setGenError('Generation was stopped by user.');
   };
 
-  /* ── Confluence: Load spaces ── */
+  /* ── Confluence: Load spaces (always fresh fetch) ── */
   const loadConfSpaces = async () => {
     if (connections.jira.status !== 'connected') return alert('Connect to JIRA first (Confluence uses the same credentials)');
     setConfBusy('spaces');
@@ -161,6 +161,8 @@ export default function TestCaseGenerator({ connections, apiBase, onTestCasesGen
       if (data.status === 'success') {
         setConfSpaces(data.spaces || []);
         setConfExpanded(true);
+        // Re-fetch pages if a space is already selected (user may have pushed new content)
+        if (confSelectedSpace) searchConfPages('');
       } else {
         alert(data.message || 'Failed to load Confluence spaces');
       }
@@ -657,7 +659,7 @@ Then the full test case table.`;
                       </button>
                     ) : (
                       <button
-                        onClick={() => { if (confSpaces.length > 0) setConfExpanded(true); else loadConfSpaces(); }}
+                        onClick={() => loadConfSpaces()}
                         disabled={confBusy === 'spaces'}
                         className="text-[10px] font-bold text-blue-600 dark:text-blue-400 hover:text-blue-800 flex items-center gap-0.5 transition disabled:opacity-40"
                       >

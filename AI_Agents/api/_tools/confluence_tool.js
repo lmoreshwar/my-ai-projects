@@ -68,13 +68,26 @@ class ConfluenceTool {
 
     /**
      * Search pages in a space (for parent page selection)
+     * Uses direct /content listing when no query (avoids CQL search index delay)
      */
     async searchPages(spaceKey, query = '', limit = 25) {
         try {
-            let cql = `space = "${spaceKey}" AND type = "page"`;
-            if (query.trim()) {
-                cql += ` AND title ~ "${query.trim()}"`;
+            if (!query.trim()) {
+                // Direct listing — no search index delay, shows newly created pages immediately
+                const response = await axios.get(`${this.wikiApi}/content`, {
+                    headers: this.headers,
+                    params: { spaceKey, type: 'page', limit, status: 'current', expand: 'version' },
+                    timeout: 15000
+                });
+                console.log(`[Confluence] Listed ${(response.data.results || []).length} pages in space ${spaceKey}`);
+                return (response.data.results || []).map(p => ({
+                    id: p.id,
+                    title: p.title,
+                    type: p.type
+                }));
             }
+            // CQL search when user types a query
+            const cql = `space = "${spaceKey}" AND type = "page" AND title ~ "${query.trim()}"`;
             const response = await axios.get(`${this.wikiApi}/content/search`, {
                 headers: this.headers,
                 params: { cql, limit },
