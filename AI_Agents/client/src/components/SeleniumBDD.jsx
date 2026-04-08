@@ -94,7 +94,7 @@ function groupByTag(testCases) {
   return groups;
 }
 
-export default function SeleniumBDD({ connections, apiBase, generatedTestCases, seleniumOutput, setSeleniumOutput, selectedGroups, setSelectedGroups }) {
+export default function SeleniumBDD({ connections, apiBase, generatedTestCases, seleniumOutput, setSeleniumOutput, selectedGroups, setSelectedGroups, onClearTestCases }) {
   const gherkinOutput = seleniumOutput || '';
   const setGherkinOutput = setSeleniumOutput;
   const [busy, setBusy] = useState('');
@@ -269,6 +269,12 @@ IMPORTANT:
         </div>
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">Selenium · Cucumber Generator</h1>
+          {automationCases.length > 0 && onClearTestCases && (
+            <button onClick={() => { if (confirm('Clear all imported test cases? You can regenerate them from the Test Cases page.')) { onClearTestCases(); setGherkinOutput(''); setSelectedGroups(new Set()); } }}
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-xs font-bold hover:bg-red-50 hover:text-red-600 hover:border-red-300 dark:hover:bg-red-900/20 dark:hover:text-red-400 border border-slate-200 dark:border-slate-700 transition-colors">
+              <span className="material-symbols-outlined text-sm">delete_sweep</span> Clear Test Cases
+            </button>
+          )}
         </div>
         <p className="text-on-surface-variant dark:text-slate-400 max-w-2xl font-medium leading-relaxed">
           Generate Gherkin feature files and Java step definitions from your automation-tagged test cases.

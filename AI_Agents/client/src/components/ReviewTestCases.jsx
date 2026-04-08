@@ -307,7 +307,7 @@ Return ONLY valid JSON:
 - Do NOT hallucinate gaps for features without documented acceptance criteria
 - Return ONLY the JSON object`;
 
-export default function ReviewTestCases({ connections, apiBase, generatedTestCases, onNavigate, reviewCoverage, setReviewCoverage, localState, setLocalState }) {
+export default function ReviewTestCases({ connections, apiBase, generatedTestCases, onNavigate, reviewCoverage, setReviewCoverage, localState, setLocalState, onClearTestCases }) {
   /* ── State ── */
   const [testCases, setTestCases] = useState('');
   const [parsedCases, setParsedCases] = useState([]);
@@ -619,6 +619,12 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
         <div className="space-y-1">
           <h1 className="text-3xl font-extrabold text-app-red tracking-tighter">Review Test Cases</h1>
           <p className="text-on-surface-variant dark:text-slate-400 text-sm">Validate and refine AI-generated test scenarios for production deployment.</p>
+          {parsedCases.length > 0 && onClearTestCases && (
+            <button onClick={() => { if (confirm('Clear all imported test cases?')) { onClearTestCases(); setTestCases(''); setParsedCases([]); setCoverage(null); setTestCasesCleared(true); } }}
+              className="mt-2 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-xs font-bold hover:bg-red-50 hover:text-red-600 hover:border-red-300 dark:hover:bg-red-900/20 dark:hover:text-red-400 border border-slate-200 dark:border-slate-700 transition-colors">
+              <span className="material-symbols-outlined text-sm">delete_sweep</span> Clear Test Cases
+            </button>
+          )}
         </div>
         <div className="flex items-center gap-4 bg-white dark:bg-slate-900 p-4 rounded-xl shadow-sm border border-outline-variant/10">
           <div className="relative w-16 h-16">

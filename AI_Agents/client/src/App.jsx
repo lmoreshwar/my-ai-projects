@@ -90,6 +90,7 @@ function App() {
 
   // ── Reset all generated data when user reconnects ──
   const handleResetGenerated = () => {
+    setGeneratedTestCases('');
     setPomFiles([]); setPomActiveIdx(0); setPomSelectedGroups(new Set()); setPomLangFilter('all');
     setBddFiles([]); setBddActiveIdx(0); setBddSelectedGroups(new Set());
     setSeleniumOutput(''); setSeleniumSelectedGroups(new Set()); setSeleniumLocalState({ ticketId: '', manualReq: '', selectedImported: '', issueData: null });
@@ -100,7 +101,13 @@ function App() {
       showReport: false, reportView: 'dashboard', reportFilter: 'all',
     });
     setReviewCoverage(null); setReviewLocalState({ ticketId: '', manualReq: '', issueData: null });
-    try { localStorage.removeItem(LIFTED_STATE_KEY); } catch {}
+    try { localStorage.removeItem(LIFTED_STATE_KEY); localStorage.removeItem(TC_STORAGE_KEY); } catch {}
+  };
+
+  // ── Clear only test cases (shared callback for automation pages) ──
+  const handleClearTestCases = () => {
+    setGeneratedTestCases('');
+    try { localStorage.removeItem(TC_STORAGE_KEY); } catch {}
   };
 
   const [connections, setConnections] = useState({
@@ -176,15 +183,15 @@ function App() {
       case 'test-scenarios':
         return <TestScenarioGenerator connections={connections} apiBase={API_BASE} />;
       case 'review-cases':
-        return <ReviewTestCases connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} reviewCoverage={reviewCoverage} setReviewCoverage={setReviewCoverage} localState={reviewLocalState} setLocalState={setReviewLocalState} />;
+        return <ReviewTestCases connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} reviewCoverage={reviewCoverage} setReviewCoverage={setReviewCoverage} localState={reviewLocalState} setLocalState={setReviewLocalState} onClearTestCases={handleClearTestCases} />;
       case 'zephyr-dashboard':
         return <ZephyrDashboard connections={connections} />;
       case 'selenium-bdd':
-        return <SeleniumBDD connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} seleniumOutput={seleniumOutput} setSeleniumOutput={setSeleniumOutput} selectedGroups={seleniumSelectedGroups} setSelectedGroups={setSeleniumSelectedGroups} />;
+        return <SeleniumBDD connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} seleniumOutput={seleniumOutput} setSeleniumOutput={setSeleniumOutput} selectedGroups={seleniumSelectedGroups} setSelectedGroups={setSeleniumSelectedGroups} onClearTestCases={handleClearTestCases} />;
       case 'playwright-js':
-        return <PlaywrightJS connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={bddFiles} setGeneratedFiles={setBddFiles} activeFileIdx={bddActiveIdx} setActiveFileIdx={setBddActiveIdx} selectedGroups={bddSelectedGroups} setSelectedGroups={setBddSelectedGroups} />;
+        return <PlaywrightJS connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={bddFiles} setGeneratedFiles={setBddFiles} activeFileIdx={bddActiveIdx} setActiveFileIdx={setBddActiveIdx} selectedGroups={bddSelectedGroups} setSelectedGroups={setBddSelectedGroups} onClearTestCases={handleClearTestCases} />;
       case 'playwright-pom':
-        return <PlaywrightPOM connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={pomFiles} setGeneratedFiles={setPomFiles} activeFileIdx={pomActiveIdx} setActiveFileIdx={setPomActiveIdx} selectedGroups={pomSelectedGroups} setSelectedGroups={setPomSelectedGroups} langFilter={pomLangFilter} setLangFilter={setPomLangFilter} onNavigate={setActivePage} onPushFiles={setPendingPushFiles} />;
+        return <PlaywrightPOM connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={pomFiles} setGeneratedFiles={setPomFiles} activeFileIdx={pomActiveIdx} setActiveFileIdx={setPomActiveIdx} selectedGroups={pomSelectedGroups} setSelectedGroups={setPomSelectedGroups} langFilter={pomLangFilter} setLangFilter={setPomLangFilter} onNavigate={setActivePage} onPushFiles={setPendingPushFiles} onClearTestCases={handleClearTestCases} />;
       case 'github':
         return <GitHubIntegration connections={connections} apiBase={API_BASE} onNavigate={setActivePage} pendingPushFiles={pendingPushFiles} setPendingPushFiles={setPendingPushFiles} />;
       case 'github-cicd':
