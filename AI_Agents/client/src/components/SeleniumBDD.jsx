@@ -455,6 +455,12 @@ IMPORTANT:
                 {activeTab === 'feature' ? '.feature' : '.java'} — Selenium BDD Engine
               </span>
               <div className="flex gap-2">
+                {gherkinOutput && (
+                  <button onClick={() => { if (confirm('Clear all generated scripts?')) { setGherkinOutput(''); } }}
+                    className="px-3 py-1.5 bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 border border-outline-variant/30 dark:border-slate-600 rounded text-xs font-bold hover:bg-red-50 hover:text-red-600 hover:border-red-300 dark:hover:bg-red-900/20 dark:hover:text-red-400 transition-colors">
+                    <span className="material-symbols-outlined text-sm align-middle mr-1">restart_alt</span>Clear
+                  </button>
+                )}
                 <button onClick={downloadFile} disabled={!(activeTab === 'feature' ? parsedFiles.feature : parsedFiles.steps)} className="px-3 py-1.5 bg-surface-container-lowest dark:bg-slate-700 text-on-surface dark:text-white border border-outline-variant/30 dark:border-slate-600 rounded text-xs font-bold hover:bg-surface-variant transition-colors disabled:opacity-40">
                   Download {activeTab === 'feature' ? '.feature' : '.java'}
                 </button>
