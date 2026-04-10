@@ -1,6 +1,6 @@
-# B.L.A.S.T. AGENT: Testing SDLC & Jira Hierarchy Architecture
+# B.L.A.S.T. AGENT: STLC & Jira Hierarchy Architecture
 
-This document defines the Software Development Life Cycle (SDLC) and Jira hierarchy standards for the B.L.A.S.T. AGENT testing framework. It strictly adheres to ISTQB standards and modern Agile/Scrum practices. This structure will serve as the blueprint for the frontend UI components handling Test Planning and Requirements Traceability.
+This document defines the Software Testing Life Cycle (STLC) and Jira hierarchy standards for the B.L.A.S.T. AGENT testing framework. It strictly adheres to ISTQB standards and modern Agile/Scrum practices. This structure will serve as the blueprint for the frontend UI components handling Test Planning and Requirements Traceability.
 
 ---
 
@@ -30,9 +30,9 @@ To ensure full traceability from high-level business goals down to individual te
 
 ---
 
-## 2. Testing SDLC Phase Mapping
+## 2. Testing STLC Phase Mapping
 
-The B.L.A.S.T. AGENT framework maps ISTQB Fundamental Test Process phases directly into the frontend workflow.
+The B.L.A.S.T. AGENT framework maps ISTQB Fundamental Test Process (STLC) phases directly into the frontend workflow.
 
 ### Phase 1: Requirements Analysis (The "Why")
 *   **Action:** QA analyzes the Epic and User Story (Level 2 & 3).
@@ -67,6 +67,11 @@ The B.L.A.S.T. AGENT framework maps ISTQB Fundamental Test Process phases direct
 *   **Action:** Running the tests via CI/CD and logging results.
 *   **B.L.A.S.T. UI Component:** `GitHubCICD.jsx`, `ZephyrDashboard.jsx`
 *   **Output:** Pass/Fail metrics, Coverage Reports, Defect logging (creating Level 4 Bugs in Jira).
+
+### Phase 6: Test Closure
+*   **Action:** Finalizing the test cycle, collecting metrics, and evaluating exit criteria.
+*   **B.L.A.S.T. UI Component:** Coverage/Metrics Dashboard.
+*   **Output:** Test Summary Report.
 
 ---
 
