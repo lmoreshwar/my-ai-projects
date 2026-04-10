@@ -1,4 +1,11 @@
 const express = require('express');
+
+console.log('Backend server starting...');
+
+const connectDB = require('./db');
+// Connect to MongoDB
+console.log('Attempting MongoDB connection...');
+connectDB();
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
