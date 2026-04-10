@@ -54,14 +54,14 @@ export default function Login() {
             <div>
               <div className="mb-12 flex items-center gap-2">
                 <span className="material-symbols-outlined text-4xl text-primary" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
-                <span className="font-headline font-black text-2xl tracking-tighter text-on-surface">B.L.A.S.T AI</span>
+                <span className="font-headline font-black text-2xl tracking-tighter text-on-surface">BLAST AGENT</span>
               </div>
               <div className="space-y-2 mb-10">
                 <h1 className="text-primary-container text-4xl font-black tracking-tighter leading-none">
-                  Command Center
+                  TEST COMMAND CENTER
                 </h1>
                 <p className="text-on-surface-variant text-lg font-medium">
-                  Welcome to the Intelligent Agent Framework
+                  Autonomous Intelligence · Precision Engineering
                 </p>
               </div>
               {error && (
@@ -140,9 +140,9 @@ export default function Login() {
             <div className="absolute inset-0 flex flex-col justify-end p-16 text-white space-y-4">
               <div className="backdrop-blur-md bg-white/10 p-8 rounded-xl border border-white/20">
                 <span className="material-symbols-outlined text-4xl mb-4">terminal</span>
-                <h2 className="text-3xl font-black tracking-tight mb-2">Architecting Autonomous Intelligence</h2>
+                <h2 className="text-3xl font-black tracking-tight mb-2">Architecting Autonomous Testing</h2>
                 <p className="text-lg text-primary-fixed opacity-90 font-light leading-relaxed">
-                  Access the global hub for B.L.A.S.T AI's proprietary testing frameworks and enterprise-grade command protocols.
+                  Access the global hub for BLAST AGENT's proprietary QA frameworks and deterministic command protocols.
                 </p>
               </div>
             </div>
@@ -156,7 +156,7 @@ export default function Login() {
           <Link className="text-on-surface-variant text-xs font-normal hover:text-primary transition-colors" to="#">Help Center</Link>
         </div>
         <p className="text-on-surface-variant text-xs font-normal tracking-wide">
-          © 2026 B.L.A.S.T AI. All rights reserved.
+          © 2026 BLAST AGENT. All rights reserved.
         </p>
       </footer>
     </div>
