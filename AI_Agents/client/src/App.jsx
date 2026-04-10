@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { Routes, Route, Navigate } from 'react-router-dom';
 import './index.css';
 import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
@@ -13,6 +14,8 @@ import PlaywrightJS from './components/PlaywrightJS';
 import PlaywrightPOM from './components/PlaywrightPOM';
 import GitHubIntegration from './components/GitHubIntegration';
 import GitHubCICD from './components/GitHubCICD';
+import Login from './pages/Login';
+import SignUp from './pages/SignUp';
 
 const STORAGE_KEY = 'ai_test_agent_connections';
 const TC_STORAGE_KEY = 'ai_test_agent_testcases';
@@ -201,7 +204,7 @@ function App() {
     }
   };
 
-  return (
+  const dashboardContent = (
     <div className="bg-background dark:bg-slate-950 text-on-surface dark:text-slate-100 min-h-screen overflow-x-hidden transition-colors duration-200">
       {/* Sidebar */}
       <Sidebar activePage={activePage} onNavigate={setActivePage} onToggleDark={toggleDark} collapsed={sidebarCollapsed} onToggleCollapse={() => setSidebarCollapsed(c => !c)} />
@@ -244,6 +247,15 @@ function App() {
         </button>
       </nav>
     </div>
+  );
+
+  return (
+    <Routes>
+      <Route path="/login" element={<Login />} />
+      <Route path="/signup" element={<SignUp />} />
+      <Route path="/dashboard" element={dashboardContent} />
+      <Route path="/" element={<Navigate to="/login" />} />
+    </Routes>
   );
 }
 
