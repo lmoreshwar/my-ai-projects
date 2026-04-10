@@ -1,4 +1,5 @@
 const express = require('express');
+require('dotenv').config();
 
 console.log('Backend server starting...');
 
@@ -21,18 +22,14 @@ const app = express();
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.use(express.json({ limit: '10mb' }));
 
-// Strip /api prefix if present (for Vercel deployment compatibility)
-app.use((req, res, next) => {
-    if (req.path.startsWith('/api/')) {
-        req.url = req.url.replace('/api', '');
-    }
-    next();
-});
+// Import and use Auth Routes
+const authRoutes = require('./routes/auth');
+app.use('/api/auth', authRoutes);
 
-// Serve React static files (Render / standalone — not Vercel)
+// Serve React static files (Render / standalone)
 // Must be BEFORE API routes so static assets (JS, CSS, images) are served directly
 const _clientDist = path.join(__dirname, '..', 'client', 'dist');
-if (!process.env.VERCEL && fs.existsSync(_clientDist)) {
+if (fs.existsSync(_clientDist)) {
     app.use(express.static(_clientDist));
     console.log(`[Server] Serving React frontend from ${_clientDist}`);
 }
