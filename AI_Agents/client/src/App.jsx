@@ -123,41 +123,33 @@ function App() {
   const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '/api';
   const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
-  // Load saved connections from localStorage (only on localhost)
+  // ── Load saved connections from DB on mount ──
   useEffect(() => {
-    if (!isLocal) return;
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        setConnections((prev) => ({
-          jira: { ...prev.jira, ...parsed.jira, status: 'disconnected', message: '' },
-          llm: { ...prev.llm, ...parsed.llm, status: 'disconnected', message: '' },
-          zephyr: { ...prev.zephyr, ...parsed.zephyr, releaseName: parsed.zephyr?.releaseName || '', status: 'disconnected', message: '' },
-          github: { ...prev.github, ...parsed.github, repos: [], branches: [], repoVisibility: '', status: 'disconnected', message: '' },
-        }));
-      } catch (e) {
-        console.error('Failed to load saved connections', e);
-      }
-    }
-  }, []);
+    const fetchConnections = async () => {
+      const token = localStorage.getItem('blast_token');
+      if (!token) return;
 
-  // Persist connections (without transient state) — only on localhost
-  useEffect(() => {
-    if (!isLocal) return;
-    const toSave = {
-      jira: { url: connections.jira.url, email: connections.jira.email, token: connections.jira.token },
-      llm: { platform: connections.llm.platform, apiKey: connections.llm.apiKey, endpoint: connections.llm.endpoint, model: connections.llm.model },
-      zephyr: { url: connections.zephyr.url, apiKey: connections.zephyr.apiKey, releaseName: connections.zephyr.releaseName },
-      github: { token: connections.github.token, apiUrl: connections.github.apiUrl, selectedRepo: connections.github.selectedRepo, selectedBranch: connections.github.selectedBranch },
+      try {
+        const response = await fetch(`${API_BASE}/users/connections`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        
+        if (response.ok) {
+          const parsed = await response.json();
+          setConnections((prev) => ({
+            jira: { ...prev.jira, ...parsed.jira, status: 'disconnected', message: '' },
+            llm: { ...prev.llm, ...parsed.llm, status: 'disconnected', message: '' },
+            zephyr: { ...prev.zephyr, ...parsed.zephyr, status: 'disconnected', message: '' },
+            github: { ...prev.github, ...parsed.github, repos: [], branches: [], repoVisibility: '', status: 'disconnected', message: '' },
+          }));
+        }
+      } catch (e) {
+        console.error('Failed to load saved connections from database', e);
+      }
     };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-  }, [
-    connections.jira.url, connections.jira.email, connections.jira.token,
-    connections.llm.platform, connections.llm.apiKey, connections.llm.endpoint, connections.llm.model,
-    connections.zephyr.url, connections.zephyr.apiKey, connections.zephyr.releaseName,
-    connections.github.token, connections.github.apiUrl, connections.github.selectedRepo, connections.github.selectedBranch,
-  ]);
+
+    fetchConnections();
+  }, [API_BASE]);
 
   // Persist generated test cases to localStorage
   useEffect(() => {

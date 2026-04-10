@@ -8,46 +8,71 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
 
   const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
-  const saveConnection = (section) => {
-    // Only persist credentials on localhost — deployed Render app stays clean
-    if (!isLocal) {
-      const names = { jira: 'JIRA', llm: 'LLM', zephyr: 'Zephyr', github: 'GitHub' };
-      setSavedMsg(`${names[section]} credentials applied for this session (not saved on deployed app)`);
+  const saveConnectionToDB = async (section, data) => {
+    const token = localStorage.getItem('blast_token');
+    if (!token) {
+      setSavedMsg('You must be logged in to save connections securely.');
+      setTimeout(() => setSavedMsg(''), 4000);
+      return false;
+    }
+
+    try {
+      const response = await fetch(`${apiBase}/users/connections/${section}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(data)
+      });
+      
+      if (!response.ok) throw new Error('Failed to save to database');
+      return true;
+    } catch (err) {
+      console.error(err);
+      return false;
+    }
+  };
+
+  const saveConnection = async (section) => {
+    const names = { jira: 'JIRA', llm: 'LLM', zephyr: 'Zephyr', github: 'GitHub' };
+    
+    // Validate that the connection was actually tested and passed
+    if (connections[section].status !== 'connected') {
+      setSavedMsg(`Warning: Please test the ${names[section]} connection successfully before saving.`);
       setTimeout(() => setSavedMsg(''), 4000);
       return;
     }
-    const STORAGE_KEY = 'ai_test_agent_connections';
-    try {
-      const existing = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-      const sectionData = {};
-      if (section === 'jira') {
-        sectionData.url = connections.jira.url;
-        sectionData.email = connections.jira.email;
-        sectionData.token = connections.jira.token;
-      } else if (section === 'llm') {
-        sectionData.platform = connections.llm.platform;
-        sectionData.apiKey = connections.llm.apiKey;
-        sectionData.endpoint = connections.llm.endpoint;
-        sectionData.model = connections.llm.model;
-      } else if (section === 'zephyr') {
-        sectionData.url = connections.zephyr.url;
-        sectionData.apiKey = connections.zephyr.apiKey;
-        sectionData.releaseName = connections.zephyr.releaseName;
-      } else if (section === 'github') {
-        sectionData.token = connections.github.token;
-        sectionData.apiUrl = connections.github.apiUrl;
-        sectionData.selectedRepo = connections.github.selectedRepo;
-        sectionData.selectedBranch = connections.github.selectedBranch;
-      }
-      existing[section] = { ...existing[section], ...sectionData };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(existing));
-      const names = { jira: 'JIRA', llm: 'LLM', zephyr: 'Zephyr', github: 'GitHub' };
-      setSavedMsg(`${names[section]} connection saved locally! Will persist across refreshes.`);
-      setTimeout(() => setSavedMsg(''), 3000);
-    } catch {
-      setSavedMsg('Failed to save connection');
-      setTimeout(() => setSavedMsg(''), 3000);
+
+    const sectionData = {};
+    if (section === 'jira') {
+      sectionData.url = connections.jira.url;
+      sectionData.email = connections.jira.email;
+      sectionData.token = connections.jira.token;
+    } else if (section === 'llm') {
+      sectionData.platform = connections.llm.platform;
+      sectionData.apiKey = connections.llm.apiKey;
+      sectionData.endpoint = connections.llm.endpoint;
+      sectionData.model = connections.llm.model;
+    } else if (section === 'zephyr') {
+      sectionData.url = connections.zephyr.url;
+      sectionData.apiKey = connections.zephyr.apiKey;
+      sectionData.releaseName = connections.zephyr.releaseName;
+    } else if (section === 'github') {
+      sectionData.token = connections.github.token;
+      sectionData.apiUrl = connections.github.apiUrl;
     }
+
+    setSavedMsg(`Saving ${names[section]} credentials securely to database...`);
+
+    const success = await saveConnectionToDB(section, sectionData);
+
+    if (success) {
+      setSavedMsg(`${names[section]} connection securely saved! It will load automatically on login.`);
+    } else {
+      setSavedMsg(`Failed to save ${names[section]} connection.`);
+    }
+    setTimeout(() => setSavedMsg(''), 4000);
   };
 
   const updateConn = (section, field, value) => {

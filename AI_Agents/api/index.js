@@ -26,6 +26,14 @@ app.use(express.json({ limit: '10mb' }));
 const authRoutes = require('./routes/auth');
 app.use('/api/auth', authRoutes);
 
+// Import and use User/Connection Routes
+const userRoutes = require('./routes/users');
+app.use('/api/users', userRoutes);
+
+// Import and use TestCase Routes
+const testCaseRoutes = require('./routes/testcases');
+app.use('/api/testcases', testCaseRoutes);
+
 // Serve React static files (Render / standalone)
 // Must be BEFORE API routes so static assets (JS, CSS, images) are served directly
 const _clientDist = path.join(__dirname, '..', 'client', 'dist');
