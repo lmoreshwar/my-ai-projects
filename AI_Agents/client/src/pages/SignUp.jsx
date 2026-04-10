@@ -7,12 +7,14 @@ export default function SignUp() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [successMsg, setSuccessMsg] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
   const handleSignUp = async (e) => {
     e.preventDefault();
     setError('');
+    setSuccessMsg('');
     setLoading(true);
 
     try {
@@ -31,8 +33,12 @@ export default function SignUp() {
       }
 
       console.log("Registered user:", data);
-      alert("Registration successful! You can now log in.");
-      navigate('/login');
+      setSuccessMsg("Registration successful! Redirecting to login...");
+      
+      // Delay navigation so user can see the success message
+      setTimeout(() => {
+        navigate('/login');
+      }, 2000);
     } catch (err) {
       setError(err.message);
     } finally {
@@ -54,7 +60,7 @@ export default function SignUp() {
             <div className="relative z-10">
               <div className="mb-20 flex items-center gap-2">
                 <span className="material-symbols-outlined text-4xl text-white" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
-                <span className="font-headline font-black text-2xl tracking-tighter text-white">BLAST AGENT</span>
+                <span className="font-headline font-black text-2xl tracking-tighter text-white">B.L.A.S.T AGENT</span>
               </div>
               <h2 className="text-white text-5xl font-black tracking-tighter leading-none mb-6">
                 Autonomous <br /> Intelligence. <br /> Perfected.
@@ -66,7 +72,7 @@ export default function SignUp() {
             <div className="relative z-10">
               <div className="flex items-center gap-4 text-white/80 text-sm font-label uppercase tracking-widest">
                 <span className="w-8 h-[2px] bg-white"></span>
-                BLAST AGENT Infrastructure
+                B.L.A.S.T AGENT Infrastructure
               </div>
             </div>
           </div>
@@ -76,7 +82,7 @@ export default function SignUp() {
             <div className="mb-10">
               <div className="md:hidden mb-8 flex items-center gap-2">
                 <span className="material-symbols-outlined text-2xl text-primary" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
-                <span className="font-headline font-black text-xl tracking-tighter text-on-surface">BLAST AGENT</span>
+                <span className="font-headline font-black text-xl tracking-tighter text-on-surface">B.L.A.S.T AGENT</span>
               </div>
               <h1 className="text-primary-container text-4xl md:text-5xl font-extrabold tracking-tighter mb-2">Create Your Account</h1>
               <p className="text-secondary font-medium text-sm">Step into the TEST COMMAND CENTER.</p>
@@ -86,6 +92,13 @@ export default function SignUp() {
               <div className="mb-6 flex items-center gap-3 p-4 bg-error-container text-on-error-container rounded-lg border-l-4 border-error">
                 <span className="material-symbols-outlined text-error">error</span>
                 <span className="text-sm font-bold">{error}</span>
+              </div>
+            )}
+            
+            {successMsg && (
+              <div className="mb-6 flex items-center gap-3 p-4 bg-green-100 text-green-800 rounded-lg border-l-4 border-green-600">
+                <span className="material-symbols-outlined text-green-600">check_circle</span>
+                <span className="text-sm font-bold">{successMsg}</span>
               </div>
             )}
 
@@ -176,7 +189,7 @@ export default function SignUp() {
             {/* Legal/Trust */}
             <div className="mt-16 pt-8 border-t border-outline-variant/15">
               <p className="text-[11px] text-on-surface-variant/60 leading-relaxed max-w-sm">
-                By signing up, you agree to the BLAST AGENT <Link className="underline" to="#">Terms of Service</Link> and <Link className="underline" to="#">Privacy Policy</Link>. We use encryption to protect your data.
+                By signing up, you agree to the B.L.A.S.T AGENT <Link className="underline" to="#">Terms of Service</Link> and <Link className="underline" to="#">Privacy Policy</Link>. We use encryption to protect your data.
               </p>
             </div>
           </div>
@@ -190,7 +203,7 @@ export default function SignUp() {
           <Link className="text-xs font-normal text-on-surface-variant hover:text-primary-container transition-colors" to="#">Help Center</Link>
         </div>
         <p className="text-xs font-normal text-on-surface-variant/60">
-          © 2026 BLAST AGENT. All rights reserved.
+          © 2026 B.L.A.S.T AGENT. All rights reserved.
         </p>
       </footer>
     </div>
