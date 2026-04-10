@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 const navItems = [
   { id: 'connections', icon: 'hub', label: 'Test Connection' },
@@ -22,10 +23,19 @@ export default function Sidebar({ activePage, onNavigate, onToggleDark, collapse
   const [mobileOpen, setMobileOpen] = useState(false);
   const automationActive = automationChildren.some((c) => c.id === activePage);
   const [autoOpen, setAutoOpen] = useState(automationActive);
+  const navigate = useNavigate();
 
   const handleNav = (id) => {
     onNavigate(id);
     setMobileOpen(false);
+  };
+
+  const handleLogout = () => {
+    // Clear user tokens from local storage
+    localStorage.removeItem('blast_token');
+    localStorage.removeItem('blast_user');
+    // Navigate back to the login screen
+    navigate('/login');
   };
 
   return (
@@ -225,6 +235,16 @@ export default function Sidebar({ activePage, onNavigate, onToggleDark, collapse
           >
             <span className="material-symbols-outlined">dark_mode</span>
             {!collapsed && <span className="text-sm">Dark Mode</span>}
+          </button>
+          
+          {/* Logout Button */}
+          <button
+            onClick={handleLogout}
+            title={collapsed ? 'Logout' : ''}
+            className={`flex items-center ${collapsed ? 'justify-center px-0' : 'gap-4 px-4'} py-3 w-full text-on-surface-variant dark:text-slate-400 font-medium hover:bg-error/10 hover:text-error transition-all rounded-sm text-left`}
+          >
+            <span className="material-symbols-outlined text-error">logout</span>
+            {!collapsed && <span className="text-sm font-bold text-error">Logout</span>}
           </button>
         </div>
       </aside>
