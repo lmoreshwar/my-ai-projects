@@ -348,13 +348,30 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
             </div>
             <div className="space-y-2">
               <label className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500 ml-1">
-                MODEL NAME
+                LLM MODEL
               </label>
-              <input
-                className="w-full h-12 px-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded focus:border-app-red focus:ring-1 focus:ring-app-red transition-all text-sm text-on-surface dark:text-white"
-                placeholder={connections.llm.platform === 'ollama' ? 'llama3' : connections.llm.platform === 'gemini' ? 'gemini-2.5-flash' : 'auto'}
-                value={connections.llm.model || ''}
-                onChange={(e) => updateConn('llm', 'model', e.target.value)}
+              <CustomSelect
+                value={connections.llm.model}
+                onChange={(val) => updateConn('llm', 'model', val)}
+                options={
+                  connections.llm.platform === 'groq' 
+                    ? [
+                        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B' },
+                        { value: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B' }
+                      ]
+                    : connections.llm.platform === 'gemini'
+                    ? [
+                        { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+                        { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash' },
+                        { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' }
+                      ]
+                    : [
+                        { value: 'grok-2', label: 'Grok 2' },
+                        { value: 'llama3', label: 'Llama 3 (Local)' }
+                      ]
+                }
+                placeholder="Select Model"
+                className="w-full"
               />
             </div>
             <div className="space-y-2">

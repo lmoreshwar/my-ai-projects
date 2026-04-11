@@ -62,11 +62,9 @@ class LLMConnector {
         // Gemini fallback chain — if the primary model is unavailable (503),
         // we'll try alternatives automatically
         const GEMINI_FALLBACK_CHAIN = {
-            'gemini-2.5-flash':   ['gemini-2.0-flash', 'gemini-1.5-flash'],
-            'gemini-2.5-pro':     ['gemini-2.0-flash', 'gemini-1.5-pro'],
-            'gemini-2.0-flash':   ['gemini-2.5-flash', 'gemini-1.5-flash'],
-            'gemini-1.5-flash':   ['gemini-2.0-flash', 'gemini-2.5-flash'],
-            'gemini-1.5-pro':     ['gemini-2.5-pro', 'gemini-2.0-flash'],
+            'gemini-2.0-flash':   ['gemini-1.5-flash', 'gemini-1.5-pro'],
+            'gemini-1.5-flash':   ['gemini-2.0-flash', 'gemini-1.5-pro'],
+            'gemini-1.5-pro':     ['gemini-2.0-flash', 'gemini-1.5-flash'],
         };
 
         console.log(`[LLM] Using model: ${model}, Platform: ${this.platform}`);

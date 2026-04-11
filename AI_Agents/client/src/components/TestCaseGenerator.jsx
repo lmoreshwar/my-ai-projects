@@ -437,9 +437,9 @@ Then the full test case table.`;
         let errMsg = errData.detail || '';
         // Detect Vercel serverless timeout (504)
         if (r.status === 504 || (!errMsg && r.status >= 500)) {
-          errMsg = `Server timeout (HTTP ${r.status}). The LLM generation took too long.\n\nTo fix this:\n1. Try a faster model (e.g., gemini-2.5-flash on Gemini, llama-3.3-70b-versatile on Groq)\n2. Simplify your requirement or split it into smaller parts\n3. Add Generation Instructions to limit scope (e.g., "generate only 10 functional test cases")`;
+          errMsg = `Server timeout (HTTP ${r.status}). The LLM generation took too long.\n\nTo fix this:\n1. Try a faster model (e.g., gemini-2.0-flash on Gemini, llama-3.3-70b-versatile on Groq)\n2. Simplify your requirement or split it into smaller parts\n3. Add Generation Instructions to limit scope (e.g., "generate only 10 functional test cases")`;
         } else if (errMsg.toLowerCase().includes('token')) {
-          errMsg = `⚠️ Token limit exceeded: ${errMsg}\n\nTry: 1) Use a model with higher token capacity (e.g., gemini-2.5-flash, llama-3.3-70b-versatile) 2) Split requirement into smaller parts`;
+          errMsg = `⚠️ Token limit exceeded: ${errMsg}\n\nTry: 1) Use a model with higher token capacity (e.g., gemini-2.0-flash, llama-3.3-70b-versatile) 2) Split requirement into smaller parts`;
         } else if (!errMsg) {
           errMsg = `Generation failed (HTTP ${r.status}). Please check your LLM connection settings.`;
         }
