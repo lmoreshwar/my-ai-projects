@@ -63,13 +63,10 @@ export default {
       fontFamily: {
         headline: ["Inter", "system-ui", "sans-serif"],
         body: ["Inter", "system-ui", "sans-serif"],
-        label: ["Inter", "system-ui", "sans-serif"]
-      },
-        body: ["Inter", "system-ui", "sans-serif"],
         label: ["Inter", "system-ui", "sans-serif"],
       },
     },
   },
   plugins: [],
-}
+};
 
