@@ -4,7 +4,7 @@ services:
     runtime: node
     region: oregon
     plan: free
-    rootDir: .
+    rootDir: AI_Agents
     buildCommand: npm install && cd client && npm install && npm run build
     startCommand: node api/index.js
     envVars:
