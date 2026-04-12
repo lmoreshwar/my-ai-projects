@@ -8,17 +8,21 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
 
+  // Use relative URL in production, localhost in dev
+  const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '';
+
   const handleLogin = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
     try {
-      const response = await fetch('http://localhost:10000/api/auth/login', {
+      const response = await fetch(`${API_BASE}/api/auth/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'same-origin',
         body: JSON.stringify({ email, password }),
       });
 
@@ -28,14 +32,13 @@ export default function Login() {
         throw new Error(data.message || 'Login failed');
       }
 
-      console.log('User logged in:', data.user);
-      // Save token and user details to localStorage
+      // Save token and user details to localStorage (no sensitive data logged)
       localStorage.setItem('blast_token', data.token);
       localStorage.setItem('blast_user', JSON.stringify(data.user));
       
       navigate('/dashboard');
     } catch (err) {
-      setError(err.message);
+      setError(err.message === 'Failed to fetch' ? 'Unable to connect to server. Please try again.' : err.message);
     } finally {
       setLoading(false);
     }
@@ -65,30 +68,32 @@ export default function Login() {
                   <span className="text-sm font-bold">{error}</span>
                 </div>
               )}
-              <form className="space-y-6" onSubmit={handleLogin}>
+              <form className="space-y-6" onSubmit={handleLogin} autoComplete="off">
                 <div className="space-y-1">
-                  <label className="text-secondary text-sm font-semibold tracking-wide block" htmlFor="email">Email</label>
+                  <label className="text-secondary text-sm font-semibold tracking-wide block" htmlFor="login-email">Email</label>
                   <input
                     className="w-full border-0 border-b-2 border-outline-variant bg-surface-container-highest px-4 py-3 focus:ring-0 focus:border-primary transition-colors duration-200"
-                    id="email"
-                    name="email"
+                    id="login-email"
+                    name="login-email"
                     placeholder="admin@blastai.com"
                     type="email"
+                    autoComplete="off"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                   />
                 </div>
                 <div className="space-y-1">
                   <div className="flex justify-between items-center">
-                    <label className="text-secondary text-sm font-semibold tracking-wide block" htmlFor="password">Password</label>
+                    <label className="text-secondary text-sm font-semibold tracking-wide block" htmlFor="login-password">Password</label>
                     <Link className="text-tertiary text-xs font-medium hover:text-primary transition-colors" to="#">Forgot Password?</Link>
                   </div>
                   <input
                     className="w-full border-0 border-b-2 border-outline-variant bg-surface-container-highest px-4 py-3 focus:ring-0 focus:border-primary transition-colors duration-200"
-                    id="password"
-                    name="password"
+                    id="login-password"
+                    name="login-password"
                     placeholder="••••••••"
                     type="password"
+                    autoComplete="off"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                   />

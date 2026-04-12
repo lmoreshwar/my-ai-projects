@@ -18,11 +18,13 @@ export default function SignUp() {
     setLoading(true);
 
     try {
-      const response = await fetch('http://localhost:10000/api/auth/signup', {
+      const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '';
+      const response = await fetch(`${API_BASE}/api/auth/signup`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'same-origin',
         body: JSON.stringify({ firstName, lastName, email, password }),
       });
 
@@ -31,8 +33,6 @@ export default function SignUp() {
       if (!response.ok) {
         throw new Error(data.message || 'Registration failed');
       }
-
-      console.log("Registered user:", data);
       setSuccessMsg("Registration successful! Redirecting to login...");
       
       // Delay navigation so user can see the success message
@@ -40,7 +40,7 @@ export default function SignUp() {
         navigate('/login');
       }, 2000);
     } catch (err) {
-      setError(err.message);
+      setError(err.message === 'Failed to fetch' ? 'Unable to connect to server. Please try again.' : err.message);
     } finally {
       setLoading(false);
     }
@@ -102,7 +102,7 @@ export default function SignUp() {
               </div>
             )}
 
-            <form className="space-y-8 max-w-lg" onSubmit={handleSignUp}>
+            <form className="space-y-8 max-w-lg" onSubmit={handleSignUp} autoComplete="off">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                 {/* First Name */}
                 <div className="relative group">
@@ -113,6 +113,7 @@ export default function SignUp() {
                     name="first_name"
                     placeholder="E.g. John"
                     type="text"
+                    autoComplete="off"
                     value={firstName}
                     onChange={(e) => setFirstName(e.target.value)}
                     required
@@ -127,6 +128,7 @@ export default function SignUp() {
                     name="last_name"
                     placeholder="E.g. Doe"
                     type="text"
+                    autoComplete="off"
                     value={lastName}
                     onChange={(e) => setLastName(e.target.value)}
                     required
@@ -141,10 +143,11 @@ export default function SignUp() {
                   <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-on-surface-variant/60 text-sm">mail</span>
                   <input
                     className="w-full bg-surface-container-highest border-0 border-b-2 border-transparent focus:border-primary-container focus:ring-0 transition-all duration-200 pl-12 pr-4 py-3 rounded-t-md text-on-surface placeholder:text-on-surface-variant/40"
-                    id="email"
-                    name="email"
+                    id="signup-email"
+                    name="signup-email"
                     placeholder="admin@blastai.com"
                     type="email"
+                    autoComplete="off"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required
@@ -159,10 +162,11 @@ export default function SignUp() {
                   <span className="material-symbols-outlined absolute left-4 top-1/2 -translate-y-1/2 text-on-surface-variant/60 text-sm">lock</span>
                   <input
                     className="w-full bg-surface-container-highest border-0 border-b-2 border-transparent focus:border-primary-container focus:ring-0 transition-all duration-200 pl-12 pr-4 py-3 rounded-t-md text-on-surface placeholder:text-on-surface-variant/40"
-                    id="password"
-                    name="password"
+                    id="signup-password"
+                    name="signup-password"
                     placeholder="••••••••"
                     type="password"
+                    autoComplete="new-password"
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     required
