@@ -19,7 +19,7 @@ const ConfluenceTool = require('./_tools/confluence_tool');
 
 const app = express();
 
-app.use(cors({ origin: '*', methods: ['GET', 'POST', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.use(express.json({ limit: '10mb' }));
 
 // Import and use Auth Routes

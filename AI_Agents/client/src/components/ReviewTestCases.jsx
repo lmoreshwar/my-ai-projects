@@ -276,34 +276,35 @@ The coverage engine has already filtered out non-testable items (user story wrap
 
 ## TASK
 Provide QUALITATIVE analysis only. The coverage percentage is already calculated — DO NOT recalculate it. Focus on:
-1. Gap Analysis — what test design techniques (BVA, EP, Negative, Security) are missing for COVERED requirements
-2. Quality Issues — weak or vague test cases
-3. Duplicate detection
-4. Strategic insights and recommendations
+1. Duplicate detection — identify test cases that test the same thing
+2. Strategic insights — what the test suite covers well
+3. Improvement opportunities — what ADDITIONAL test cases could be added to increase coverage (these are OPTIONAL suggestions for expanding the suite, NOT criticisms of existing test cases)
+
+## IMPORTANT CONTEXT FOR RECOMMENDATIONS
+- The user may have intentionally limited the number of test cases (e.g., "generate only 5 test cases"). The current test cases are NOT wrong or incomplete — they may simply be a subset.
+- Frame recommendations as OPTIONAL expansion opportunities: "To increase coverage from X% to Y%, consider adding..."
+- Each recommendation MUST include a brief reason (e.g., "because requirement R3 mentions empty field validation which is not yet covered by any test case")
+- Do NOT recommend adding test cases for requirements that are already marked as Fully covered
+- Do NOT use phrases like "quality issues" or "weak test cases" — the AI generated these test cases and they follow best practices
 
 ## OUTPUT FORMAT (STRICT JSON — no markdown, no code fences)
 Return ONLY valid JSON:
 {
-  "gapAnalysis": [
-    {"gapId": "G1", "missingScenario": "...", "impact": "...", "severity": "High|Medium|Low"}
-  ],
-  "qualityIssues": [
-    {"issueId": "Q1", "testCaseId": "TC_001", "issue": "...", "recommendation": "..."}
-  ],
   "duplicates": [
     {"group": 1, "testCaseIds": ["TC_001", "TC_002"], "recommendation": "merge into one"}
   ],
-  "insights": "2-3 sentences of strategic analysis about what the test suite covers well and where it falls short...",
+  "insights": "2-3 sentences of strategic analysis. Start with what the test suite covers well. Then mention what percentage of requirements are covered and what areas could benefit from additional test cases.",
   "strengths": ["strength 1", "strength 2"],
-  "gaps": ["gap 1", "gap 2"],
-  "recommendations": ["recommendation 1", "recommendation 2"],
+  "recommendations": ["To increase coverage, consider adding a test case for [specific scenario] — because [specific requirement] mentions [specific behavior] that is not yet covered by any existing test case"],
   "negativeStatus": "Optimized|Partially Covered|High Risk",
   "edgeCaseStatus": "Optimized|Partially Covered|High Risk"
 }
 
 ## RULES
 - DO NOT include overallCoverage or requirementTraceability — those are pre-calculated
-- Focus on actionable gaps and quality feedback for IN-SCOPE requirements only
+- DO NOT include gapAnalysis or qualityIssues fields — those sections have been removed from the UI
+- Frame everything positively — strengths first, then optional improvement opportunities
+- Each recommendation must explain WHY it would help (link to specific uncovered requirement)
 - Do NOT hallucinate gaps for features without documented acceptance criteria
 - Return ONLY the JSON object`;
 
@@ -465,15 +466,10 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
         // Qualitative values (from LLM, with defaults)
         negativeStatus: llmData.negativeStatus || statusFromPct(cvg.pct),
         edgeCaseStatus: llmData.edgeCaseStatus || statusFromPct(cvg.pct),
-        gapAnalysis: llmData.gapAnalysis || cvg.traceability
-          .filter(r => r.coverage === 'None')
-          .map((r, i) => ({ gapId: `G${i + 1}`, missingScenario: r.requirement, impact: 'Untested requirement', severity: 'High' })),
-        qualityIssues: llmData.qualityIssues || [],
         duplicates: llmData.duplicates || [],
-        insights: llmData.insights || `Coverage analysis: ${cvg.full} requirements fully covered, ${cvg.partial} partially covered, ${cvg.none} not covered out of ${cvg.total} total requirements.`,
-        strengths: llmData.strengths || (cvg.full > 0 ? [`${cvg.full} requirement(s) fully covered by test cases`] : []),
-        gaps: llmData.gaps || cvg.traceability.filter(r => r.coverage === 'None').map(r => r.requirement),
-        recommendations: llmData.recommendations || (cvg.none > 0 ? [`Add test cases for ${cvg.none} uncovered requirement(s)`] : ['Test coverage is adequate']),
+        insights: llmData.insights || `Your test suite contains ${parsedCases.length} test cases covering ${cvg.full} out of ${cvg.total} requirements fully${cvg.partial > 0 ? `, with ${cvg.partial} partially covered` : ''}. ${cvg.pct >= 80 ? 'The overall coverage is strong.' : cvg.pct >= 50 ? 'There is room to expand coverage with additional test cases.' : 'Consider generating additional test cases to improve coverage.'}`,
+        strengths: llmData.strengths || (cvg.full > 0 ? [`${cvg.full} out of ${cvg.total} requirement(s) fully covered by existing test cases`] : [`${parsedCases.length} test cases generated and ready for review`]),
+        recommendations: llmData.recommendations || (cvg.none > 0 ? [`To increase coverage from ${cvg.pct}% to 100%, consider adding test cases for the ${cvg.none} uncovered requirement(s) listed in the Requirement Coverage table below`] : ['All requirements are covered by existing test cases — no additional test cases needed']),
       };
 
       setCoverage(result);
@@ -488,32 +484,20 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
     if (!coverage) return alert('Run analysis first');
     let content = `# Test Case Review & Coverage Report\n\n## Overall Coverage: ${coverage.overallCoverage}%\n\n`;
     if (coverage.coverageCalculation) {
-      content += `## Coverage Calculation\n- Total Requirements: ${coverage.coverageCalculation.totalRequirements}\n- Fully Covered: ${coverage.coverageCalculation.fullyCovered}\n- Partially Covered: ${coverage.coverageCalculation.partiallyCovered}\n- Not Covered: ${coverage.coverageCalculation.notCovered}\n- Formula: ${coverage.coverageCalculation.formula}\n\n`;
+      content += `## Coverage Summary\n- Total Requirements Analyzed: ${coverage.coverageCalculation.totalRequirements}\n- Covered: ${coverage.coverageCalculation.fullyCovered}\n- Partially Covered: ${coverage.coverageCalculation.partiallyCovered}\n- Uncovered: ${coverage.coverageCalculation.notCovered}\n- Test Cases Analyzed: ${coverage.coverageCalculation.testCasesAnalyzed}\n\n`;
     }
-    content += `## Functional Status: ${coverage.functionalStatus}\n## Negative Scenarios: ${coverage.negativeStatus}\n## Edge Cases: ${coverage.edgeCaseStatus}\n\n`;
-    content += `## Mapped Requirements\n- Functional: ${coverage.mappedFunctional?.[0]}/${coverage.mappedFunctional?.[1]}\n- Non-Functional: ${coverage.mappedNonFunctional?.[0]}/${coverage.mappedNonFunctional?.[1]}\n\n`;
+    content += `## Status\n- Functional Pathways: ${coverage.functionalStatus}\n- Negative Scenarios: ${coverage.negativeStatus}\n- Edge Cases: ${coverage.edgeCaseStatus}\n\n`;
     if (coverage.requirementTraceability && coverage.requirementTraceability.length > 0) {
-      content += `## Requirement Traceability Matrix\n\n| Req ID | Requirement | Coverage | Test Cases | Comments |\n|--------|-------------|----------|------------|----------|\n`;
+      content += `## Requirement Coverage\n\n| ID | Requirement | Status | Covered By | Reason |\n|----|-------------|--------|------------|--------|\n`;
       coverage.requirementTraceability.forEach(r => {
-        content += `| ${r.id} | ${r.requirement} | ${r.coverage} | ${(r.testCaseIds || []).join(', ')} | ${r.comments || ''} |\n`;
+        const tcCount = (r.testCaseIds || []).length;
+        const covLabel = r.coverage === 'Full' ? 'Covered' : r.coverage === 'Partial' ? 'Partial' : 'Uncovered';
+        const reason = r.coverage === 'Full' ? `Covered by ${tcCount} test case(s)` : r.coverage === 'Partial' ? `Partially addressed by ${tcCount} test case(s)` : 'No matching test case found';
+        content += `| ${r.id} | ${r.requirement} | ${covLabel} | ${(r.testCaseIds || []).join(', ')} | ${reason} |\n`;
       });
       content += '\n';
     }
-    if (coverage.gapAnalysis && coverage.gapAnalysis.length > 0) {
-      content += `## Gap Analysis\n\n| Gap ID | Missing Scenario | Impact | Severity |\n|--------|------------------|--------|----------|\n`;
-      coverage.gapAnalysis.forEach(g => {
-        content += `| ${g.gapId} | ${g.missingScenario} | ${g.impact} | ${g.severity} |\n`;
-      });
-      content += '\n';
-    }
-    if (coverage.qualityIssues && coverage.qualityIssues.length > 0) {
-      content += `## Quality Issues\n\n| Issue ID | Test Case | Issue | Recommendation |\n|----------|-----------|-------|----------------|\n`;
-      coverage.qualityIssues.forEach(q => {
-        content += `| ${q.issueId} | ${q.testCaseId} | ${q.issue} | ${q.recommendation} |\n`;
-      });
-      content += '\n';
-    }
-    content += `## AI Insights\n${coverage.insights}\n\n## Strengths\n${(coverage.strengths || []).map(s => '- ' + s).join('\n')}\n\n## Gaps\n${(coverage.gaps || []).map(g => '- ' + g).join('\n')}\n\n## Recommendations\n${(coverage.recommendations || []).map(r => '- ' + r).join('\n')}\n\n---\n\n`;
+    content += `## AI Analysis\n${coverage.insights}\n\n### Strengths\n${(coverage.strengths || []).map(s => '- ' + s).join('\n')}\n\n### Coverage Improvement Opportunities\n${(coverage.recommendations || []).map(r => '- ' + r).join('\n')}\n\n---\n\n`;
 
     // Rebuild Test Cases section from parsedCases (reflects removals)
     // Preserve non-table content (OUT OF SCOPE, SELF-VALIDATION, etc.) from original
@@ -664,12 +648,12 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
 
           {/* JIRA ID */}
-          <div className={`bg-white dark:bg-slate-800 p-3 rounded-lg flex items-center gap-3 transition-all ${activeInputMethod && activeInputMethod !== 'jira' ? 'opacity-40 pointer-events-none' : ''}`}
+          <div className={`bg-white dark:bg-slate-800 p-3 rounded-lg transition-all ${activeInputMethod && activeInputMethod !== 'jira' ? 'opacity-40 pointer-events-none' : ''}`}
             title={activeInputMethod && activeInputMethod !== 'jira' ? 'Clear current input to use JIRA lookup' : ''}>
-            <span className="material-symbols-outlined text-secondary">link</span>
-            <div className="flex-1 min-w-0">
-              <label className="block text-[10px] text-on-surface-variant dark:text-slate-400 font-medium">JIRA ID</label>
-              <div className="flex items-center gap-1">
+            <label className="block text-[10px] text-on-surface-variant dark:text-slate-400 font-medium mb-1.5">JIRA Ticket ID</label>
+            <div className="flex items-center gap-2">
+              <div className="flex-1 min-w-0 flex items-center gap-2 bg-slate-50 dark:bg-slate-700 rounded-lg px-3 py-2 border border-slate-200 dark:border-slate-600 focus-within:ring-2 focus-within:ring-app-red/40 focus-within:border-app-red transition-all">
+                <span className="material-symbols-outlined text-secondary text-lg">link</span>
                 <input
                   className="w-full bg-transparent border-none p-0 text-sm font-bold focus:ring-0 focus:outline-none dark:text-white placeholder:text-secondary/60"
                   type="text"
@@ -679,19 +663,22 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
                   onKeyDown={(e) => e.key === 'Enter' && fetchJira()}
                   disabled={activeInputMethod && activeInputMethod !== 'jira'}
                 />
-                <button
-                  onClick={fetchJira}
-                  disabled={fetchingJira || !ticketId.trim() || (activeInputMethod && activeInputMethod !== 'jira')}
-                  className="text-app-red hover:text-red-700 disabled:opacity-40 transition shrink-0"
-                >
-                  <span className="material-symbols-outlined text-sm">{fetchingJira ? 'progress_activity' : 'send'}</span>
-                </button>
-                {(ticketId || issueData) && (
-                  <button onClick={() => { setTicketId(''); setIssueData(null); setCoverage(null); }} className="text-slate-400 hover:text-red-500 transition shrink-0">
-                    <span className="material-symbols-outlined text-sm">close</span>
-                  </button>
-                )}
               </div>
+              <button
+                onClick={fetchJira}
+                disabled={fetchingJira || !ticketId.trim() || (activeInputMethod && activeInputMethod !== 'jira')}
+                className="shrink-0 bg-app-red text-white w-10 h-10 rounded-lg hover:bg-red-700 transition flex items-center justify-center disabled:opacity-40"
+                title="Search JIRA"
+              >
+                <span className="material-symbols-outlined text-lg">{fetchingJira ? 'progress_activity' : 'search'}</span>
+              </button>
+              {(ticketId || issueData) && (
+                <button onClick={() => { setTicketId(''); setIssueData(null); setCoverage(null); }}
+                  className="shrink-0 w-10 h-10 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-400 hover:text-red-500 hover:border-red-300 transition flex items-center justify-center"
+                  title="Clear JIRA">
+                  <span className="material-symbols-outlined text-lg">close</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -836,155 +823,103 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
         </div>
       )}
 
-      {/* ── AI & Risk Intelligence (Collapsible) ── */}
+      {/* ── AI Analysis Summary ── */}
       {coverage && (
-        <section className="space-y-0">
-          <button
-            onClick={() => setRiskExpanded(!riskExpanded)}
-            className="w-full flex items-center justify-between p-5 bg-gradient-to-r from-slate-50 to-white dark:from-slate-900 dark:to-slate-800 rounded-xl border border-outline-variant/20 shadow-sm hover:shadow-md transition-all"
-          >
-            <div className="flex items-center gap-3">
+        <section className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-outline-variant/10 overflow-hidden">
+          <div className="p-6">
+            <div className="flex items-center gap-3 mb-4">
               <span className="material-symbols-outlined text-app-red text-xl" style={{ fontVariationSettings: "'FILL' 1" }}>psychology</span>
-              <div className="text-left">
-                <h2 className="text-lg font-bold text-on-surface dark:text-white tracking-tight">AI &amp; Risk Intelligence</h2>
-                <p className="text-[10px] text-secondary font-medium">
-                  {coverage.gapAnalysis?.length || 0} gaps · {coverage.qualityIssues?.length || 0} issues · {coverage.duplicates?.length || 0} duplicates
-                </p>
-              </div>
-            </div>
-            <span className="material-symbols-outlined text-secondary transition-transform duration-300" style={{ transform: riskExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>
-              expand_more
-            </span>
-          </button>
-
-          {riskExpanded && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-5 animate-in">
-
-            {/* Card 1: AI Strategic Insights */}
-            <div className="bg-gradient-to-br from-app-red to-red-700 p-6 rounded-2xl text-white flex flex-col shadow-lg">
-              <div className="flex justify-between items-start mb-4">
-                <span className="material-symbols-outlined bg-white/20 p-2 rounded-lg">psychology</span>
-                <span className="text-[10px] bg-white/30 px-2 py-1 rounded-full font-bold uppercase">Insights</span>
-              </div>
-              <h3 className="text-xl font-bold mb-2">AI Strategic Insights</h3>
-              <div className="max-h-[180px] overflow-y-auto pr-1 flex-1">
-                <p className="text-sm text-white/80 leading-relaxed">&ldquo;{coverage.insights}&rdquo;</p>
-                {coverage.recommendations && coverage.recommendations.length > 0 && (
-                  <div className="mt-3 pt-3 border-t border-white/20">
-                    <p className="text-[10px] font-bold uppercase tracking-widest mb-2 text-white/60">Recommendations</p>
-                    <ul className="space-y-1">
-                      {coverage.recommendations.map((r, i) => (
-                        <li key={i} className="text-xs text-white/80 flex items-start gap-2">
-                          <span className="material-symbols-outlined text-white/50 text-sm mt-0.5">lightbulb</span>{r}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-              </div>
+              <h2 className="text-lg font-bold text-on-surface dark:text-white tracking-tight">AI Analysis Summary</h2>
             </div>
 
-            {/* Card 2: Gap Analysis */}
-            <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl flex flex-col border-l-8 border-blue-600 shadow-sm">
-              <div className="flex justify-between items-start mb-4">
-                <span className="material-symbols-outlined text-blue-600 bg-blue-100 dark:bg-blue-900/30 p-2 rounded-lg">analytics</span>
-                <span className="text-[10px] bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-2 py-1 rounded-full font-bold uppercase">{coverage.gapAnalysis?.length || 0} Gaps</span>
-              </div>
-              <h3 className="text-xl font-bold text-on-surface dark:text-white mb-2">Gap Analysis</h3>
-              <div className="max-h-[180px] overflow-y-auto pr-1 flex-1">
-                {coverage.gapAnalysis && coverage.gapAnalysis.length > 0 ? (
-                  <div className="space-y-2">
-                    {coverage.gapAnalysis.map((g, i) => (
-                      <div key={i} className="flex items-start gap-2 p-2 bg-slate-50 dark:bg-slate-800 rounded-lg">
-                        <span className="font-mono text-[10px] font-bold text-amber-600 bg-amber-100 dark:bg-amber-900/30 px-1.5 py-0.5 rounded shrink-0">{g.gapId}</span>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs font-semibold text-on-surface dark:text-white">{g.missingScenario}</p>
-                          <p className="text-[10px] text-secondary mt-0.5">{g.impact}</p>
-                        </div>
-                        <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${g.severity === 'High' ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400' : g.severity === 'Medium' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}`}>{g.severity}</span>
-                      </div>
+            {/* Summary Text */}
+            <p className="text-sm text-on-surface-variant dark:text-slate-400 leading-relaxed mb-5">{coverage.insights}</p>
+
+            {/* Strengths & Recommendations side by side */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+              {/* Strengths */}
+              {coverage.strengths && coverage.strengths.length > 0 && (
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-widest text-green-600 mb-2 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>thumb_up</span> Strengths
+                  </h4>
+                  <ul className="space-y-1.5">
+                    {coverage.strengths.map((s, i) => (
+                      <li key={i} className="text-xs text-on-surface dark:text-slate-300 flex items-start gap-2 bg-green-50 dark:bg-green-900/10 px-3 py-2 rounded-lg">
+                        <span className="material-symbols-outlined text-green-500 text-sm mt-0.5 shrink-0" style={{ fontVariationSettings: "'FILL' 1" }}>check_circle</span>
+                        {s}
+                      </li>
                     ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-on-surface-variant italic">No gaps detected.</p>
-                )}
-              </div>
-            </div>
-
-            {/* Card 3: Quality Issues */}
-            <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl flex flex-col shadow-sm border border-outline-variant/15">
-              <div className="flex justify-between items-start mb-4">
-                <span className="material-symbols-outlined text-orange-500 bg-orange-100 dark:bg-orange-900/30 p-2 rounded-lg">report_problem</span>
-                <span className="text-[10px] bg-orange-100 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 px-2 py-1 rounded-full font-bold uppercase">{coverage.qualityIssues?.length || 0} Issues</span>
-              </div>
-              <h3 className="text-xl font-bold text-on-surface dark:text-white mb-2">Quality Issues</h3>
-              <div className="max-h-[180px] overflow-y-auto pr-1 flex-1">
-                {coverage.qualityIssues && coverage.qualityIssues.length > 0 ? (
-                  <div className="space-y-2">
-                    {coverage.qualityIssues.map((q, i) => (
-                      <div key={i} className="flex items-start gap-2 p-2 bg-orange-50/50 dark:bg-orange-900/10 rounded-lg">
-                        <span className="font-mono text-[10px] font-bold text-orange-600 bg-orange-100 dark:bg-orange-900/30 px-1.5 py-0.5 rounded shrink-0">{q.issueId}</span>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-xs"><span className="font-mono text-blue-600">{q.testCaseId}</span>: {q.issue}</p>
-                          <p className="text-[10px] text-secondary mt-0.5">Fix: {q.recommendation}</p>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-on-surface-variant italic">No quality issues found.</p>
-                )}
-              </div>
-            </div>
-
-            {/* Card 4: Duplicates (if any) */}
-            {coverage.duplicates && coverage.duplicates.length > 0 && (
-              <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl flex flex-col shadow-sm border border-outline-variant/15">
-                <div className="flex justify-between items-start mb-4">
-                  <span className="material-symbols-outlined text-gray-500 bg-gray-100 dark:bg-gray-800 p-2 rounded-lg">content_copy</span>
-                  <span className="text-[10px] bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 px-2 py-1 rounded-full font-bold uppercase">{coverage.duplicates.length} Dupes</span>
+                  </ul>
                 </div>
-                <h3 className="text-xl font-bold text-on-surface dark:text-white mb-2">Duplicates</h3>
-                <div className="max-h-[180px] overflow-y-auto pr-1 flex-1">
-                  <div className="space-y-2">
-                    {coverage.duplicates.map((d, i) => (
-                      <div key={i} className="flex items-center gap-3 p-2 bg-slate-50 dark:bg-slate-800 rounded-lg">
-                        <span className="text-[10px] font-bold text-secondary">Group {d.group}</span>
-                        <span className="font-mono text-xs text-blue-600">{(d.testCaseIds || []).join(', ')}</span>
-                        <span className="text-[10px] text-secondary ml-auto">{d.recommendation}</span>
-                      </div>
+              )}
+
+              {/* Coverage Improvement Opportunities */}
+              {coverage.recommendations && coverage.recommendations.length > 0 && (
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-widest text-blue-600 mb-1 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>lightbulb</span> Coverage Improvement Opportunities
+                  </h4>
+                  <p className="text-[10px] text-secondary mb-2 leading-relaxed">
+                    These are optional suggestions to increase coverage. Your current test cases are valid — these highlight additional scenarios from your requirements that aren&apos;t covered yet.
+                  </p>
+                  <ul className="space-y-1.5">
+                    {coverage.recommendations.map((r, i) => (
+                      <li key={i} className="text-xs text-on-surface dark:text-slate-300 flex items-start gap-2 bg-blue-50 dark:bg-blue-900/10 px-3 py-2 rounded-lg">
+                        <span className="material-symbols-outlined text-blue-500 text-sm mt-0.5 shrink-0">arrow_forward</span>
+                        {r}
+                      </li>
                     ))}
-                  </div>
+                  </ul>
+                </div>
+              )}
+            </div>
+
+            {/* Duplicate Test Cases (inline, only if found) */}
+            {coverage.duplicates && coverage.duplicates.length > 0 && (
+              <div className="mt-5 pt-4 border-t border-slate-100 dark:border-slate-800">
+                <h4 className="text-xs font-bold uppercase tracking-widest text-amber-600 mb-2 flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-sm">content_copy</span> Potential Duplicates ({coverage.duplicates.length})
+                </h4>
+                <div className="space-y-1.5">
+                  {coverage.duplicates.map((d, i) => (
+                    <div key={i} className="flex items-center gap-3 text-xs bg-amber-50 dark:bg-amber-900/10 px-3 py-2 rounded-lg">
+                      <span className="font-mono font-bold text-blue-600">{(d.testCaseIds || []).join(', ')}</span>
+                      <span className="text-on-surface-variant dark:text-slate-400">— {d.recommendation}</span>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
-            </div>
-          )}
+          </div>
         </section>
       )}
 
-      {/* ── Requirement Traceability Matrix (Collapsible) ── */}
+      {/* ── Requirement Coverage ── */}
       {coverage?.requirementTraceability && coverage.requirementTraceability.length > 0 && (
-        <section className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border-l-4 border-purple-600 overflow-hidden">
+        <section className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-outline-variant/10 overflow-hidden">
           <button
             onClick={() => setRtmExpanded(!rtmExpanded)}
             className="w-full flex items-center justify-between p-5 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors"
           >
             <div className="flex items-center gap-3">
-              <span className="material-symbols-outlined text-purple-600">account_tree</span>
+              <span className="material-symbols-outlined text-purple-600" style={{ fontVariationSettings: "'FILL' 1" }}>account_tree</span>
               <div className="text-left">
-                <h4 className="font-bold text-on-surface dark:text-white">Requirement Traceability Matrix</h4>
+                <h4 className="font-bold text-on-surface dark:text-white">Requirement Coverage</h4>
                 <p className="text-[10px] text-secondary font-medium">
-                  {coverage.requirementTraceability.length} requirements · {coverage.coverageCalculation?.fullyCovered || 0} full · {coverage.coverageCalculation?.partiallyCovered || 0} partial · {coverage.coverageCalculation?.notCovered || 0} uncovered
+                  {coverage.requirementTraceability.length} requirements analyzed · {coverage.coverageCalculation?.testCasesAnalyzed || 0} test cases
                 </p>
               </div>
             </div>
             <div className="flex items-center gap-3">
-              {coverage.coverageCalculation && (
-                <span className="text-[10px] font-mono text-secondary bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded hidden md:inline">
-                  {coverage.coverageCalculation.formula}
-                </span>
-              )}
+              {/* Coverage summary chips */}
+              <div className="hidden md:flex items-center gap-2">
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400">{coverage.coverageCalculation?.fullyCovered || 0} Covered</span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">{coverage.coverageCalculation?.partiallyCovered || 0} Partial</span>
+                {(coverage.coverageCalculation?.notCovered || 0) > 0 && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400">{coverage.coverageCalculation.notCovered} Uncovered</span>
+                )}
+              </div>
               <span className="material-symbols-outlined text-secondary transition-transform duration-300" style={{ transform: rtmExpanded ? 'rotate(180deg)' : 'rotate(0deg)' }}>
                 expand_more
               </span>
@@ -992,44 +927,46 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
           </button>
           {rtmExpanded && (
             <div className="px-5 pb-5">
+              {/* Legend */}
+              <div className="flex flex-wrap items-center gap-4 mb-3 px-1 text-[10px] font-semibold text-secondary">
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-green-500 inline-block"></span> Covered — requirement is addressed by test cases</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-amber-500 inline-block"></span> Partial — requirement is partially addressed</span>
+                <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full bg-red-500 inline-block"></span> Uncovered — no matching test case found</span>
+              </div>
               <div className="overflow-x-auto max-h-[400px] overflow-y-auto rounded-lg border border-outline-variant/10">
                 <table className="w-full text-xs border-collapse">
                   <thead className="sticky top-0 z-10">
                     <tr className="bg-slate-50 dark:bg-slate-800">
-                      <th className="text-left px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Req</th>
-                      <th className="text-left px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700 min-w-[200px]">Requirement</th>
-                      <th className="text-center px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Coverage</th>
-                      <th className="text-center px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Match %</th>
-                      <th className="text-left px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Test Cases</th>
-                      <th className="text-left px-3 py-2 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Comments</th>
+                      <th className="text-left px-3 py-2.5 font-bold text-secondary border-b border-slate-200 dark:border-slate-700 w-16">ID</th>
+                      <th className="text-left px-3 py-2.5 font-bold text-secondary border-b border-slate-200 dark:border-slate-700">Requirement</th>
+                      <th className="text-center px-3 py-2.5 font-bold text-secondary border-b border-slate-200 dark:border-slate-700 w-24">Status</th>
+                      <th className="text-left px-3 py-2.5 font-bold text-secondary border-b border-slate-200 dark:border-slate-700 w-40">Covered By</th>
+                      <th className="text-left px-3 py-2.5 font-bold text-secondary border-b border-slate-200 dark:border-slate-700 min-w-[180px]">Reason</th>
                     </tr>
                   </thead>
                   <tbody>
                     {coverage.requirementTraceability.map((r, i) => {
                       const covColor = r.coverage === 'Full' ? 'text-green-700 bg-green-100 dark:bg-green-900/30 dark:text-green-400' : r.coverage === 'Partial' ? 'text-amber-700 bg-amber-100 dark:bg-amber-900/30 dark:text-amber-400' : 'text-red-700 bg-red-100 dark:bg-red-900/30 dark:text-red-400';
+                      const covLabel = r.coverage === 'Full' ? 'Covered' : r.coverage === 'Partial' ? 'Partial' : 'Uncovered';
+                      const tcCount = (r.testCaseIds || []).length;
+                      const reason = r.coverage === 'Full'
+                        ? `Covered by ${tcCount} test case${tcCount !== 1 ? 's' : ''}`
+                        : r.coverage === 'Partial'
+                        ? `Partially addressed by ${tcCount} test case${tcCount !== 1 ? 's' : ''} — consider adding more specific scenarios`
+                        : 'No matching test case found — add test cases for this requirement';
                       return (
                         <tr key={i} className="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                          <td className="px-3 py-2 font-mono font-bold text-purple-600">{r.id}</td>
-                          <td className="px-3 py-2 text-on-surface dark:text-slate-300">{r.requirement}</td>
-                          <td className="px-3 py-2 text-center"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${covColor}`}>{r.coverage}</span></td>
-                          <td className="px-3 py-2 text-center font-mono text-xs">{r.score != null ? `${r.score}%` : '—'}</td>
-                          <td className="px-3 py-2 font-mono text-blue-600">{(r.testCaseIds || []).join(', ') || '—'}</td>
-                          <td className="px-3 py-2 text-secondary">{r.comments || '—'}</td>
+                          <td className="px-3 py-2.5 font-mono font-bold text-purple-600">{r.id}</td>
+                          <td className="px-3 py-2.5 text-on-surface dark:text-slate-300 text-xs leading-relaxed">{r.requirement}</td>
+                          <td className="px-3 py-2.5 text-center"><span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${covColor}`}>{covLabel}</span></td>
+                          <td className="px-3 py-2.5 font-mono text-blue-600 text-[11px]">{(r.testCaseIds || []).join(', ') || '—'}</td>
+                          <td className="px-3 py-2.5 text-on-surface-variant dark:text-slate-400 text-[11px] leading-relaxed">{reason}</td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
               </div>
-              {coverage.coverageCalculation && (
-                <div className="mt-3 flex gap-4 text-[10px] font-bold flex-wrap">
-                  <span className="text-blue-600">Test Cases: {coverage.coverageCalculation.testCasesAnalyzed}</span>
-                  <span className="text-green-600">Full: {coverage.coverageCalculation.fullyCovered}</span>
-                  <span className="text-amber-600">Partial: {coverage.coverageCalculation.partiallyCovered}</span>
-                  <span className="text-red-600">None: {coverage.coverageCalculation.notCovered}</span>
-                  <span className="text-secondary">Requirements: {coverage.coverageCalculation.totalRequirements}</span>
-                </div>
-              )}
             </div>
           )}
         </section>
@@ -1158,33 +1095,6 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
           </div>
         )}
       </section>
-
-      {/* ── Requirement Status ── */}
-      {coverage && (
-        <div className="bg-white dark:bg-slate-900 p-6 rounded-xl shadow-sm">
-          <h3 className="font-bold text-on-surface dark:text-white mb-4">Requirement Status</h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div>
-              <div className="flex justify-between text-xs font-medium mb-1">
-                <span className="text-on-surface-variant dark:text-slate-400">Mapped Functional Requirements</span>
-                <span className="text-app-red font-bold">{coverage.mappedFunctional?.[0]}/{coverage.mappedFunctional?.[1]}</span>
-              </div>
-              <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
-                <div className="bg-app-red h-full rounded-full transition-all duration-700" style={{ width: `${coverage.mappedFunctional?.[1] ? (coverage.mappedFunctional[0] / coverage.mappedFunctional[1]) * 100 : 0}%` }} />
-              </div>
-            </div>
-            <div>
-              <div className="flex justify-between text-xs font-medium mb-1">
-                <span className="text-on-surface-variant dark:text-slate-400">Non-Functional Mapping</span>
-                <span className="text-blue-600 font-bold">{coverage.mappedNonFunctional?.[0]}/{coverage.mappedNonFunctional?.[1]}</span>
-              </div>
-              <div className="w-full bg-slate-200 dark:bg-slate-700 h-1.5 rounded-full overflow-hidden">
-                <div className="bg-blue-600 h-full rounded-full transition-all duration-700" style={{ width: `${coverage.mappedNonFunctional?.[1] ? (coverage.mappedNonFunctional[0] / coverage.mappedNonFunctional[1]) * 100 : 0}%` }} />
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ── Final Actions ── */}
       <div className="flex flex-col md:flex-row gap-4 pt-4">

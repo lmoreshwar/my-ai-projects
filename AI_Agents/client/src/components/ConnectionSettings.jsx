@@ -26,23 +26,20 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
         body: JSON.stringify(data)
       });
       
-      if (!response.ok) throw new Error('Failed to save to database');
+      if (!response.ok) {
+        const errText = await response.text();
+        console.error(`Save ${section} failed (${response.status}):`, errText);
+        throw new Error(`Failed to save (${response.status})`);
+      }
       return true;
     } catch (err) {
-      console.error(err);
+      console.error('Save connection error:', err);
       return false;
     }
   };
 
   const saveConnection = async (section) => {
     const names = { jira: 'JIRA', llm: 'LLM', zephyr: 'Zephyr', github: 'GitHub' };
-    
-    // Validate that the connection was actually tested and passed
-    if (connections[section].status !== 'connected') {
-      setSavedMsg(`Warning: Please test the ${names[section]} connection successfully before saving.`);
-      setTimeout(() => setSavedMsg(''), 4000);
-      return;
-    }
 
     const sectionData = {};
     if (section === 'jira') {
@@ -232,12 +229,24 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
 
   return (
     <div className="max-w-6xl mx-auto px-6 pt-12 pb-32">
-      {/* Save Success Toast */}
+      {/* Save Toast - green for success, red for failure */}
       {savedMsg && (
-        <div className="fixed top-20 right-6 z-50 animate-in flex items-center gap-3 px-5 py-3 bg-emerald-50 dark:bg-emerald-900/30 rounded-xl border border-emerald-200 dark:border-emerald-800 shadow-lg">
-          <span className="material-symbols-outlined text-emerald-600 dark:text-emerald-400">check_circle</span>
-          <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">{savedMsg}</p>
-          <button onClick={() => setSavedMsg('')} className="ml-2 text-emerald-500 hover:text-emerald-700">
+        <div className={`fixed top-20 right-6 z-50 animate-in flex items-center gap-3 px-5 py-3 rounded-xl border shadow-lg ${
+          savedMsg.startsWith('Failed') || savedMsg.startsWith('Warning') || savedMsg.startsWith('You must')
+            ? 'bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800'
+            : 'bg-emerald-50 dark:bg-emerald-900/30 border-emerald-200 dark:border-emerald-800'
+        }`}>
+          <span className={`material-symbols-outlined ${
+            savedMsg.startsWith('Failed') || savedMsg.startsWith('Warning') || savedMsg.startsWith('You must')
+              ? 'text-red-600 dark:text-red-400'
+              : 'text-emerald-600 dark:text-emerald-400'
+          }`}>{savedMsg.startsWith('Failed') || savedMsg.startsWith('Warning') || savedMsg.startsWith('You must') ? 'error' : 'check_circle'}</span>
+          <p className={`text-sm font-semibold ${
+            savedMsg.startsWith('Failed') || savedMsg.startsWith('Warning') || savedMsg.startsWith('You must')
+              ? 'text-red-700 dark:text-red-400'
+              : 'text-emerald-700 dark:text-emerald-400'
+          }`}>{savedMsg}</p>
+          <button onClick={() => setSavedMsg('')} className="ml-2 text-slate-400 hover:text-slate-600">
             <span className="material-symbols-outlined text-sm">close</span>
           </button>
         </div>
@@ -337,10 +346,11 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                 value={connections.llm.platform}
                 onChange={(val) => updateConn('llm', 'platform', val)}
                 options={[
+                  { value: 'gemini', label: 'Google Gemini' },
+                  { value: 'openai', label: 'OpenAI' },
                   { value: 'groq', label: 'Groq' },
-                  { value: 'ollama', label: 'Ollama (Local)' },
                   { value: 'grok', label: 'Grok (xAI)' },
-                  { value: 'gemini', label: 'Gemini' },
+                  { value: 'ollama', label: 'Ollama (Local)' },
                 ]}
                 placeholder="Select LLM Provider"
                 className="w-full"
@@ -354,20 +364,41 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                 value={connections.llm.model}
                 onChange={(val) => updateConn('llm', 'model', val)}
                 options={
-                  connections.llm.platform === 'groq' 
+                  connections.llm.platform === 'gemini'
                     ? [
-                        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B' },
-                        { value: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B' }
-                      ]
-                    : connections.llm.platform === 'gemini'
-                    ? [
+                        { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+                        { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
                         { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
                         { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash' },
-                        { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' }
+                        { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
+                      ]
+                    : connections.llm.platform === 'openai'
+                    ? [
+                        { value: 'gpt-4o', label: 'GPT-4o' },
+                        { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+                        { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
+                        { value: 'gpt-4', label: 'GPT-4' },
+                        { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo' },
+                        { value: 'o1', label: 'o1' },
+                        { value: 'o1-mini', label: 'o1 Mini' },
+                        { value: 'o3-mini', label: 'o3 Mini' },
+                      ]
+                    : connections.llm.platform === 'groq'
+                    ? [
+                        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B' },
+                        { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B Instant' },
+                        { value: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B' },
+                        { value: 'gemma2-9b-it', label: 'Gemma 2 9B' },
+                      ]
+                    : connections.llm.platform === 'grok'
+                    ? [
+                        { value: 'grok-2', label: 'Grok 2' },
+                        { value: 'grok-beta', label: 'Grok Beta' },
                       ]
                     : [
-                        { value: 'grok-2', label: 'Grok 2' },
-                        { value: 'llama3', label: 'Llama 3 (Local)' }
+                        { value: 'llama3', label: 'Llama 3 (Local)' },
+                        { value: 'mistral', label: 'Mistral (Local)' },
+                        { value: 'codellama', label: 'Code Llama (Local)' },
                       ]
                 }
                 placeholder="Select Model"
@@ -533,11 +564,11 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
               {connections.github.message}
             </p>
           )}
-          <div>
+          <div className="flex items-center gap-3">
             <button
               onClick={testGitHub}
               disabled={testing.github || !connections.github?.token}
-              className="w-full h-12 border-2 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold text-sm rounded hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+              className="flex-1 h-12 border-2 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold text-sm rounded hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
             >
               {testing.github ? (
                 <>
@@ -550,6 +581,9 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                   Test Connection
                 </>
               )}
+            </button>
+            <button onClick={() => saveConnection('github')} className="flex-[1.5] h-12 bg-app-red text-white font-bold text-sm rounded shadow-lg shadow-app-red/20 active:bg-app-dark-red transition-all">
+              Save Connection
             </button>
           </div>
 

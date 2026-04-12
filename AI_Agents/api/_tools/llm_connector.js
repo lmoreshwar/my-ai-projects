@@ -31,6 +31,11 @@ class LLMConnector {
                     apiKey: this.apiKey
                 });
                 break;
+            case 'openai':
+                this.client = new OpenAI({
+                    apiKey: this.apiKey
+                });
+                break;
             default:
                 throw new Error(`Unsupported LLM platform: ${this.platform}`);
         }
@@ -55,16 +60,19 @@ class LLMConnector {
         if (!model) {
             if (this.platform === 'groq') model = 'llama-3.3-70b-versatile';
             else if (this.platform === 'ollama') model = 'llama3';
-            else if (this.platform === 'gemini') model = 'gemini-2.0-flash';
+            else if (this.platform === 'gemini') model = 'gemini-2.5-flash';
             else if (this.platform === 'grok') model = 'grok-2';
+            else if (this.platform === 'openai') model = 'gpt-4o';
         }
 
         // Gemini fallback chain — if the primary model is unavailable (503),
         // we'll try alternatives automatically
         const GEMINI_FALLBACK_CHAIN = {
-            'gemini-2.0-flash':   ['gemini-1.5-flash', 'gemini-1.5-pro'],
-            'gemini-1.5-flash':   ['gemini-2.0-flash', 'gemini-1.5-pro'],
-            'gemini-1.5-pro':     ['gemini-2.0-flash', 'gemini-1.5-flash'],
+            'gemini-2.5-flash':   ['gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-pro'],
+            'gemini-2.5-pro':     ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
+            'gemini-2.0-flash':   ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'],
+            'gemini-1.5-flash':   ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
+            'gemini-1.5-pro':     ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'],
         };
 
         console.log(`[LLM] Using model: ${model}, Platform: ${this.platform}`);
@@ -74,6 +82,7 @@ class LLMConnector {
             groq:   { max_tokens: 4096, tpm: 12000, delay_ms: 2000 },  // Groq free-tier: 12K TPM
             gemini: { max_tokens: 32768, tpm: 1000000, delay_ms: 1000 }, // Gemini 2.5 Flash supports up to 65K output
             grok:   { max_tokens: 16384, tpm: 999999, delay_ms: 500 },
+            openai: { max_tokens: 16384, tpm: 999999, delay_ms: 500 },  // OpenAI GPT-4o / o1
             ollama: { max_tokens: 8192, tpm: 999999, delay_ms: 0 },    // local, no limits
         };
         const platformCfg = PLATFORM_LIMITS[this.platform] || { max_tokens: 8192, tpm: 999999, delay_ms: 500 };
@@ -160,7 +169,7 @@ class LLMConnector {
                 max_tokens: MAX_TOKENS
             };
             // Only add seed/top_p for platforms that support them
-            if (this.platform !== 'gemini') {
+            if (this.platform !== 'gemini' && this.platform !== 'openai') {
                 callParams.seed = 42;
                 callParams.top_p = 1;
             }
