@@ -370,6 +370,10 @@ Output ONLY the additional numbered scenarios (no header, no title, no explanati
                 { role: 'user', content: prompt }
             ];
 
+            // ── Track continuation state for metadata ──
+            let continuationFailed = false;
+            let continuationError = '';
+
             // ── Round 1: Initial generation ──
             const r1 = await callLLM(messages);
             let allContent = r1.content;
@@ -436,7 +440,13 @@ Output ONLY the additional numbered scenarios (no header, no title, no explanati
                         allContent = mergeContent(allContent, rN.content);
                     } catch (contError) {
                         // If continuation fails (rate limit, token limit, etc.), return what we have
-                        console.warn(`[LLM] Continuation round ${rounds + 1} failed: ${contError.message}. Returning accumulated content.`);
+                        const errStatus = contError.status || contError.statusCode || 0;
+                        const isRateLimit = errStatus === 429 || contError.message?.includes('429') || contError.message?.includes('rate_limit');
+                        continuationFailed = true;
+                        continuationError = isRateLimit
+                            ? `Rate limit reached during continuation round ${rounds + 1}. ${countItems(allContent)} items generated before the limit was hit.`
+                            : `Continuation round ${rounds + 1} failed: ${contError.message}`;
+                        console.warn(`[LLM] ${continuationError}. Returning accumulated content.`);
                         break;
                     }
                 }
@@ -455,7 +465,9 @@ Output ONLY the additional numbered scenarios (no header, no title, no explanati
                 total_tokens: totalTokens,
                 truncated: lastFinishReason === 'length',
                 rounds,
-                total_items: finalItems
+                total_items: finalItems,
+                continuationFailed,
+                continuationError: continuationError || undefined
             };
 
             if (lastFinishReason === 'length') {

@@ -454,6 +454,10 @@ Then the full test case table.`;
       if (meta.truncated) {
         const tokensUsed = meta.completion_tokens ? ` (${meta.completion_tokens} output tokens used)` : '';
         setGenError(`⚠️ MAX TOKEN LIMIT REACHED${tokensUsed}\n\nThe model "${meta.model || 'unknown'}" on ${meta.platform || 'unknown'} hit its output limit. Test cases are INCOMPLETE — only partial results shown.\n\nTo fix this:\n1. Go to Connection Settings → change LLM model to one with higher output limits\n2. Try: gemini-2.0-flash (Gemini), llama-3.1-8b-instant (Groq), or grok-2 (Grok)\n3. Or split your requirement into smaller parts and generate separately`);
+      } else if (meta.continuationFailed) {
+        // Continuation was attempted but failed (rate limit, etc.) — partial results returned
+        const itemCount = meta.total_items || 0;
+        setGenError(`⚠️ PARTIAL GENERATION — ${itemCount} test case${itemCount !== 1 ? 's' : ''} generated\n\n${meta.continuationError || 'The LLM could not complete all continuation rounds.'}\n\nThe test cases shown are valid and complete — but additional test cases (negative, boundary, edge cases) may be missing.\n\nYou can:\n1. Click "Continue Generating" below to generate additional test cases from where it stopped\n2. Wait a moment for the rate limit to reset, then regenerate\n3. Switch to a model with higher rate limits in Connection Settings`);
       } else if (meta.completion_tokens) {
         // Show token usage info (non-error, just informational)
         console.log(`[TC Gen] Tokens used: prompt=${meta.prompt_tokens}, completion=${meta.completion_tokens}, total=${meta.total_tokens}, model=${meta.model}`);
