@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import './index.css';
 import Sidebar from './components/Sidebar';
@@ -28,7 +28,12 @@ const safeParse = (key, fallback) => {
 };
 
 function App() {
-  const [activePage, setActivePage] = useState('connections');
+  const [activePage, setActivePageInternal] = useState('connections');
+  const [visitedPages, setVisitedPages] = useState(() => new Set(['connections']));
+  const setActivePage = useCallback((page) => {
+    setVisitedPages(prev => { const n = new Set(prev); n.add(page); return n; });
+    setActivePageInternal(page);
+  }, []);
   const [darkMode, setDarkMode] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [generatedTestCases, setGeneratedTestCases] = useState(() => {
@@ -104,6 +109,7 @@ function App() {
       showReport: false, reportView: 'dashboard', reportFilter: 'all',
     });
     setReviewCoverage(null); setReviewLocalState({ ticketId: '', manualReq: '', issueData: null });
+    setVisitedPages(new Set(['connections']));
     try { localStorage.removeItem(LIFTED_STATE_KEY); localStorage.removeItem(TC_STORAGE_KEY); } catch {}
   };
 
@@ -146,6 +152,7 @@ function App() {
       showReport: false, reportView: 'dashboard', reportFilter: 'all',
     });
     setReviewCoverage(null); setReviewLocalState({ ticketId: '', manualReq: '', issueData: null });
+    setVisitedPages(new Set(['connections']));
     // Trigger re-fetch of the new user's saved connections from DB
     setIsLoggedIn(prev => !prev); // toggle to trigger useEffect
   };
@@ -194,35 +201,6 @@ function App() {
     });
   };
 
-  const renderPage = () => {
-    switch (activePage) {
-      case 'connections':
-        return <ConnectionSettings connections={connections} setConnections={setConnections} apiBase={API_BASE} onResetGenerated={handleResetGenerated} />;
-      case 'test-plan':
-        return <TestPlanGenerator connections={connections} apiBase={API_BASE} />;
-      case 'test-cases':
-        return <TestCaseGenerator connections={connections} apiBase={API_BASE} onTestCasesGenerated={setGeneratedTestCases} onNavigate={setActivePage} />;
-      case 'test-scenarios':
-        return <TestScenarioGenerator connections={connections} apiBase={API_BASE} />;
-      case 'review-cases':
-        return <ReviewTestCases connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} reviewCoverage={reviewCoverage} setReviewCoverage={setReviewCoverage} localState={reviewLocalState} setLocalState={setReviewLocalState} onClearTestCases={handleClearTestCases} />;
-      case 'zephyr-dashboard':
-        return <ZephyrDashboard connections={connections} />;
-      case 'selenium-bdd':
-        return <SeleniumBDD connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} seleniumOutput={seleniumOutput} setSeleniumOutput={setSeleniumOutput} selectedGroups={seleniumSelectedGroups} setSelectedGroups={setSeleniumSelectedGroups} onClearTestCases={handleClearTestCases} />;
-      case 'playwright-js':
-        return <PlaywrightJS connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={bddFiles} setGeneratedFiles={setBddFiles} activeFileIdx={bddActiveIdx} setActiveFileIdx={setBddActiveIdx} selectedGroups={bddSelectedGroups} setSelectedGroups={setBddSelectedGroups} onClearTestCases={handleClearTestCases} />;
-      case 'playwright-pom':
-        return <PlaywrightPOM connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={pomFiles} setGeneratedFiles={setPomFiles} activeFileIdx={pomActiveIdx} setActiveFileIdx={setPomActiveIdx} selectedGroups={pomSelectedGroups} setSelectedGroups={setPomSelectedGroups} langFilter={pomLangFilter} setLangFilter={setPomLangFilter} onNavigate={setActivePage} onPushFiles={setPendingPushFiles} onClearTestCases={handleClearTestCases} />;
-      case 'github':
-        return <GitHubIntegration connections={connections} apiBase={API_BASE} onNavigate={setActivePage} pendingPushFiles={pendingPushFiles} setPendingPushFiles={setPendingPushFiles} />;
-      case 'github-cicd':
-        return <GitHubCICD connections={connections} apiBase={API_BASE} cicdState={cicdState} setCicdState={setCicdState} />;
-      default:
-        return <ConnectionSettings connections={connections} setConnections={setConnections} apiBase={API_BASE} onResetGenerated={handleResetGenerated} />;
-    }
-  };
-
   const dashboardContent = (
     <div className="bg-background dark:bg-slate-950 text-on-surface dark:text-slate-100 min-h-screen overflow-x-hidden transition-colors duration-200">
       {/* Sidebar */}
@@ -235,7 +213,40 @@ function App() {
 
       {/* Main Content */}
       <main className={`min-h-screen pb-12 transition-all duration-300 ${sidebarCollapsed ? 'lg:ml-[72px]' : 'lg:ml-80'}`}>
-        {renderPage()}
+        {/* Tab-persistent rendering: visited pages stay mounted so async ops survive tab switches */}
+        <div style={{ display: activePage === 'connections' ? undefined : 'none' }}>
+          {visitedPages.has('connections') && <ConnectionSettings connections={connections} setConnections={setConnections} apiBase={API_BASE} onResetGenerated={handleResetGenerated} />}
+        </div>
+        <div style={{ display: activePage === 'test-plan' ? undefined : 'none' }}>
+          {visitedPages.has('test-plan') && <TestPlanGenerator connections={connections} apiBase={API_BASE} />}
+        </div>
+        <div style={{ display: activePage === 'test-cases' ? undefined : 'none' }}>
+          {visitedPages.has('test-cases') && <TestCaseGenerator connections={connections} apiBase={API_BASE} onTestCasesGenerated={setGeneratedTestCases} onNavigate={setActivePage} />}
+        </div>
+        <div style={{ display: activePage === 'test-scenarios' ? undefined : 'none' }}>
+          {visitedPages.has('test-scenarios') && <TestScenarioGenerator connections={connections} apiBase={API_BASE} />}
+        </div>
+        <div style={{ display: activePage === 'review-cases' ? undefined : 'none' }}>
+          {visitedPages.has('review-cases') && <ReviewTestCases connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} reviewCoverage={reviewCoverage} setReviewCoverage={setReviewCoverage} localState={reviewLocalState} setLocalState={setReviewLocalState} onClearTestCases={handleClearTestCases} />}
+        </div>
+        <div style={{ display: activePage === 'zephyr-dashboard' ? undefined : 'none' }}>
+          {visitedPages.has('zephyr-dashboard') && <ZephyrDashboard connections={connections} />}
+        </div>
+        <div style={{ display: activePage === 'selenium-bdd' ? undefined : 'none' }}>
+          {visitedPages.has('selenium-bdd') && <SeleniumBDD connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} seleniumOutput={seleniumOutput} setSeleniumOutput={setSeleniumOutput} selectedGroups={seleniumSelectedGroups} setSelectedGroups={setSeleniumSelectedGroups} onClearTestCases={handleClearTestCases} />}
+        </div>
+        <div style={{ display: activePage === 'playwright-js' ? undefined : 'none' }}>
+          {visitedPages.has('playwright-js') && <PlaywrightJS connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={bddFiles} setGeneratedFiles={setBddFiles} activeFileIdx={bddActiveIdx} setActiveFileIdx={setBddActiveIdx} selectedGroups={bddSelectedGroups} setSelectedGroups={setBddSelectedGroups} onClearTestCases={handleClearTestCases} />}
+        </div>
+        <div style={{ display: activePage === 'playwright-pom' ? undefined : 'none' }}>
+          {visitedPages.has('playwright-pom') && <PlaywrightPOM connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={pomFiles} setGeneratedFiles={setPomFiles} activeFileIdx={pomActiveIdx} setActiveFileIdx={setPomActiveIdx} selectedGroups={pomSelectedGroups} setSelectedGroups={setPomSelectedGroups} langFilter={pomLangFilter} setLangFilter={setPomLangFilter} onNavigate={setActivePage} onPushFiles={setPendingPushFiles} onClearTestCases={handleClearTestCases} />}
+        </div>
+        <div style={{ display: activePage === 'github' ? undefined : 'none' }}>
+          {visitedPages.has('github') && <GitHubIntegration connections={connections} apiBase={API_BASE} onNavigate={setActivePage} pendingPushFiles={pendingPushFiles} setPendingPushFiles={setPendingPushFiles} />}
+        </div>
+        <div style={{ display: activePage === 'github-cicd' ? undefined : 'none' }}>
+          {visitedPages.has('github-cicd') && <GitHubCICD connections={connections} apiBase={API_BASE} cicdState={cicdState} setCicdState={setCicdState} />}
+        </div>
       </main>
 
       {/* Mobile Bottom Nav */}

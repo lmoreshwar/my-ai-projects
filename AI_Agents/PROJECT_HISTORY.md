@@ -34,6 +34,7 @@
 | `api/index.js` (~1195 lines) | Express server, all API routes including `/generate-plan` |
 | `api/_tools/llm_connector.js` (~501 lines) | LLM integration with auto-continuation, retry, Gemini fallback |
 | `api/_tools/jira_tool.js` (~351 lines) | JIRA fetch with hierarchy — returns `description`, `testableDescription`, `parentContext` |
+| `client/src/App.jsx` (~293 lines) | Main shell — routing, lifted state, tab-persistent rendering (lazy mount + display:none) |
 | `client/src/components/TestCaseGenerator.jsx` (~1629 lines) | 3-step TC generation: Input → Gap Analysis → Generate/Preview |
 | `client/src/components/ReviewTestCases.jsx` (~1197 lines) | Coverage review engine + RTM UI (ISTQB collective scoring) |
 | `Prompt_Template/testcases_ricepot.md` (426 lines) | The RICE-POT master prompt for test case generation |
@@ -114,6 +115,7 @@ Current: `['Functional', 'API', 'UI', 'Integration', 'Negative', 'Security', 'Bo
 | 12 | Frontend: partial generation detection warning | Committed (1ba3ba9) |
 | 13 | Full hybrid auto-retry countdown UI (continueGenerating, 60s timer, Retry Now/Cancel) | Pushed (c2a69c4) |
 | 14 | RICE-POT prompt audit against ISTQB | **Result: Prompt is CORRECT as-is** |
+| 15 | Tab persistence — async ops survive sidebar tab switches | Local (pending push) |
 
 ---
 
@@ -143,7 +145,14 @@ Current: `['Functional', 'API', 'UI', 'Integration', 'Negative', 'Security', 'Bo
 - **How:** `continueGenerating()` appends new TCs, `handleRateLimitRetry()` manages countdown
 - **Date:** April 12, 2026
 
-### Decision 5: TC Count Variation is LLM Non-Determinism
+### Decision 5: Tab-Persistent Rendering (Lazy Mount + display:none)
+- **Context:** Switching sidebar tabs unmounted the active component, killing in-flight async ops (TC generation, connection tests, CI/CD polling, automation generation)
+- **Decision:** Replace `renderPage()` switch/case with lazy-mount + `display: none` pattern
+- **How:** `visitedPages` Set tracks which tabs have been opened; each component mounts on first visit and stays mounted (hidden via CSS) when switching away. `setActivePage` wrapper adds to visitedPages before switching. `handleResetGenerated` and `handleLogin` reset visitedPages to force fresh mounts.
+- **Affected:** All 11 page components in App.jsx
+- **Date:** April 13, 2026
+
+### Decision 6: TC Count Variation is LLM Non-Determinism
 - **Context:** Same requirement generated 19 TCs once, 11 TCs another time
 - **Decision:** This is NOT a bug. The `description` field (TC generator input) is unchanged
 - **Reasoning:** Different LLM runs produce different counts due to temperature, context window, model state
@@ -205,4 +214,4 @@ Current: `['Functional', 'API', 'UI', 'Integration', 'Negative', 'Security', 'Bo
 
 ---
 
-*Last updated: April 12, 2026*
+*Last updated: April 13, 2026*
