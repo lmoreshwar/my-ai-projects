@@ -427,8 +427,8 @@ app.post('/fetch-issue', async (req, res) => {
 
         let issueData;
         if (directId) {
-            console.log(`Fetching direct issue ID: ${directId}`);
-            issueData = await tool.fetchIssue(directId);
+            console.log(`Fetching issue with hierarchy: ${directId}`);
+            issueData = await tool.fetchIssueWithHierarchy(directId);
         } else {
             let jql = `project = '${projectKey}'`;
             if (sprint) {

@@ -60,19 +60,134 @@ class JiraTool {
                 description = rendered.description.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
             }
 
-            console.log(`JIRA Fetch [${issueId}]: Description length = ${description.length} chars`);
+            // Detect issue type for hierarchy traversal
+            const issueType = (fields.issuetype?.name || '').toLowerCase();
+            const parentKey = fields.parent?.key || null;
+            const parentSummary = fields.parent?.fields?.summary || null;
+
+            console.log(`JIRA Fetch [${issueId}]: Type=${issueType}, Description=${description.length} chars, Parent=${parentKey || 'none'}`);
             
             return {
                 id: data.key,
                 summary: fields.summary || 'No Summary',
                 description: description || 'No Description provided.',
                 status: fields.status?.name || 'Unknown',
-                project: fields.project?.name || 'Unknown Project'
+                project: fields.project?.name || 'Unknown Project',
+                issueType: fields.issuetype?.name || 'Unknown',
+                parentKey,
+                parentSummary
             };
         } catch (error) {
             const errStr = error.response ? `${error.response.status} - ${JSON.stringify(error.response.data)}` : error.message;
             throw new Error(`Jira Fetch error: ${errStr}`);
         }
+    }
+
+    /**
+     * Fetch a ticket AND its full hierarchy context:
+     * - If Epic/Initiative → fetch all child stories & sub-tasks
+     * - If Story → fetch parent Epic context + child sub-tasks
+     * - If Sub-task → fetch parent Story + grandparent Epic context
+     * Returns a single combined issueData with aggregated description.
+     */
+    async fetchIssueWithHierarchy(issueId) {
+        const mainIssue = await this.fetchIssue(issueId);
+        const issueType = (mainIssue.issueType || '').toLowerCase();
+        
+        let hierarchyContext = '';
+        let childIssues = [];
+
+        // ── CASE 1: Epic or Initiative → Fetch all children ──
+        if (issueType === 'epic' || issueType === 'initiative') {
+            try {
+                const children = await this.searchIssues(`parent = "${issueId}" ORDER BY rank ASC`, 50);
+                if (children.length > 0) {
+                    hierarchyContext += `\n\n---\n## Child Stories/Tasks (${children.length})\n`;
+                    for (const child of children) {
+                        hierarchyContext += `\n### ${child.id}: ${child.summary}\n${child.description}\n`;
+                        childIssues.push({ id: child.id, summary: child.summary, type: 'Story' });
+
+                        // Also fetch sub-tasks of each child story
+                        try {
+                            const subtasks = await this.searchIssues(`parent = "${child.id}" ORDER BY rank ASC`, 20);
+                            for (const st of subtasks) {
+                                hierarchyContext += `\n#### ${st.id}: ${st.summary}\n${st.description}\n`;
+                                childIssues.push({ id: st.id, summary: st.summary, type: 'Sub-task' });
+                            }
+                        } catch (e) {
+                            // Sub-task fetch failed — continue without them
+                            console.warn(`Could not fetch sub-tasks for ${child.id}: ${e.message}`);
+                        }
+                    }
+                }
+            } catch (e) {
+                console.warn(`Could not fetch children for ${issueId}: ${e.message}`);
+            }
+        }
+
+        // ── CASE 2: Story/Task → Fetch parent context + child sub-tasks ──
+        else if (issueType === 'story' || issueType === 'task') {
+            // Fetch parent Epic context
+            if (mainIssue.parentKey) {
+                try {
+                    const parent = await this.fetchIssue(mainIssue.parentKey);
+                    hierarchyContext += `\n\n---\n## Parent Epic: ${parent.id} — ${parent.summary}\n${parent.description}\n`;
+                } catch (e) {
+                    console.warn(`Could not fetch parent ${mainIssue.parentKey}: ${e.message}`);
+                }
+            }
+
+            // Fetch child sub-tasks
+            try {
+                const subtasks = await this.searchIssues(`parent = "${issueId}" ORDER BY rank ASC`, 20);
+                if (subtasks.length > 0) {
+                    hierarchyContext += `\n\n---\n## Sub-tasks (${subtasks.length})\n`;
+                    for (const st of subtasks) {
+                        hierarchyContext += `\n### ${st.id}: ${st.summary}\n${st.description}\n`;
+                        childIssues.push({ id: st.id, summary: st.summary, type: 'Sub-task' });
+                    }
+                }
+            } catch (e) {
+                console.warn(`Could not fetch sub-tasks for ${issueId}: ${e.message}`);
+            }
+        }
+
+        // ── CASE 3: Sub-task/Bug → Fetch parent Story + grandparent Epic ──
+        else if (issueType === 'sub-task' || issueType === 'subtask' || issueType === 'bug') {
+            if (mainIssue.parentKey) {
+                try {
+                    const parent = await this.fetchIssue(mainIssue.parentKey);
+                    hierarchyContext += `\n\n---\n## Parent Story: ${parent.id} — ${parent.summary}\n${parent.description}\n`;
+
+                    // Fetch grandparent Epic
+                    if (parent.parentKey) {
+                        try {
+                            const grandparent = await this.fetchIssue(parent.parentKey);
+                            hierarchyContext += `\n## Parent Epic: ${grandparent.id} — ${grandparent.summary}\n${grandparent.description}\n`;
+                        } catch (e) {
+                            console.warn(`Could not fetch grandparent ${parent.parentKey}: ${e.message}`);
+                        }
+                    }
+                } catch (e) {
+                    console.warn(`Could not fetch parent ${mainIssue.parentKey}: ${e.message}`);
+                }
+            }
+        }
+
+        // Combine everything
+        const combinedDescription = mainIssue.description + hierarchyContext;
+        const ticketCount = 1 + childIssues.length;
+        console.log(`JIRA Hierarchy [${issueId}]: ${ticketCount} tickets aggregated, ${combinedDescription.length} chars total`);
+
+        return {
+            ...mainIssue,
+            description: combinedDescription,
+            hierarchy: {
+                type: mainIssue.issueType,
+                childIssues,
+                totalTickets: ticketCount
+            }
+        };
     }
 
     async searchIssues(jql, maxResults = 5) {

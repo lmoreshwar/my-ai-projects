@@ -427,9 +427,18 @@ export default function TestPlanGenerator({ connections, apiBase }) {
                     <div className="bg-app-red text-white px-3 py-1 rounded-full text-[0.6875rem] font-bold uppercase tracking-wider">
                       Ticket Parsed
                     </div>
-                    <h3 className="text-[1rem] font-bold dark:text-white">
-                      {issueData.id}: {issueData.summary}
-                    </h3>
+                    <div>
+                      <h3 className="text-[1rem] font-bold dark:text-white">
+                        {issueData.id}: {issueData.summary}
+                        {issueData.issueType && <span className="ml-1.5 text-[10px] font-bold bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded align-middle">{issueData.issueType}</span>}
+                      </h3>
+                      {issueData.hierarchy && issueData.hierarchy.totalTickets > 1 && (
+                        <p className="text-[10px] text-secondary mt-0.5 flex items-center gap-1">
+                          <span className="material-symbols-outlined text-xs">account_tree</span>
+                          {issueData.hierarchy.totalTickets} tickets aggregated
+                        </p>
+                      )}
+                    </div>
                   </>
                 ) : inputMode === 'manual' && manualInput.trim().length >= 20 ? (
                   <>

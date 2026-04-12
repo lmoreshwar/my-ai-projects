@@ -744,12 +744,23 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
 
         {/* JIRA data indicator */}
         {issueData && (
-          <div className="mt-3 px-4 py-2 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg border border-emerald-200 dark:border-emerald-800 flex items-center gap-2">
-            <span className="material-symbols-outlined text-emerald-600 text-sm">check_circle</span>
-            <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 flex-1 truncate">{issueData.id}: {issueData.summary}</span>
-            <button onClick={() => { setIssueData(null); setCoverage(null); }} className="text-emerald-400 hover:text-red-500 transition shrink-0">
-              <span className="material-symbols-outlined text-sm">close</span>
-            </button>
+          <div className="mt-3 px-4 py-2.5 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg border border-emerald-200 dark:border-emerald-800">
+            <div className="flex items-center gap-2">
+              <span className="material-symbols-outlined text-emerald-600 text-sm">check_circle</span>
+              <span className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 flex-1 truncate">
+                {issueData.id}: {issueData.summary}
+                {issueData.issueType && <span className="ml-1.5 text-[10px] font-bold bg-emerald-200 dark:bg-emerald-800 text-emerald-800 dark:text-emerald-300 px-1.5 py-0.5 rounded">{issueData.issueType}</span>}
+              </span>
+              <button onClick={() => { setIssueData(null); setCoverage(null); }} className="text-emerald-400 hover:text-red-500 transition shrink-0">
+                <span className="material-symbols-outlined text-sm">close</span>
+              </button>
+            </div>
+            {issueData.hierarchy && issueData.hierarchy.totalTickets > 1 && (
+              <div className="mt-1.5 flex items-center gap-2 text-[10px] text-emerald-600 dark:text-emerald-400 font-medium">
+                <span className="material-symbols-outlined text-xs">account_tree</span>
+                {issueData.hierarchy.totalTickets} tickets aggregated ({issueData.hierarchy.childIssues?.length || 0} child issues included)
+              </div>
+            )}
           </div>
         )}
 
