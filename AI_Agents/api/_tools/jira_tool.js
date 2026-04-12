@@ -95,6 +95,8 @@ class JiraTool {
         const issueType = (mainIssue.issueType || '').toLowerCase();
         
         let hierarchyContext = '';
+        let parentContext = '';      // Parent epic context (excluded from coverage review)
+        let childrenContext = '';    // Only child subtask context (included in coverage review)
         let childIssues = [];
 
         // ── CASE 1: Epic or Initiative → Fetch all children ──
@@ -127,11 +129,13 @@ class JiraTool {
 
         // ── CASE 2: Story/Task → Fetch parent context + child sub-tasks ──
         else if (issueType === 'story' || issueType === 'task') {
-            // Fetch parent Epic context
+            // Fetch parent Epic context (stored separately so coverage review can exclude it)
             if (mainIssue.parentKey) {
                 try {
                     const parent = await this.fetchIssue(mainIssue.parentKey);
-                    hierarchyContext += `\n\n---\n## Parent Epic: ${parent.id} — ${parent.summary}\n${parent.description}\n`;
+                    parentContext = `\n\n---\n## Parent Epic: ${parent.id} — ${parent.summary}\n${parent.description}\n`;
+                    // Also include in hierarchyContext for LLM prompt (full context)
+                    hierarchyContext += parentContext;
                 } catch (e) {
                     console.warn(`Could not fetch parent ${mainIssue.parentKey}: ${e.message}`);
                 }
@@ -141,9 +145,13 @@ class JiraTool {
             try {
                 const subtasks = await this.searchIssues(`parent = "${issueId}" ORDER BY rank ASC`, 20);
                 if (subtasks.length > 0) {
-                    hierarchyContext += `\n\n---\n## Sub-tasks (${subtasks.length})\n`;
+                    const childContext = `\n\n---\n## Sub-tasks (${subtasks.length})\n`;
+                    hierarchyContext += childContext;
+                    childrenContext += childContext;
                     for (const st of subtasks) {
-                        hierarchyContext += `\n### ${st.id}: ${st.summary}\n${st.description}\n`;
+                        const stText = `\n### ${st.id}: ${st.summary}\n${st.description}\n`;
+                        hierarchyContext += stText;
+                        childrenContext += stText;
                         childIssues.push({ id: st.id, summary: st.summary, type: 'Sub-task' });
                     }
                 }
@@ -157,13 +165,17 @@ class JiraTool {
             if (mainIssue.parentKey) {
                 try {
                     const parent = await this.fetchIssue(mainIssue.parentKey);
-                    hierarchyContext += `\n\n---\n## Parent Story: ${parent.id} — ${parent.summary}\n${parent.description}\n`;
+                    const parentText = `\n\n---\n## Parent Story: ${parent.id} — ${parent.summary}\n${parent.description}\n`;
+                    parentContext += parentText;
+                    hierarchyContext += parentText;
 
                     // Fetch grandparent Epic
                     if (parent.parentKey) {
                         try {
                             const grandparent = await this.fetchIssue(parent.parentKey);
-                            hierarchyContext += `\n## Parent Epic: ${grandparent.id} — ${grandparent.summary}\n${grandparent.description}\n`;
+                            const gpText = `\n## Parent Epic: ${grandparent.id} — ${grandparent.summary}\n${grandparent.description}\n`;
+                            parentContext += gpText;
+                            hierarchyContext += gpText;
                         } catch (e) {
                             console.warn(`Could not fetch grandparent ${parent.parentKey}: ${e.message}`);
                         }
@@ -176,12 +188,16 @@ class JiraTool {
 
         // Combine everything
         const combinedDescription = mainIssue.description + hierarchyContext;
+        // Testable description = main issue + children only (no parent epic)
+        const testableDescription = mainIssue.description + childrenContext;
         const ticketCount = 1 + childIssues.length;
-        console.log(`JIRA Hierarchy [${issueId}]: ${ticketCount} tickets aggregated, ${combinedDescription.length} chars total`);
+        console.log(`JIRA Hierarchy [${issueId}]: ${ticketCount} tickets aggregated, ${combinedDescription.length} chars total, testable: ${testableDescription.length} chars`);
 
         return {
             ...mainIssue,
             description: combinedDescription,
+            testableDescription,   // For coverage review: excludes parent epic context
+            parentContext,          // Parent epic summary/description (for reference only)
             hierarchy: {
                 type: mainIssue.issueType,
                 childIssues,

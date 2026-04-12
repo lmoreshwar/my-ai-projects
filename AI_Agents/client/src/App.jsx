@@ -123,7 +123,34 @@ function App() {
   const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '';
   const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
-  // ── Load saved connections from DB on mount ──
+  // Track whether user is logged in so we can re-fetch connections after login
+  const [isLoggedIn, setIsLoggedIn] = useState(() => !!localStorage.getItem('blast_token'));
+
+  // Handler called by Login page after successful authentication
+  const handleLogin = () => {
+    // Reset all in-memory state so no data from a previous user leaks
+    setConnections({
+      jira: { url: '', email: '', token: '', status: 'disconnected', message: '' },
+      llm: { platform: 'groq', apiKey: '', endpoint: '', model: '', status: 'disconnected', message: '' },
+      zephyr: { url: 'https://api.zephyrscale.smartbear.com/v2', apiKey: '', releaseName: '', status: 'disconnected', message: '' },
+      github: { token: '', apiUrl: 'https://api.github.com', repos: [], branches: [], selectedRepo: '', selectedBranch: '', repoVisibility: '', status: 'disconnected', message: '' },
+    });
+    setGeneratedTestCases('');
+    setPomFiles([]); setPomActiveIdx(0); setPomSelectedGroups(new Set()); setPomLangFilter('all');
+    setBddFiles([]); setBddActiveIdx(0); setBddSelectedGroups(new Set());
+    setSeleniumOutput(''); setSeleniumSelectedGroups(new Set()); setSeleniumLocalState({ ticketId: '', manualReq: '', selectedImported: '', issueData: null });
+    setCicdState({
+      workflows: [], selectedWorkflow: '', activeRun: null,
+      jobs: [], artifacts: [], logLines: [], htmlReport: null,
+      reportData: null, testResults: { passed: 0, failed: 0, skipped: 0, total: 0 },
+      showReport: false, reportView: 'dashboard', reportFilter: 'all',
+    });
+    setReviewCoverage(null); setReviewLocalState({ ticketId: '', manualReq: '', issueData: null });
+    // Trigger re-fetch of the new user's saved connections from DB
+    setIsLoggedIn(prev => !prev); // toggle to trigger useEffect
+  };
+
+  // ── Load saved connections from DB on mount AND after login ──
   useEffect(() => {
     const fetchConnections = async () => {
       const token = localStorage.getItem('blast_token');
@@ -149,7 +176,7 @@ function App() {
     };
 
     fetchConnections();
-  }, [API_BASE]);
+  }, [API_BASE, isLoggedIn]);
 
   // Persist generated test cases to localStorage
   useEffect(() => {
@@ -243,7 +270,7 @@ function App() {
 
   return (
     <Routes>
-      <Route path="/login" element={<Login />} />
+      <Route path="/login" element={<Login onLogin={handleLogin} />} />
       <Route path="/signup" element={<SignUp />} />
       <Route path="/dashboard" element={dashboardContent} />
       <Route path="/" element={<Navigate to="/login" />} />

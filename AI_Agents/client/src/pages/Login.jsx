@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
-export default function Login() {
+export default function Login({ onLogin }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -32,9 +32,17 @@ export default function Login() {
         throw new Error(data.message || 'Login failed');
       }
 
+      // Clear any stale data from a previous user session before setting new user's data
+      localStorage.removeItem('ai_test_agent_connections');
+      localStorage.removeItem('ai_test_agent_testcases');
+      localStorage.removeItem('ai_test_agent_lifted_state');
+
       // Save token and user details to localStorage (no sensitive data logged)
       localStorage.setItem('blast_token', data.token);
       localStorage.setItem('blast_user', JSON.stringify(data.user));
+
+      // Notify App to re-fetch saved connections immediately
+      if (onLogin) onLogin();
       
       navigate('/dashboard');
     } catch (err) {

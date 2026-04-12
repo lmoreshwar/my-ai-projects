@@ -31,9 +31,12 @@ export default function Sidebar({ activePage, onNavigate, onToggleDark, collapse
   };
 
   const handleLogout = () => {
-    // Clear user tokens from local storage
+    // Clear ALL user-specific data from localStorage to prevent data leaking to next user
     localStorage.removeItem('blast_token');
     localStorage.removeItem('blast_user');
+    localStorage.removeItem('ai_test_agent_connections');
+    localStorage.removeItem('ai_test_agent_testcases');
+    localStorage.removeItem('ai_test_agent_lifted_state');
     // Navigate back to the login screen
     navigate('/login');
   };

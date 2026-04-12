@@ -45,7 +45,7 @@ router.post('/signup', async (req, res) => {
 
     jwt.sign(payload, JWT_SECRET, { expiresIn: '5h' }, (err, token) => {
       if (err) throw err;
-      res.status(201).json({ token, user: { id: user.id, email: user.email, role: user.role } });
+      res.status(201).json({ token, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, role: user.role } });
     });
 
   } catch (err) {
@@ -91,7 +91,7 @@ router.post('/login', async (req, res) => {
 
     jwt.sign(payload, JWT_SECRET, { expiresIn: '5h' }, (err, token) => {
       if (err) throw err;
-      res.json({ token, user: { id: user.id, email: user.email, role: user.role } });
+      res.json({ token, user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email, role: user.role } });
     });
 
   } catch (err) {

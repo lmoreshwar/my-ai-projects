@@ -33,12 +33,7 @@ export default function SignUp() {
       if (!response.ok) {
         throw new Error(data.message || 'Registration failed');
       }
-      setSuccessMsg("Registration successful! Redirecting to login...");
-      
-      // Delay navigation so user can see the success message
-      setTimeout(() => {
-        navigate('/login');
-      }, 2000);
+      setSuccessMsg("Registration successful! Click 'Sign In' below to log in.");
     } catch (err) {
       setError(err.message === 'Failed to fetch' ? 'Unable to connect to server. Please try again.' : err.message);
     } finally {
@@ -96,9 +91,18 @@ export default function SignUp() {
             )}
             
             {successMsg && (
-              <div className="mb-6 flex items-center gap-3 p-4 bg-green-100 text-green-800 rounded-lg border-l-4 border-green-600">
-                <span className="material-symbols-outlined text-green-600">check_circle</span>
-                <span className="text-sm font-bold">{successMsg}</span>
+              <div className="mb-6 flex flex-col gap-3 p-4 bg-green-100 text-green-800 rounded-lg border-l-4 border-green-600">
+                <div className="flex items-center gap-3">
+                  <span className="material-symbols-outlined text-green-600">check_circle</span>
+                  <span className="text-sm font-bold">{successMsg}</span>
+                </div>
+                <Link
+                  to="/login"
+                  className="inline-flex items-center gap-2 w-fit px-6 py-2.5 bg-gradient-to-br from-primary to-primary-container text-white font-bold rounded-md shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all duration-150 text-sm"
+                >
+                  <span className="material-symbols-outlined text-sm">login</span>
+                  Go to Sign In
+                </Link>
               </div>
             )}
 

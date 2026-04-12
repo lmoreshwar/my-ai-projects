@@ -175,6 +175,8 @@ function extractRequirements(reqText) {
 
 function extractKeywords(text) {
   return text.toLowerCase()
+    // Strip non-semantic label prefixes (Feature:, Scenario:, Module:, etc.)
+    .replace(/^(feature|scenario|module|user\s*story|epic|task|subtask|component|section)\s*[:—–\-]\s*/i, '')
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)
     .filter(w => w.length > 2 && !STOP_WORDS.has(w));
@@ -209,13 +211,45 @@ function calcSimilarity(reqKeywords, tcKeywords) {
   return matches / reqUnique.length; // Precision: 0.0 to 1.0
 }
 
+/* ── Keyword Match Analysis (identifies which req keywords are matched/missed) ──
+   Used by collective coverage to analyse the UNION of all matching TC keywords
+   against each requirement's keywords, producing actionable missing-keyword lists.
+*/
+function analyseKeywordMatches(reqKeywords, tcKeywordSet) {
+  const reqUnique = [...new Set(reqKeywords)];
+  const matched = [];
+  const unmatched = [];
+  for (const kw of reqUnique) {
+    let found = false;
+    if (tcKeywordSet.has(kw)) { found = true; }
+    if (!found) {
+      for (const tkw of tcKeywordSet) {
+        if (kw.length >= 4 && tkw.length >= 4 && (tkw.startsWith(kw.slice(0, -1)) || kw.startsWith(tkw.slice(0, -1)))) {
+          found = true;
+          break;
+        }
+      }
+    }
+    (found ? matched : unmatched).push(kw);
+  }
+  const score = reqUnique.length > 0 ? matched.length / reqUnique.length : 0;
+  return { matched, unmatched, score };
+}
+
 /* ── Coverage Calculation (IEEE 29119 / ISTQB Standard RTM) ──
    Industry approach: Match requirements against TC Title + Description + Tags ONLY.
    Steps/Expected Results are excluded because they contain prerequisite actions
    (e.g., "Log in with valid credentials" as a setup step) that falsely inflate matches.
 
+   DUAL SCORING (ISTQB RTM best practice):
+   1. Best Single TC — highest precision from any one TC (existing approach)
+   2. Collective Coverage — UNION of keywords from ALL matching TCs (new)
+      This handles compound requirements like "Add, View, Remove Products" where
+      different TCs each cover one aspect but collectively cover all of them.
+   Final score = max(bestSingle, collective).
+
    Thresholds (aligned with industry automated traceability tools):
-   - Full Coverage:    precision ≥ 0.50 (50%+ of requirement keywords found in TC)
+   - Full Coverage:    precision ≥ 0.50 (50%+ of requirement keywords found in TC(s))
    - Partial Coverage: precision 0.25–0.49
    - No Coverage:      precision < 0.25
 */
@@ -232,27 +266,58 @@ function computeCoverage(requirements, testCases) {
 
   const traceability = requirements.map((req, i) => {
     const reqKw = extractKeywords(req);
-    let bestScore = 0;
-    let bestTcIds = [];
+    let bestSingleScore = 0;
+    const matchingTcIds = [];
+    const collectiveKeywords = new Set();
 
+    // ── Pass 1: Score each TC individually ──
     for (const tc of tcData) {
       const score = calcSimilarity(reqKw, tc.keywords);
-      if (score >= 0.25) bestTcIds.push(tc.id);  // List TCs at Partial threshold or above
-      if (score > bestScore) bestScore = score;
+      if (score >= 0.25) {
+        matchingTcIds.push(tc.id);
+        // Accumulate keywords from all matching TCs for collective scoring
+        tc.keywords.forEach(kw => collectiveKeywords.add(kw));
+      }
+      if (score > bestSingleScore) bestSingleScore = score;
     }
 
+    // ── Pass 2: Collective coverage (UNION of all matching TCs) ──
+    // This solves compound requirements: "Add, View, Remove Products" where each TC
+    // covers one action — collectively they cover the full requirement.
+    const { matched, unmatched, score: collectiveScore } = analyseKeywordMatches(reqKw, collectiveKeywords);
+    const finalScore = Math.max(bestSingleScore, collectiveScore);
+
     let coverage;
-    if (bestScore >= 0.50) coverage = 'Full';
-    else if (bestScore >= 0.25) coverage = 'Partial';
+    if (finalScore >= 0.50) coverage = 'Full';
+    else if (finalScore >= 0.25) coverage = 'Partial';
     else coverage = 'None';
+
+    // ── Actionable comments with missing keyword detail ──
+    const tcCount = matchingTcIds.length;
+    let comments;
+    if (coverage === 'Full') {
+      comments = `All key aspects covered by ${tcCount} test case${tcCount !== 1 ? 's' : ''}`;
+    } else if (coverage === 'Partial') {
+      const missingDetail = unmatched.length > 0
+        ? ` — missing aspects: ${unmatched.join(', ')}`
+        : '';
+      comments = `Covered at ${Math.round(finalScore * 100)}% by ${tcCount} TC${tcCount !== 1 ? 's' : ''}${missingDetail}`;
+    } else {
+      const keyTerms = reqKw.length > 0
+        ? `. Key terms to address: ${[...new Set(reqKw)].slice(0, 5).join(', ')}`
+        : '';
+      comments = `No matching test case found${keyTerms}`;
+    }
 
     return {
       id: `R${i + 1}`,
       requirement: req,
       coverage,
-      score: Math.round(bestScore * 100),
-      testCaseIds: bestTcIds,
-      comments: coverage === 'Full' ? 'Well covered' : coverage === 'Partial' ? 'Partially addressed' : 'No matching test case found'
+      score: Math.round(finalScore * 100),
+      testCaseIds: matchingTcIds,
+      missingKeywords: unmatched,
+      matchedKeywords: matched,
+      comments
     };
   });
 
@@ -394,8 +459,10 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
       const reqCtx = buildReqContext();
 
       // ── STEP 1: Deterministic client-side coverage calculation ──
+      // Use testableDescription (excludes parent epic context) for coverage analysis
+      // Falls back to full description if testableDescription is not available
       const reqText = issueData
-        ? `${issueData.summary || ''}\n${issueData.description || ''}`
+        ? `${issueData.summary || ''}\n${issueData.testableDescription || issueData.description || ''}`
         : manualReq;
       
       // Extract all lines (for logging), then filter to testable only
@@ -959,12 +1026,8 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
                     {coverage.requirementTraceability.map((r, i) => {
                       const covColor = r.coverage === 'Full' ? 'text-green-700 bg-green-100 dark:bg-green-900/30 dark:text-green-400' : r.coverage === 'Partial' ? 'text-amber-700 bg-amber-100 dark:bg-amber-900/30 dark:text-amber-400' : 'text-red-700 bg-red-100 dark:bg-red-900/30 dark:text-red-400';
                       const covLabel = r.coverage === 'Full' ? 'Covered' : r.coverage === 'Partial' ? 'Partial' : 'Uncovered';
-                      const tcCount = (r.testCaseIds || []).length;
-                      const reason = r.coverage === 'Full'
-                        ? `Covered by ${tcCount} test case${tcCount !== 1 ? 's' : ''}`
-                        : r.coverage === 'Partial'
-                        ? `Partially addressed by ${tcCount} test case${tcCount !== 1 ? 's' : ''} — consider adding more specific scenarios`
-                        : 'No matching test case found — add test cases for this requirement';
+                      // Use the actionable comments from computeCoverage() (includes missing keyword detail)
+                      const reason = r.comments || (r.coverage === 'Full' ? 'Well covered' : r.coverage === 'Partial' ? 'Partially addressed' : 'No matching test case');
                       return (
                         <tr key={i} className="border-b border-slate-100 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800/50">
                           <td className="px-3 py-2.5 font-mono font-bold text-purple-600">{r.id}</td>
