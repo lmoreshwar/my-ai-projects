@@ -10,9 +10,14 @@ const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_blast_key_2026';
 // @desc    Register a new user
 router.post('/signup', async (req, res) => {
   try {
-    const { firstName, lastName, email, password } = req.body;
+    const { firstName, lastName, password } = req.body;
+    const email = (req.body.email || '').trim().toLowerCase();
 
-    // Check if user already exists
+    if (!email || !password || !firstName || !lastName) {
+      return res.status(400).json({ message: 'All fields are required.' });
+    }
+
+    // Check if user already exists (case-insensitive)
     let user = await User.findOne({ email });
     if (user) {
       return res.status(400).json({ message: 'User already exists with this email.' });
@@ -25,7 +30,7 @@ router.post('/signup', async (req, res) => {
       email,
       password,
       // Temporarily making lmoreshwar the admin based on email
-      role: email === 'lmoreshwar@example.com' || email === 'admin@blastai.com' ? 'admin' : 'user'
+      role: email === 'lmoreshwar@example.com' || email === 'admin@blastai.com' || email === 'l.moreshwar@gmail.com' ? 'admin' : 'user'
     });
 
     await user.save();
@@ -44,6 +49,10 @@ router.post('/signup', async (req, res) => {
     });
 
   } catch (err) {
+    // Handle MongoDB duplicate key error as a safety net
+    if (err.code === 11000) {
+      return res.status(400).json({ message: 'User already exists with this email.' });
+    }
     console.error(err.message);
     res.status(500).send('Server error');
   }
@@ -53,7 +62,12 @@ router.post('/signup', async (req, res) => {
 // @desc    Authenticate user & get token
 router.post('/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const email = (req.body.email || '').trim().toLowerCase();
+    const { password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Email and password are required.' });
+    }
 
     // Check if user exists
     const user = await User.findOne({ email });

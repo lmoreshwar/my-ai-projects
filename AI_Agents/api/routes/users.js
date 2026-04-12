@@ -30,13 +30,15 @@ router.put('/connections/:section', auth, async (req, res) => {
   }
 
   try {
-    const user = await User.findById(req.user.id);
+    // Use findByIdAndUpdate to avoid triggering the pre-save password hash hook
+    const updateKey = `connections.${section}`;
+    const user = await User.findByIdAndUpdate(
+      req.user.id,
+      { $set: { [updateKey]: data } },
+      { new: true, runValidators: true }
+    );
     if (!user) return res.status(404).json({ msg: 'User not found' });
 
-    // Update only the specified section
-    user.connections[section] = { ...user.connections[section], ...data };
-    
-    await user.save();
     res.json({ msg: 'Connection saved to database successfully', data: user.connections[section] });
   } catch (err) {
     console.error(err.message);
