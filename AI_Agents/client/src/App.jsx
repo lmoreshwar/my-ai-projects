@@ -120,7 +120,7 @@ function App() {
     github: { token: '', apiUrl: 'https://api.github.com', repos: [], branches: [], selectedRepo: '', selectedBranch: '', repoVisibility: '', status: 'disconnected', message: '' },
   });
 
-  const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '/api';
+  const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '';
   const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
   // ── Load saved connections from DB on mount ──
@@ -130,7 +130,7 @@ function App() {
       if (!token) return;
 
       try {
-        const response = await fetch(`${API_BASE}/users/connections`, {
+        const response = await fetch(`${API_BASE}/api/users/connections`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         

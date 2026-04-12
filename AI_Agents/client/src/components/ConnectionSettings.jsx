@@ -17,7 +17,7 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
     }
 
     try {
-      const response = await fetch(`${apiBase}/users/connections/${section}`, {
+      const response = await fetch(`${apiBase}/api/users/connections/${section}`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
