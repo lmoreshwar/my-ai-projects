@@ -126,6 +126,10 @@ export default function TestCaseGenerator({ connections, apiBase, onTestCasesGen
   const [genError, setGenError] = useState('');
   const [llmMeta, setLlmMeta] = useState(null);
   const abortRef = useRef(null);
+  const [retryCountdown, setRetryCountdown] = useState(0);
+  const retryTimerRef = useRef(null);
+  const retryAttemptsRef = useRef(0);
+  const MAX_AUTO_RETRIES = 2;
 
   /* ── Confluence import state ── */
   const [confSpaces, setConfSpaces] = useState([]);
@@ -456,8 +460,22 @@ Then the full test case table.`;
         setGenError(`⚠️ MAX TOKEN LIMIT REACHED${tokensUsed}\n\nThe model "${meta.model || 'unknown'}" on ${meta.platform || 'unknown'} hit its output limit. Test cases are INCOMPLETE — only partial results shown.\n\nTo fix this:\n1. Go to Connection Settings → change LLM model to one with higher output limits\n2. Try: gemini-2.0-flash (Gemini), llama-3.1-8b-instant (Groq), or grok-2 (Grok)\n3. Or split your requirement into smaller parts and generate separately`);
       } else if (meta.continuationFailed) {
         // Continuation was attempted but failed (rate limit, etc.) — partial results returned
+        // Save what we have first, then trigger auto-retry
+        setTestCases(plan);
+        setLlmMeta(meta);
+        syncTable(plan);
+        if (onTestCasesGenerated) onTestCasesGenerated(plan);
+        setStep(3);
+        const isRateLimit = meta.continuationError?.includes('Rate limit') || meta.continuationError?.includes('429');
+        if (isRateLimit) {
+          // Auto-retry with countdown
+          handleRateLimitRetry(meta.continuationError);
+          return; // Don't fall through to normal flow
+        }
         const itemCount = meta.total_items || 0;
-        setGenError(`⚠️ PARTIAL GENERATION — ${itemCount} test case${itemCount !== 1 ? 's' : ''} generated\n\n${meta.continuationError || 'The LLM could not complete all continuation rounds.'}\n\nThe test cases shown are valid and complete — but additional test cases (negative, boundary, edge cases) may be missing.\n\nYou can:\n1. Click "Continue Generating" below to generate additional test cases from where it stopped\n2. Wait a moment for the rate limit to reset, then regenerate\n3. Switch to a model with higher rate limits in Connection Settings`);
+        setGenError(`⚠️ PARTIAL GENERATION — ${itemCount} test case${itemCount !== 1 ? 's' : ''} generated\n\n${meta.continuationError || 'The LLM could not complete all continuation rounds.'}\n\nThe test cases shown are valid — click "Continue Generating" to generate additional test cases.`);
+        setBusy('');
+        return;
       } else if (meta.completion_tokens) {
         // Show token usage info (non-error, just informational)
         console.log(`[TC Gen] Tokens used: prompt=${meta.prompt_tokens}, completion=${meta.completion_tokens}, total=${meta.total_tokens}, model=${meta.model}`);
@@ -479,6 +497,166 @@ Then the full test case table.`;
     }
     setBusy('');
   };
+
+  /* ── Continue Generating: append more TCs from where the LLM stopped ── */
+  const continueGenerating = async () => {
+    if (connections.llm.status !== 'connected') return alert('Connect LLM first');
+    if (!testCases.trim()) return alert('No existing test cases to continue from');
+    setBusy('generate');
+    setGenError('');
+    const controller = new AbortController();
+    abortRef.current = controller;
+    try {
+      // Build the continuation prompt: tell the LLM what it already generated
+      const existingRows = parseMarkdownTable(testCases);
+      const lastSrl = existingRows.length > 0
+        ? (existingRows[existingRows.length - 1]['SRL No.'] || `TC_${String(existingRows.length).padStart(3, '0')}`)
+        : 'TC_000';
+      const nextSrl = lastSrl.replace(/\d+/, (n) => String(Number(n) + 1).padStart(n.length, '0'));
+
+      let ctx = buildCtx();
+      if (gapAnswer.trim()) ctx += `## USER CLARIFICATIONS\n${gapAnswer}\n\n`;
+
+      const contPrompt = `${ctx}\n\n## PREVIOUSLY GENERATED TEST CASES (${existingRows.length} test cases, up to ${lastSrl})\nDo NOT repeat these. Continue generating ADDITIONAL test cases starting from ${nextSrl}.\n\nCheck the following test design categories for each documented acceptance criterion:\n1. Positive / Happy path\n2. Negative / Invalid input\n3. Boundary Value Analysis\n4. Equivalence Partitioning\n5. UI Validation\n6. Security\n7. Error Handling\n\nIf ANY are missing — generate them starting from ${nextSrl}.\nIf ALL are covered — respond with "COVERAGE COMPLETE".\n\n- Continue the same markdown table format (include header row)\n- Continue SRL numbering from ${nextSrl}\n- Include the SELF-VALIDATION CHECK section before the table`;
+
+      const r = await fetch(`${apiBase}/generate-plan`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          issueData: {
+            product: appName || 'N/A', id: issueData?.id || 'Manual', summary: issueData?.summary || 'Manual',
+            description: contPrompt,
+            additional_context: `${SYSTEM_PROMPT_CONTEXT}\n\nTASK: Continue generating test cases from ${nextSrl}. Only generate NEW test cases not already covered. Output the markdown table with header.`,
+          },
+          llm: connections.llm,
+          continuation: { type: 'table', minItems: 10, maxRounds: 2 },
+        }),
+      });
+
+      if (!r.ok) {
+        const errData = await r.json().catch(() => ({}));
+        const errMsg = errData.detail || `Continuation failed (HTTP ${r.status})`;
+        // If rate limited again, trigger auto-retry countdown
+        if (r.status === 429 || errMsg.includes('429') || errMsg.toLowerCase().includes('rate limit')) {
+          handleRateLimitRetry(errMsg);
+          return;
+        }
+        setGenError(errMsg);
+        throw new Error(errMsg);
+      }
+
+      const data = await r.json();
+      const newPlan = data.plan || '';
+      const meta = data.llm_meta || {};
+
+      // Check if LLM said "COVERAGE COMPLETE"
+      if (newPlan.toUpperCase().includes('COVERAGE COMPLETE')) {
+        setGenError('');
+        setLlmMeta(prev => ({ ...prev, ...meta, continuationFailed: false }));
+        retryAttemptsRef.current = 0;
+        return;
+      }
+
+      // Merge new TCs with existing ones
+      const newRows = parseMarkdownTable(newPlan);
+      if (newRows.length > 0) {
+        // Extract only data rows (skip headers) from new plan
+        const newLines = newPlan.split('\n').filter(l => l.trim().startsWith('|'));
+        const dataLines = [];
+        for (const line of newLines) {
+          const cells = line.split('|').slice(1, -1).map(c => c.trim());
+          if (cells.every(c => /^[-:]+$/.test(c) || !c)) continue; // separator
+          if (cells[0] && /SRL|No\.|Test Case Title/i.test(cells[0])) continue; // header
+          dataLines.push(line);
+        }
+        if (dataLines.length > 0) {
+          const mergedPlan = testCases.trimEnd() + '\n' + dataLines.join('\n');
+          setTestCases(mergedPlan);
+          syncTable(mergedPlan);
+          if (onTestCasesGenerated) onTestCasesGenerated(mergedPlan);
+        }
+        const totalNow = existingRows.length + newRows.length;
+        setGenError('');
+        setLlmMeta(prev => ({
+          ...prev,
+          ...meta,
+          total_items: totalNow,
+          continuationFailed: false,
+          rounds: (prev?.rounds || 1) + (meta.rounds || 1)
+        }));
+      }
+      retryAttemptsRef.current = 0;
+
+      // Check if the continuation itself was partial
+      if (meta.continuationFailed) {
+        const totalNow = existingRows.length + (parseMarkdownTable(newPlan).length || 0);
+        setGenError(`⚠️ Generated ${totalNow} test cases so far. Additional continuation was rate-limited.\n\n${meta.continuationError || ''}`);
+      }
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        setGenError('Continuation was stopped by user.');
+      } else if (!genError) {
+        // If it's a rate limit error, trigger countdown
+        if (e.message?.includes('429') || e.message?.toLowerCase().includes('rate limit')) {
+          handleRateLimitRetry(e.message);
+        } else {
+          setGenError(e.message || 'Continuation failed.');
+        }
+      }
+    }
+    setBusy('');
+  };
+
+  /* ── Auto-retry with countdown when rate limited ── */
+  const handleRateLimitRetry = (errorMsg) => {
+    if (retryAttemptsRef.current >= MAX_AUTO_RETRIES) {
+      const existingCount = parseMarkdownTable(testCases).length;
+      setGenError(`⚠️ RATE LIMIT — ${existingCount} test case${existingCount !== 1 ? 's' : ''} generated\n\n${errorMsg}\n\nAuto-retry limit reached (${MAX_AUTO_RETRIES} attempts). The generated test cases are valid — you can:\n1. Wait a minute and click "Continue Generating" manually\n2. Switch to a different LLM provider in Connection Settings`);
+      setBusy('');
+      retryAttemptsRef.current = 0;
+      return;
+    }
+
+    retryAttemptsRef.current += 1;
+    const existingCount = parseMarkdownTable(testCases).length;
+    const waitSecs = 60; // Most LLM rate limits reset within 60s
+    setRetryCountdown(waitSecs);
+    setBusy('waiting');
+    setGenError(`⚠️ Rate limit reached after generating ${existingCount} test case${existingCount !== 1 ? 's' : ''}.\n\nAutomatically retrying in ${waitSecs}s to generate remaining test cases... (Attempt ${retryAttemptsRef.current}/${MAX_AUTO_RETRIES})`);
+
+    retryTimerRef.current = setInterval(() => {
+      setRetryCountdown(prev => {
+        if (prev <= 1) {
+          clearInterval(retryTimerRef.current);
+          retryTimerRef.current = null;
+          // Auto-retry
+          continueGenerating();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const cancelRetry = () => {
+    if (retryTimerRef.current) {
+      clearInterval(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    setRetryCountdown(0);
+    setBusy('');
+    retryAttemptsRef.current = 0;
+    const existingCount = parseMarkdownTable(testCases).length;
+    setGenError(`⚠️ ${existingCount} test case${existingCount !== 1 ? 's' : ''} generated (auto-retry cancelled).\n\nThe generated test cases are complete and valid. Click "Continue Generating" when ready to generate additional test cases.`);
+  };
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (retryTimerRef.current) clearInterval(retryTimerRef.current);
+    };
+  }, []);
 
   const [showAll, setShowAll] = useState(false);
   const [page, setPage] = useState(0);
@@ -888,6 +1066,32 @@ Then the full test case table.`;
             </div>
           )}
 
+          {/* Auto-retry countdown (Step 1) */}
+          {busy === 'waiting' && (
+            <div className="flex items-center gap-4 px-5 py-4 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-300 dark:border-amber-700">
+              <div className="relative w-12 h-12 shrink-0">
+                <svg className="w-12 h-12 -rotate-90" viewBox="0 0 48 48">
+                  <circle cx="24" cy="24" r="20" fill="none" stroke="currentColor" strokeWidth="3" className="text-amber-200 dark:text-amber-900/40" />
+                  <circle cx="24" cy="24" r="20" fill="none" stroke="currentColor" strokeWidth="3" className="text-amber-500"
+                    strokeDasharray={`${2 * Math.PI * 20}`}
+                    strokeDashoffset={`${2 * Math.PI * 20 * (1 - retryCountdown / 60)}`}
+                    strokeLinecap="round" style={{ transition: 'stroke-dashoffset 1s linear' }} />
+                </svg>
+                <span className="absolute inset-0 flex items-center justify-center font-bold text-sm text-amber-600">{retryCountdown}s</span>
+              </div>
+              <div className="flex-1">
+                <p className="font-bold text-sm text-amber-800 dark:text-amber-300">Rate limit reached — auto-retrying in {retryCountdown}s</p>
+                <p className="text-xs text-secondary mt-0.5">Waiting for the LLM rate limit to reset, then will continue generating.</p>
+              </div>
+              <div className="flex gap-2 shrink-0">
+                <button onClick={() => { cancelRetry(); continueGenerating(); }}
+                  className="px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-bold transition-all">Retry Now</button>
+                <button onClick={cancelRetry}
+                  className="px-3 py-1.5 bg-slate-200 dark:bg-slate-700 text-on-surface dark:text-white rounded-lg text-xs font-bold transition-all">Cancel</button>
+              </div>
+            </div>
+          )}
+
           {/* Error banner (Step 1) */}
           {genError && !busy && (
             <div className="bg-red-50 dark:bg-red-900/20 border border-red-300 dark:border-red-700 rounded-xl p-4 flex items-start gap-3">
@@ -980,16 +1184,55 @@ Then the full test case table.`;
       {/* ═══ STEP 3 — Live Generation Preview (Table UI) ═══ */}
       {step === 3 && (
         <div className="space-y-6 animate-in">
-          {busy === 'generate' ? (
+          {(busy === 'generate' || busy === 'waiting') ? (
             <div className="flex flex-col items-center justify-center py-20 gap-4">
-              <div className="w-9 h-9 border-[3px] border-app-red/20 border-t-app-red rounded-full animate-spin" />
-              <p className="font-bold text-sm text-on-surface dark:text-white">Generating test cases...</p>
-              <p className="text-xs text-secondary">Structured Coverage Analysis + Fact Verification</p>
-              <button onClick={stopGeneration}
-                className="mt-2 px-6 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold text-sm flex items-center gap-2 transition-all active:scale-[0.98] shadow-md shadow-red-600/20">
-                <span className="material-symbols-outlined text-base">stop_circle</span>
-                Stop Generation
-              </button>
+              {busy === 'waiting' ? (
+                <>
+                  {/* Auto-retry countdown with circular progress */}
+                  <div className="relative w-20 h-20">
+                    <svg className="w-20 h-20 -rotate-90" viewBox="0 0 80 80">
+                      <circle cx="40" cy="40" r="36" fill="none" stroke="currentColor" strokeWidth="4" className="text-amber-200 dark:text-amber-900/40" />
+                      <circle cx="40" cy="40" r="36" fill="none" stroke="currentColor" strokeWidth="4" className="text-amber-500 dark:text-amber-400"
+                        strokeDasharray={`${2 * Math.PI * 36}`}
+                        strokeDashoffset={`${2 * Math.PI * 36 * (1 - retryCountdown / 60)}`}
+                        strokeLinecap="round"
+                        style={{ transition: 'stroke-dashoffset 1s linear' }}
+                      />
+                    </svg>
+                    <span className="absolute inset-0 flex items-center justify-center font-bold text-xl text-amber-600 dark:text-amber-400">{retryCountdown}s</span>
+                  </div>
+                  <p className="font-bold text-sm text-amber-800 dark:text-amber-300">Rate limit reached — auto-retrying in {retryCountdown}s</p>
+                  <p className="text-xs text-secondary text-center max-w-md">
+                    Waiting for the LLM rate limit to reset. {parseMarkdownTable(testCases).length} test cases generated so far — remaining test cases will be appended automatically.
+                    <br /><span className="font-semibold">(Attempt {retryAttemptsRef.current}/{MAX_AUTO_RETRIES})</span>
+                  </p>
+                  <div className="flex gap-3 mt-2">
+                    <button onClick={() => { cancelRetry(); continueGenerating(); }}
+                      className="px-5 py-2.5 bg-amber-500 hover:bg-amber-600 text-white rounded-lg font-bold text-sm flex items-center gap-2 transition-all active:scale-[0.98] shadow-md">
+                      <span className="material-symbols-outlined text-base">play_arrow</span>
+                      Retry Now
+                    </button>
+                    <button onClick={cancelRetry}
+                      className="px-5 py-2.5 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-on-surface dark:text-white rounded-lg font-bold text-sm flex items-center gap-2 transition-all active:scale-[0.98]">
+                      <span className="material-symbols-outlined text-base">close</span>
+                      Keep {parseMarkdownTable(testCases).length} TCs
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="w-9 h-9 border-[3px] border-app-red/20 border-t-app-red rounded-full animate-spin" />
+                  <p className="font-bold text-sm text-on-surface dark:text-white">
+                    {testCases.trim() ? `Generating additional test cases (${parseMarkdownTable(testCases).length} so far)...` : 'Generating test cases...'}
+                  </p>
+                  <p className="text-xs text-secondary">Structured Coverage Analysis + Fact Verification</p>
+                  <button onClick={stopGeneration}
+                    className="mt-2 px-6 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-lg font-bold text-sm flex items-center gap-2 transition-all active:scale-[0.98] shadow-md shadow-red-600/20">
+                    <span className="material-symbols-outlined text-base">stop_circle</span>
+                    Stop Generation
+                  </button>
+                </>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-12 gap-8">
@@ -1001,14 +1244,31 @@ Then the full test case table.`;
                   <p className="text-on-surface-variant dark:text-slate-400 text-sm">Drafting intelligent test protocols from system requirements using AI-driven logic.</p>
                 </div>
 
-                {/* Error/Warning Banner */}
+                {/* Error/Warning Banner with Action Buttons */}
                 {genError && (
                   <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-300 dark:border-amber-700 rounded-xl p-4 flex items-start gap-3">
                     <span className="material-symbols-outlined text-amber-600 dark:text-amber-400 mt-0.5 shrink-0">warning</span>
                     <div className="flex-1">
                       <h4 className="font-bold text-amber-800 dark:text-amber-300 text-sm mb-1">Generation Warning</h4>
                       <p className="text-xs text-amber-700 dark:text-amber-400 whitespace-pre-line leading-relaxed">{genError}</p>
-                      <p className="text-xs text-amber-600 dark:text-amber-500 mt-2 font-semibold">Tip: Go to Connection Settings → change your LLM model to one with higher token limits, then regenerate.</p>
+                      {/* Action buttons for partial generation */}
+                      {(llmMeta?.continuationFailed || llmMeta?.truncated || genError.includes('PARTIAL') || genError.includes('Rate limit') || genError.includes('rate limit')) && (
+                        <div className="flex flex-wrap gap-2 mt-3">
+                          <button onClick={continueGenerating} disabled={!!busy}
+                            className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all active:scale-[0.98] shadow-sm disabled:opacity-40">
+                            <span className="material-symbols-outlined text-sm">add_circle</span>
+                            Continue Generating
+                          </button>
+                          <button onClick={generate} disabled={!!busy}
+                            className="px-4 py-2 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-on-surface dark:text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all active:scale-[0.98] disabled:opacity-40">
+                            <span className="material-symbols-outlined text-sm">refresh</span>
+                            Regenerate All
+                          </button>
+                        </div>
+                      )}
+                      {!(llmMeta?.continuationFailed || llmMeta?.truncated || genError.includes('PARTIAL') || genError.includes('Rate limit') || genError.includes('rate limit')) && (
+                        <p className="text-xs text-amber-600 dark:text-amber-500 mt-2 font-semibold">Tip: Go to Connection Settings → change your LLM model to one with higher token limits, then regenerate.</p>
+                      )}
                     </div>
                     <button onClick={() => setGenError('')} className="text-amber-400 hover:text-amber-600 shrink-0">
                       <span className="material-symbols-outlined text-lg">close</span>
@@ -1018,7 +1278,7 @@ Then the full test case table.`;
 
                 {/* LLM Token Usage Stats Bar */}
                 {llmMeta && llmMeta.completion_tokens && (
-                  <div className={`flex flex-wrap items-center gap-4 px-4 py-2.5 rounded-lg border text-xs font-medium ${llmMeta.truncated ? 'bg-red-50 dark:bg-red-900/20 border-red-300 dark:border-red-700 text-red-700 dark:text-red-400' : 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400'}`}>
+                  <div className={`flex flex-wrap items-center gap-4 px-4 py-2.5 rounded-lg border text-xs font-medium ${llmMeta.truncated || llmMeta.continuationFailed ? 'bg-amber-50 dark:bg-amber-900/20 border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-400' : 'bg-blue-50 dark:bg-blue-900/20 border-blue-200 dark:border-blue-800 text-blue-700 dark:text-blue-400'}`}>
                     <span className="material-symbols-outlined text-base">monitoring</span>
                     <span>Model: <strong>{llmMeta.model || 'N/A'}</strong></span>
                     <span className="text-gray-300 dark:text-gray-600">|</span>
@@ -1031,7 +1291,9 @@ Then the full test case table.`;
                     <span>Total: <strong>{llmMeta.total_tokens?.toLocaleString() || '?'}</strong></span>
                     {llmMeta.rounds > 1 && (<><span className="text-gray-300 dark:text-gray-600">|</span><span>Rounds: <strong>{llmMeta.rounds}</strong></span></>)}
                     <span className="text-gray-300 dark:text-gray-600">|</span>
-                    <span>Status: <strong className={llmMeta.truncated ? 'text-red-600 dark:text-red-400' : 'text-green-600 dark:text-green-400'}>{llmMeta.truncated ? '⛔ TRUNCATED' : '✅ Complete'}</strong></span>
+                    <span>Status: <strong className={llmMeta.truncated ? 'text-red-600 dark:text-red-400' : llmMeta.continuationFailed ? 'text-amber-600 dark:text-amber-400' : 'text-green-600 dark:text-green-400'}>
+                      {llmMeta.truncated ? '⛔ TRUNCATED' : llmMeta.continuationFailed ? `⚠️ Partial (${llmMeta.total_items || tableRows.length} TCs)` : '✅ Complete'}
+                    </strong></span>
                   </div>
                 )}
 
