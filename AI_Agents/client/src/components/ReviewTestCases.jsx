@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import * as XLSX from 'xlsx';
-import { saveArtifact } from '../utils/artifactService';
+import { saveArtifact, checkExistingArtifact, updateArtifact } from '../utils/artifactService';
 
 /* ── Parse markdown table → array of row-objects ── */
 function parseMarkdownTable(md) {
@@ -1197,13 +1197,43 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
           onClick={async () => {
             setSaveStatus('saving');
             try {
+              const tid = ticketId?.trim() || '';
+              const check = await checkExistingArtifact(apiBase, 'test-review', tid || undefined);
+              const existingVersion = check.versionCount || 0;
+              if (check.exists) {
+                const choice = confirm(
+                  `⚠️ Test Review already exists${tid ? ` for ${tid.toUpperCase()}` : ''} (${existingVersion} version${existingVersion > 1 ? 's' : ''})\n\n` +
+                  `Latest: v${check.artifact.metadata?.version || 1} — ${new Date(check.artifact.createdAt).toLocaleString()}\n\n` +
+                  `Click OK to UPDATE the latest version.\nClick Cancel to save as NEW version (v${existingVersion + 1}).`
+                );
+                const title = issueData ? `Review — ${issueData.key || tid}` : `Review — ${new Date().toLocaleDateString()}`;
+                const reviewContent = exportReviewMd(true);
+                if (choice) {
+                  await updateArtifact(apiBase, check.artifact._id, {
+                    title,
+                    content: typeof reviewContent === 'string' ? reviewContent : JSON.stringify(coverage),
+                    metadata: { ticketId: tid, overallCoverage: coverage?.overallCoverage, totalCases: parsedCases.length, version: check.artifact.metadata?.version || 1 }
+                  });
+                } else {
+                  const nv = existingVersion + 1;
+                  await saveArtifact(apiBase, {
+                    type: 'test-review',
+                    title: `${title} (v${nv})`,
+                    content: typeof reviewContent === 'string' ? reviewContent : JSON.stringify(coverage),
+                    metadata: { ticketId: tid, overallCoverage: coverage?.overallCoverage, totalCases: parsedCases.length, version: nv }
+                  });
+                }
+                setSaveStatus('saved');
+                setTimeout(() => setSaveStatus(''), 3000);
+                return;
+              }
               const title = issueData ? `Review — ${issueData.key || ticketId}` : `Review — ${new Date().toLocaleDateString()}`;
-              const reviewContent = exportReviewMd(true); // returns string instead of downloading
+              const reviewContent = exportReviewMd(true);
               await saveArtifact(apiBase, {
                 type: 'test-review',
                 title,
                 content: typeof reviewContent === 'string' ? reviewContent : JSON.stringify(coverage),
-                metadata: { ticketId, overallCoverage: coverage?.overallCoverage, totalCases: parsedCases.length }
+                metadata: { ticketId: tid, overallCoverage: coverage?.overallCoverage, totalCases: parsedCases.length, version: 1 }
               });
               setSaveStatus('saved');
               setTimeout(() => setSaveStatus(''), 3000);

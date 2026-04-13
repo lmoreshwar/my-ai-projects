@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { saveArtifact } from '../utils/artifactService';
+import { saveArtifact, checkExistingArtifact, updateArtifact } from '../utils/artifactService';
 import ReactMarkdown from 'react-markdown';
 
 const TP_STORAGE = 'ai_test_plan_state';
@@ -418,8 +418,28 @@ export default function TestPlanGenerator({ connections, apiBase }) {
                 onClick={async () => {
                   setSaveStatus('saving');
                   try {
+                    const tid = ticketId?.trim() || '';
+                    const check = await checkExistingArtifact(apiBase, 'test-plan', tid || undefined);
+                    const existingVersion = check.versionCount || 0;
+                    if (check.exists) {
+                      const choice = confirm(
+                        `⚠️ Test Plan already exists${tid ? ` for ${tid.toUpperCase()}` : ''} (${existingVersion} version${existingVersion > 1 ? 's' : ''})\n\n` +
+                        `Latest: v${check.artifact.metadata?.version || 1} — ${new Date(check.artifact.createdAt).toLocaleString()}\n\n` +
+                        `Click OK to UPDATE the latest version.\nClick Cancel to save as NEW version (v${existingVersion + 1}).`
+                      );
+                      const title = issueData ? `Test Plan — ${issueData.key || tid}` : `Test Plan — ${new Date().toLocaleDateString()}`;
+                      if (choice) {
+                        await updateArtifact(apiBase, check.artifact._id, { title, content: plan, metadata: { ticketId: tid, inputMode, version: check.artifact.metadata?.version || 1 } });
+                      } else {
+                        const nv = existingVersion + 1;
+                        await saveArtifact(apiBase, { type: 'test-plan', title: `${title} (v${nv})`, content: plan, metadata: { ticketId: tid, inputMode, version: nv } });
+                      }
+                      setSaveStatus('saved');
+                      setTimeout(() => setSaveStatus(''), 3000);
+                      return;
+                    }
                     const title = issueData ? `Test Plan — ${issueData.key || ticketId}` : `Test Plan — ${new Date().toLocaleDateString()}`;
-                    await saveArtifact(apiBase, { type: 'test-plan', title, content: plan, metadata: { ticketId, inputMode } });
+                    await saveArtifact(apiBase, { type: 'test-plan', title, content: plan, metadata: { ticketId: tid, inputMode, version: 1 } });
                     setSaveStatus('saved');
                     setTimeout(() => setSaveStatus(''), 3000);
                   } catch (e) { setSaveStatus('error'); alert('Save failed: ' + e.message); setTimeout(() => setSaveStatus(''), 3000); }

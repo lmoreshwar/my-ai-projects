@@ -7,13 +7,13 @@ const SavedArtifact = require('../models/SavedArtifact');
 router.get('/check', auth, async (req, res) => {
   try {
     const { type, ticketId } = req.query;
-    if (!type || !ticketId) return res.json({ exists: false, versionCount: 0 });
-    const escapedId = ticketId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const all = await SavedArtifact.find({
-      userId: req.user.id,
-      type,
-      'metadata.ticketId': { $regex: new RegExp(`^${escapedId}$`, 'i') }
-    }).select('_id title metadata createdAt').sort({ createdAt: -1 });
+    if (!type) return res.json({ exists: false, versionCount: 0 });
+    const filter = { userId: req.user.id, type };
+    if (ticketId) {
+      const escapedId = ticketId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter['metadata.ticketId'] = { $regex: new RegExp(`^${escapedId}$`, 'i') };
+    }
+    const all = await SavedArtifact.find(filter).select('_id title content metadata createdAt').sort({ createdAt: -1 });
     if (all.length > 0) {
       return res.json({ exists: true, artifact: all[0], versionCount: all.length });
     }

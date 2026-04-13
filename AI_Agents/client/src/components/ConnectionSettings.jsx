@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import CustomSelect from './CustomSelect';
 
 export default function ConnectionSettings({ connections, setConnections, apiBase, onResetGenerated }) {
   const [testing, setTesting] = useState({ jira: false, llm: false, zephyr: false, github: false });
   const [fetchingBranches, setFetchingBranches] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
+  const llmAbortRef = useRef(null);
 
   const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
@@ -103,22 +104,38 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
     setTesting((p) => ({ ...p, llm: true }));
     updateConn('llm', 'status', 'testing');
     updateConn('llm', 'message', 'Testing connection...');
+    const controller = new AbortController();
+    llmAbortRef.current = controller;
     try {
       const res = await fetch(`${apiBase}/test-connection`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type: 'llm', config: connections.llm }),
+        signal: controller.signal,
       });
       const data = await res.json();
       updateConn('llm', 'status', data.status === 'success' ? 'connected' : 'error');
       updateConn('llm', 'message', data.message);
       // Reset all generated data when a new LLM connection succeeds
       if (data.status === 'success' && onResetGenerated) onResetGenerated();
-    } catch {
-      updateConn('llm', 'status', 'error');
-      updateConn('llm', 'message', 'Network error or server down');
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        updateConn('llm', 'status', '');
+        updateConn('llm', 'message', 'Connection test cancelled — you can switch models now.');
+      } else {
+        updateConn('llm', 'status', 'error');
+        updateConn('llm', 'message', 'Network error or server down');
+      }
     }
+    llmAbortRef.current = null;
     setTesting((p) => ({ ...p, llm: false }));
+  };
+
+  const cancelLlmTest = () => {
+    if (llmAbortRef.current) {
+      llmAbortRef.current.abort();
+      llmAbortRef.current = null;
+    }
   };
 
   const testZephyr = async () => {
@@ -439,11 +456,20 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
           )}
           <div className="flex items-center gap-3 pt-4">
             <button
-              onClick={testLlm}
-              disabled={testing.llm}
-              className="flex-1 h-12 border-2 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 font-bold text-sm rounded hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
+              onClick={testing.llm ? cancelLlmTest : testLlm}
+              disabled={!testing.llm && !connections.llm.apiKey}
+              className={`flex-1 h-12 font-bold text-sm rounded transition-colors ${
+                testing.llm
+                  ? 'border-2 border-red-300 dark:border-red-700 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 animate-pulse'
+                  : 'border-2 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-50'
+              }`}
             >
-              {testing.llm ? 'Testing...' : 'Test Connection'}
+              {testing.llm ? (
+                <span className="flex items-center justify-center gap-1.5">
+                  <span className="material-symbols-outlined text-base">stop_circle</span>
+                  Cancel
+                </span>
+              ) : 'Test Connection'}
             </button>
             <button onClick={() => saveConnection('llm')} className="flex-[1.5] h-12 bg-app-red text-white font-bold text-sm rounded shadow-lg shadow-app-red/20 active:bg-app-dark-red transition-all">
               Save Connection

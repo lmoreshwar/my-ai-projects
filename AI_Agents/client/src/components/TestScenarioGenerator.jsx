@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { saveArtifact } from '../utils/artifactService';
+import { saveArtifact, checkExistingArtifact, updateArtifact } from '../utils/artifactService';
 
 /* ── Test Scenario Generation System Prompt (from testcases_scenarios.md) ── */
 const SCENARIO_SYSTEM_PROMPT = `You are an experienced QA Engineer. Your task is to generate test scenarios ONLY based strictly on the provided input.
@@ -234,8 +234,27 @@ export default function TestScenarioGenerator({ connections, apiBase }) {
               onClick={async () => {
                 setSaveStatus('saving');
                 try {
+                  const tid = ticketId.trim();
+                  const check = await checkExistingArtifact(apiBase, 'test-scenarios', tid || undefined);
+                  const existingVersion = check.versionCount || 0;
+                  if (check.exists) {
+                    const choice = confirm(
+                      `⚠️ Test Scenarios already exist${tid ? ` for ${tid.toUpperCase()}` : ''} (${existingVersion} version${existingVersion > 1 ? 's' : ''})\n\n` +
+                      `Latest: v${check.artifact.metadata?.version || 1} — ${new Date(check.artifact.createdAt).toLocaleString()}\n\n` +
+                      `Click OK to UPDATE the latest version.\nClick Cancel to save as NEW version (v${existingVersion + 1}).`
+                    );
+                    const title = issueData ? `Scenarios — ${issueData.key || tid}` : `Scenarios — ${new Date().toLocaleDateString()}`;
+                    if (choice) {
+                      await updateArtifact(apiBase, check.artifact._id, { title, content: scenarios, metadata: { ticketId: tid, version: check.artifact.metadata?.version || 1 } });
+                    } else {
+                      const nv = existingVersion + 1;
+                      await saveArtifact(apiBase, { type: 'test-scenarios', title: `${title} (v${nv})`, content: scenarios, metadata: { ticketId: tid, version: nv } });
+                    }
+                    setSaveStatus('saved'); setTimeout(() => setSaveStatus(''), 3000);
+                    return;
+                  }
                   const title = issueData ? `Scenarios — ${issueData.key || ticketId}` : `Scenarios — ${new Date().toLocaleDateString()}`;
-                  await saveArtifact(apiBase, { type: 'test-scenarios', title, content: scenarios, metadata: { ticketId } });
+                  await saveArtifact(apiBase, { type: 'test-scenarios', title, content: scenarios, metadata: { ticketId: tid, version: 1 } });
                   setSaveStatus('saved'); setTimeout(() => setSaveStatus(''), 3000);
                 } catch (e) { setSaveStatus('error'); alert('Save failed: ' + e.message); setTimeout(() => setSaveStatus(''), 3000); }
               }}

@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { saveArtifact } from '../utils/artifactService';
+import { saveArtifact, checkExistingArtifact, updateArtifact } from '../utils/artifactService';
 
 const GHERKIN_SYSTEM_PROMPT = `# SELENIUM BDD AUTOMATION GENERATION PROMPT
 
@@ -477,7 +477,25 @@ IMPORTANT:
                     onClick={async () => {
                       setSaveStatus('saving');
                       try {
-                        await saveArtifact(apiBase, { type: 'selenium-bdd', title: `Selenium BDD — ${new Date().toLocaleDateString()}`, content: gherkinOutput, metadata: { selectedGroups: [...selectedGroups] } });
+                        const check = await checkExistingArtifact(apiBase, 'selenium-bdd');
+                        const existingVersion = check.versionCount || 0;
+                        if (check.exists) {
+                          const choice = confirm(
+                            `⚠️ Selenium BDD Scripts already saved (${existingVersion} version${existingVersion > 1 ? 's' : ''})\n\n` +
+                            `Latest: v${check.artifact.metadata?.version || 1} — ${new Date(check.artifact.createdAt).toLocaleString()}\n\n` +
+                            `Click OK to UPDATE the latest version.\nClick Cancel to save as NEW version (v${existingVersion + 1}).`
+                          );
+                          const title = `Selenium BDD — ${new Date().toLocaleDateString()}`;
+                          if (choice) {
+                            await updateArtifact(apiBase, check.artifact._id, { title, content: gherkinOutput, metadata: { selectedGroups: [...selectedGroups], version: check.artifact.metadata?.version || 1 } });
+                          } else {
+                            const nv = existingVersion + 1;
+                            await saveArtifact(apiBase, { type: 'selenium-bdd', title: `${title} (v${nv})`, content: gherkinOutput, metadata: { selectedGroups: [...selectedGroups], version: nv } });
+                          }
+                          setSaveStatus('saved'); setTimeout(() => setSaveStatus(''), 3000);
+                          return;
+                        }
+                        await saveArtifact(apiBase, { type: 'selenium-bdd', title: `Selenium BDD — ${new Date().toLocaleDateString()}`, content: gherkinOutput, metadata: { selectedGroups: [...selectedGroups], version: 1 } });
                         setSaveStatus('saved'); setTimeout(() => setSaveStatus(''), 3000);
                       } catch (e) { setSaveStatus('error'); alert('Save failed: ' + e.message); setTimeout(() => setSaveStatus(''), 3000); }
                     }}

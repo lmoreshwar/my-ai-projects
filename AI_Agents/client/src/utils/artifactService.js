@@ -10,7 +10,9 @@ export async function checkExistingArtifact(apiBase, type, ticketId) {
   const token = localStorage.getItem('blast_token');
   if (!token) return { exists: false };
   try {
-    const res = await fetch(`${apiBase}/api/artifacts/check?type=${encodeURIComponent(type)}&ticketId=${encodeURIComponent(ticketId)}`, {
+    let url = `${apiBase}/api/artifacts/check?type=${encodeURIComponent(type)}`;
+    if (ticketId) url += `&ticketId=${encodeURIComponent(ticketId)}`;
+    const res = await fetch(url, {
       headers: { 'Authorization': `Bearer ${token}` }
     });
     if (!res.ok) return { exists: false };

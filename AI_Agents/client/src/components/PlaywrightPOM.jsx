@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
-import { saveArtifact } from '../utils/artifactService';
+import { saveArtifact, checkExistingArtifact, updateArtifact } from '../utils/artifactService';
 
 /* ═══════════════════════════════════════════════════════════════════════
    SYSTEM PROMPT — Playwright Page Object Model (JS + TS)
@@ -654,7 +654,25 @@ IMPORTANT:
                   onClick={async () => {
                     setSaveStatus('saving');
                     try {
-                      await saveArtifact(apiBase, { type: 'playwright-pom', title: `Playwright POM — ${new Date().toLocaleDateString()}`, files: generatedFiles, metadata: { fileCount: generatedFiles.length, langFilter, selectedGroups: [...selectedGroups] } });
+                      const check = await checkExistingArtifact(apiBase, 'playwright-pom');
+                      const existingVersion = check.versionCount || 0;
+                      if (check.exists) {
+                        const choice = confirm(
+                          `⚠️ Playwright POM Scripts already saved (${existingVersion} version${existingVersion > 1 ? 's' : ''})\n\n` +
+                          `Latest: v${check.artifact.metadata?.version || 1} — ${new Date(check.artifact.createdAt).toLocaleString()}\n\n` +
+                          `Click OK to UPDATE the latest version.\nClick Cancel to save as NEW version (v${existingVersion + 1}).`
+                        );
+                        const title = `Playwright POM — ${new Date().toLocaleDateString()}`;
+                        if (choice) {
+                          await updateArtifact(apiBase, check.artifact._id, { title, files: generatedFiles, metadata: { fileCount: generatedFiles.length, langFilter, selectedGroups: [...selectedGroups], version: check.artifact.metadata?.version || 1 } });
+                        } else {
+                          const nv = existingVersion + 1;
+                          await saveArtifact(apiBase, { type: 'playwright-pom', title: `${title} (v${nv})`, files: generatedFiles, metadata: { fileCount: generatedFiles.length, langFilter, selectedGroups: [...selectedGroups], version: nv } });
+                        }
+                        setSaveStatus('saved'); setTimeout(() => setSaveStatus(''), 3000);
+                        return;
+                      }
+                      await saveArtifact(apiBase, { type: 'playwright-pom', title: `Playwright POM — ${new Date().toLocaleDateString()}`, files: generatedFiles, metadata: { fileCount: generatedFiles.length, langFilter, selectedGroups: [...selectedGroups], version: 1 } });
                       setSaveStatus('saved'); setTimeout(() => setSaveStatus(''), 3000);
                     } catch (e) { setSaveStatus('error'); alert('Save failed: ' + e.message); setTimeout(() => setSaveStatus(''), 3000); }
                   }}
