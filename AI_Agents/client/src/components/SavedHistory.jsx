@@ -253,10 +253,10 @@ export default function SavedHistory({ apiBase }) {
                         <DetailBlock icon="database" label="Test Data" value={testData} />
                       )}
                       {steps && (
-                        <DetailBlock icon="format_list_numbered" label="Test Steps" value={steps} wide numbered />
+                        <DetailBlock icon="format_list_numbered" label="Test Steps" value={steps} numbered />
                       )}
                       {expected && (
-                        <DetailBlock icon="check_circle" label="Expected Results" value={expected} wide numbered />
+                        <DetailBlock icon="check_circle" label="Expected Results" value={expected} numbered />
                       )}
                       {comments && (
                         <DetailBlock icon="comment" label="Comments" value={comments} />
@@ -497,16 +497,23 @@ export default function SavedHistory({ apiBase }) {
   );
 }
 
+/* ── Strip HTML <br> tags from text ── */
+function stripBr(text) {
+  if (!text) return '';
+  return text.replace(/<br\s*\/?>/gi, ' ').replace(/\s{2,}/g, ' ').trim();
+}
+
 /* ── Split numbered steps "1. Foo 2. Bar" → ["1. Foo", "2. Bar"] ── */
 function splitNumberedSteps(text) {
   if (!text) return [];
+  const clean = stripBr(text);
   // Split on patterns like "1." "2." etc. that appear mid-string
-  const parts = text.split(/(?=\b\d+\.\s)/).map(s => s.trim()).filter(Boolean);
+  const parts = clean.split(/(?=\b\d+\.\s)/).map(s => s.trim()).filter(Boolean);
   if (parts.length > 1) return parts;
   // Fallback: try splitting on semicolons or " - "
-  const alt = text.split(/;\s*|\s+-\s+/).map(s => s.trim()).filter(Boolean);
+  const alt = clean.split(/;\s*|\s+-\s+/).map(s => s.trim()).filter(Boolean);
   if (alt.length > 1) return alt.map((s, i) => `${i + 1}. ${s}`);
-  return [text];
+  return [clean];
 }
 
 /* ── Reusable detail block for expanded row ── */
@@ -531,7 +538,7 @@ function DetailBlock({ icon, label, value, wide, numbered }) {
           ))}
         </ol>
       ) : (
-        <p className="text-xs text-on-surface dark:text-slate-300 leading-relaxed whitespace-pre-line bg-white dark:bg-slate-800 rounded-lg p-3 border border-outline-variant/10 dark:border-slate-700/40">{value}</p>
+        <p className="text-xs text-on-surface dark:text-slate-300 leading-relaxed whitespace-pre-line bg-white dark:bg-slate-800 rounded-lg p-3 border border-outline-variant/10 dark:border-slate-700/40">{stripBr(value)}</p>
       )}
     </div>
   );
