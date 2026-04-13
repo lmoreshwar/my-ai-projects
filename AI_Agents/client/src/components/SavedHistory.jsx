@@ -253,10 +253,10 @@ export default function SavedHistory({ apiBase }) {
                         <DetailBlock icon="database" label="Test Data" value={testData} />
                       )}
                       {steps && (
-                        <DetailBlock icon="format_list_numbered" label="Test Steps" value={steps} wide />
+                        <DetailBlock icon="format_list_numbered" label="Test Steps" value={steps} wide numbered />
                       )}
                       {expected && (
-                        <DetailBlock icon="check_circle" label="Expected Results" value={expected} wide />
+                        <DetailBlock icon="check_circle" label="Expected Results" value={expected} wide numbered />
                       )}
                       {comments && (
                         <DetailBlock icon="comment" label="Comments" value={comments} />
@@ -489,15 +489,42 @@ export default function SavedHistory({ apiBase }) {
   );
 }
 
+/* ── Split numbered steps "1. Foo 2. Bar" → ["1. Foo", "2. Bar"] ── */
+function splitNumberedSteps(text) {
+  if (!text) return [];
+  // Split on patterns like "1." "2." etc. that appear mid-string
+  const parts = text.split(/(?=\b\d+\.\s)/).map(s => s.trim()).filter(Boolean);
+  if (parts.length > 1) return parts;
+  // Fallback: try splitting on semicolons or " - "
+  const alt = text.split(/;\s*|\s+-\s+/).map(s => s.trim()).filter(Boolean);
+  if (alt.length > 1) return alt.map((s, i) => `${i + 1}. ${s}`);
+  return [text];
+}
+
 /* ── Reusable detail block for expanded row ── */
-function DetailBlock({ icon, label, value, wide }) {
+function DetailBlock({ icon, label, value, wide, numbered }) {
+  const steps = numbered ? splitNumberedSteps(value) : null;
+
   return (
     <div className={wide ? 'md:col-span-2' : ''}>
       <div className="flex items-center gap-1.5 mb-1.5">
         <span className="material-symbols-outlined text-xs text-app-red">{icon}</span>
         <p className="text-[10px] font-black uppercase tracking-wider text-tertiary dark:text-slate-500">{label}</p>
       </div>
-      <p className="text-xs text-on-surface dark:text-slate-300 leading-relaxed whitespace-pre-line bg-white dark:bg-slate-800 rounded-lg p-3 border border-outline-variant/10 dark:border-slate-700/40">{value}</p>
+      {numbered && steps && steps.length > 1 ? (
+        <ol className="text-xs text-on-surface dark:text-slate-300 leading-relaxed bg-white dark:bg-slate-800 rounded-lg p-3 border border-outline-variant/10 dark:border-slate-700/40 space-y-1.5 list-none m-0">
+          {steps.map((step, i) => (
+            <li key={i} className="flex gap-2">
+              <span className="flex-shrink-0 w-5 h-5 bg-app-red/10 text-app-red text-[10px] font-black rounded-full flex items-center justify-center mt-0.5">
+                {i + 1}
+              </span>
+              <span className="flex-1">{step.replace(/^\d+\.\s*/, '')}</span>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="text-xs text-on-surface dark:text-slate-300 leading-relaxed whitespace-pre-line bg-white dark:bg-slate-800 rounded-lg p-3 border border-outline-variant/10 dark:border-slate-700/40">{value}</p>
+      )}
     </div>
   );
 }
