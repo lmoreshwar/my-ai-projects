@@ -450,7 +450,7 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
             )}
           </div>
           {connections.llm.message && (
-            <p className={`text-xs ${connections.llm.status === 'error' ? 'text-red-500' : 'text-green-600'}`}>
+            <p className={`text-xs ${connections.llm.status === 'error' ? 'text-red-500' : connections.llm.status === 'connected' ? 'text-green-600' : 'text-amber-500'}`}>
               {connections.llm.message}
             </p>
           )}
