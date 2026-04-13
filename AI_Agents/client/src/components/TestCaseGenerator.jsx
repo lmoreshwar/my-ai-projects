@@ -1546,30 +1546,41 @@ Then the full test case table.`;
                       onClick={async () => {
                         setSaveStatus('saving');
                         try {
-                          const title = issueData ? `Test Cases — ${issueData.key || ticketId}` : `Test Cases — ${new Date().toLocaleDateString()}`;
                           const tid = ticketId.trim();
                           // Check for existing artifact first
                           if (tid) {
                             const check = await checkExistingArtifact(apiBase, 'test-cases', tid);
+                            const existingVersion = check.versionCount || 0;
                             if (check.exists) {
                               const choice = confirm(
-                                `⚠️ Test cases already exist for ${tid.toUpperCase()}\n\nSaved: ${new Date(check.artifact.createdAt).toLocaleString()}` +
-                                (check.artifact.metadata?.totalCases ? ` (${check.artifact.metadata.totalCases} test cases)` : '') +
-                                `\n\nClick OK to UPDATE the existing test cases.\nClick Cancel to save as a NEW version.`
+                                `⚠️ Test cases already exist for ${tid.toUpperCase()} (${existingVersion} version${existingVersion > 1 ? 's' : ''})\n\n` +
+                                `Latest: v${check.artifact.metadata?.version || 1} — ${new Date(check.artifact.createdAt).toLocaleString()}` +
+                                (check.artifact.metadata?.totalCases ? ` (${check.artifact.metadata.totalCases} TCs)` : '') +
+                                `\n\nClick OK to UPDATE the latest version (v${check.artifact.metadata?.version || 1}).\nClick Cancel to save as NEW version (v${existingVersion + 1}).`
                               );
+                              const title = issueData ? `Test Cases — ${issueData.key || tid}` : `Test Cases — ${new Date().toLocaleDateString()}`;
                               if (choice) {
-                                // Update existing
-                                await updateArtifact(apiBase, check.artifact._id, { title, content: testCases, metadata: { ticketId: tid, totalCases: tableRows.length, llmMeta } });
+                                // Update existing — keep same version
+                                await updateArtifact(apiBase, check.artifact._id, { title, content: testCases, metadata: { ticketId: tid, totalCases: tableRows.length, version: check.artifact.metadata?.version || 1, llmMeta } });
                                 setExistingArtifact({ ...check.artifact, metadata: { ...check.artifact.metadata, totalCases: tableRows.length }, createdAt: new Date().toISOString() });
                                 setSaveStatus('saved');
                                 setTimeout(() => setSaveStatus(''), 3000);
                                 return;
                               }
-                              // else fall through to create new
+                              // Create new version
+                              const newVersion = existingVersion + 1;
+                              const vTitle = issueData ? `Test Cases — ${issueData.key || tid} (v${newVersion})` : `Test Cases — ${new Date().toLocaleDateString()} (v${newVersion})`;
+                              await saveArtifact(apiBase, { type: 'test-cases', title: vTitle, content: testCases, metadata: { ticketId: tid, totalCases: tableRows.length, version: newVersion, llmMeta } });
+                              setExistingArtifact({ _id: 'new', title: vTitle, metadata: { totalCases: tableRows.length, version: newVersion }, createdAt: new Date().toISOString() });
+                              setSaveStatus('saved');
+                              setTimeout(() => setSaveStatus(''), 3000);
+                              return;
                             }
                           }
-                          await saveArtifact(apiBase, { type: 'test-cases', title, content: testCases, metadata: { ticketId: tid, totalCases: tableRows.length, llmMeta } });
-                          if (tid) setExistingArtifact({ _id: 'new', title, metadata: { totalCases: tableRows.length }, createdAt: new Date().toISOString() });
+                          // First save — version 1
+                          const title = issueData ? `Test Cases — ${issueData.key || ticketId}` : `Test Cases — ${new Date().toLocaleDateString()}`;
+                          await saveArtifact(apiBase, { type: 'test-cases', title, content: testCases, metadata: { ticketId: tid, totalCases: tableRows.length, version: 1, llmMeta } });
+                          if (tid) setExistingArtifact({ _id: 'new', title, metadata: { totalCases: tableRows.length, version: 1 }, createdAt: new Date().toISOString() });
                           setSaveStatus('saved');
                           setTimeout(() => setSaveStatus(''), 3000);
                         } catch (e) { setSaveStatus('error'); alert('Save failed: ' + e.message); setTimeout(() => setSaveStatus(''), 3000); }

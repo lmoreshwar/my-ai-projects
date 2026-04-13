@@ -214,8 +214,8 @@ export default function SavedHistory({ apiBase }) {
                   onClick={() => setExpandedRow(isExpanded ? null : idx)}>
 
                   {/* SRL badge */}
-                  <div className="flex-shrink-0 w-14 h-8 bg-slate-100 dark:bg-slate-700 rounded-lg flex items-center justify-center">
-                    <span className="text-[10px] font-black text-on-surface dark:text-white tracking-wide">{srl}</span>
+                  <div className="flex-shrink-0 min-w-[3.5rem] px-2 h-8 bg-slate-900 dark:bg-slate-700 rounded-lg flex items-center justify-center">
+                    <span className="text-[10px] font-black text-white tracking-wide whitespace-nowrap">{srl}</span>
                   </div>
 
                   {/* Title + description */}
@@ -410,8 +410,11 @@ export default function SavedHistory({ apiBase }) {
                           <span className="material-symbols-outlined text-white text-sm">{m.icon}</span>
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 flex-wrap">
                             <span className="text-[10px] font-bold uppercase tracking-wider text-tertiary dark:text-slate-500">{m.label}</span>
+                            {a.metadata?.version && (
+                              <span className="text-[9px] font-black bg-app-red/10 text-app-red px-1.5 py-0.5 rounded-full">v{a.metadata.version}</span>
+                            )}
                             {a.metadata?.totalCases && (
                               <span className="text-[9px] font-bold bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 px-1.5 py-0.5 rounded-full">{a.metadata.totalCases} TCs</span>
                             )}
@@ -454,7 +457,12 @@ export default function SavedHistory({ apiBase }) {
                     <span className="material-symbols-outlined text-white text-base">{meta(selected.type).icon}</span>
                   </div>
                   <div>
-                    <h2 className="text-sm font-bold text-on-surface dark:text-white">{meta(selected.type).label}</h2>
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-sm font-bold text-on-surface dark:text-white">{meta(selected.type).label}</h2>
+                      {selected.metadata?.version && (
+                        <span className="text-[10px] font-black bg-app-red/10 text-app-red px-2 py-0.5 rounded-full">v{selected.metadata.version}</span>
+                      )}
+                    </div>
                     <p className="text-[10px] text-tertiary dark:text-slate-500">
                       Saved {new Date(selected.createdAt).toLocaleString()}
                     </p>
