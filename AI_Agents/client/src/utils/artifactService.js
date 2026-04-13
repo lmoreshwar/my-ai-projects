@@ -1,4 +1,50 @@
 /**
+ * checkExistingArtifact — Check if an artifact of given type already exists for a ticket
+ *
+ * @param {string} apiBase - Base API URL
+ * @param {string} type - Artifact type (e.g. 'test-cases')
+ * @param {string} ticketId - Ticket ID to check
+ * @returns {Promise<{exists: boolean, artifact?: object}>}
+ */
+export async function checkExistingArtifact(apiBase, type, ticketId) {
+  const token = localStorage.getItem('blast_token');
+  if (!token) return { exists: false };
+  try {
+    const res = await fetch(`${apiBase}/api/artifacts/check?type=${encodeURIComponent(type)}&ticketId=${encodeURIComponent(ticketId)}`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!res.ok) return { exists: false };
+    return res.json();
+  } catch { return { exists: false }; }
+}
+
+/**
+ * updateArtifact — Update an existing artifact
+ *
+ * @param {string} apiBase - Base API URL
+ * @param {string} id - Artifact ID
+ * @param {object} payload - { title?, content?, files?, metadata? }
+ * @returns {Promise<object>} - Updated artifact
+ */
+export async function updateArtifact(apiBase, id, { title, content, files, metadata }) {
+  const token = localStorage.getItem('blast_token');
+  if (!token) throw new Error('Not logged in');
+  const res = await fetch(`${apiBase}/api/artifacts/${id}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({ title, content, files, metadata })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.msg || `Update failed (${res.status})`);
+  }
+  return res.json();
+}
+
+/**
  * saveArtifact — Save generated content to MongoDB via /api/artifacts
  *
  * @param {string} apiBase - Base API URL

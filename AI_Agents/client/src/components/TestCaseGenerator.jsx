@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import CustomSelect from './CustomSelect';
 import ReactMarkdown from 'react-markdown';
 import * as XLSX from 'xlsx';
-import { saveArtifact } from '../utils/artifactService';
+import { saveArtifact, checkExistingArtifact, updateArtifact } from '../utils/artifactService';
 
 /* ── Structured Test Coverage + Anti-Hallucination System Prompt (RICE-POT internally) ── */
 const SYSTEM_PROMPT_CONTEXT = `You are a Senior QA Tester / SDET with 15+ years of experience.
@@ -132,6 +132,7 @@ export default function TestCaseGenerator({ connections, apiBase, onTestCasesGen
   const retryAttemptsRef = useRef(0);
   const MAX_AUTO_RETRIES = 2;
   const [saveStatus, setSaveStatus] = useState(''); // '' | 'saving' | 'saved' | 'error'
+  const [existingArtifact, setExistingArtifact] = useState(null); // {_id, title, createdAt} if test cases already saved for this ticket
 
   /* ── Confluence import state ── */
   const [confSpaces, setConfSpaces] = useState([]);
@@ -238,6 +239,7 @@ export default function TestCaseGenerator({ connections, apiBase, onTestCasesGen
     if (!ticketId.trim()) return;
     if (connections.jira.status !== 'connected') return alert('Connect to JIRA first');
     setBusy('fetch');
+    setExistingArtifact(null);
     try {
       const r = await fetch(`${apiBase}/fetch-issue`, {
         method: 'POST',
@@ -246,6 +248,11 @@ export default function TestCaseGenerator({ connections, apiBase, onTestCasesGen
       });
       if (!r.ok) throw new Error((await r.json()).detail || 'Fetch failed');
       setIssueData(await r.json());
+      // Check if test cases already exist in DB for this ticket
+      try {
+        const check = await checkExistingArtifact(apiBase, 'test-cases', ticketId.trim());
+        if (check.exists) setExistingArtifact(check.artifact);
+      } catch { /* non-critical */ }
     } catch (e) {
       alert(e.message);
     }
@@ -838,6 +845,34 @@ Then the full test case table.`;
                           {issueData.hierarchy.totalTickets} tickets aggregated ({issueData.hierarchy.childIssues?.length || 0} child issues included)
                         </div>
                       )}
+                    </div>
+                  )}
+                  {/* Existing test cases banner */}
+                  {existingArtifact && issueData && (
+                    <div className="mt-2 px-3 py-2.5 bg-amber-50 dark:bg-amber-900/20 rounded-lg border border-amber-200 dark:border-amber-800 animate-in">
+                      <div className="flex items-start gap-2">
+                        <span className="material-symbols-outlined text-amber-600 text-sm mt-0.5">info</span>
+                        <div className="flex-1">
+                          <p className="text-xs font-bold text-amber-700 dark:text-amber-400">
+                            Test cases already exist for {ticketId.toUpperCase()}
+                          </p>
+                          <p className="text-[10px] text-amber-600 dark:text-amber-500 mt-0.5">
+                            Saved on {new Date(existingArtifact.createdAt).toLocaleString()}
+                            {existingArtifact.metadata?.totalCases && ` • ${existingArtifact.metadata.totalCases} test cases`}
+                          </p>
+                          <div className="flex items-center gap-2 mt-2">
+                            <button onClick={() => { onNavigate('saved-history'); }}
+                              className="text-[10px] font-bold bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-300 px-2.5 py-1 rounded hover:bg-amber-300 dark:hover:bg-amber-700 transition">
+                              <span className="material-symbols-outlined text-xs align-middle mr-0.5">history</span>
+                              View in History
+                            </button>
+                            <span className="text-[10px] text-amber-500">You can still generate fresh test cases below</span>
+                          </div>
+                        </div>
+                        <button onClick={() => setExistingArtifact(null)} className="shrink-0 text-amber-400 hover:text-red-500 transition" title="Dismiss">
+                          <span className="material-symbols-outlined text-sm">close</span>
+                        </button>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1512,7 +1547,29 @@ Then the full test case table.`;
                         setSaveStatus('saving');
                         try {
                           const title = issueData ? `Test Cases — ${issueData.key || ticketId}` : `Test Cases — ${new Date().toLocaleDateString()}`;
-                          await saveArtifact(apiBase, { type: 'test-cases', title, content: testCases, metadata: { ticketId, totalCases: tableRows.length, llmMeta } });
+                          const tid = ticketId.trim();
+                          // Check for existing artifact first
+                          if (tid) {
+                            const check = await checkExistingArtifact(apiBase, 'test-cases', tid);
+                            if (check.exists) {
+                              const choice = confirm(
+                                `⚠️ Test cases already exist for ${tid.toUpperCase()}\n\nSaved: ${new Date(check.artifact.createdAt).toLocaleString()}` +
+                                (check.artifact.metadata?.totalCases ? ` (${check.artifact.metadata.totalCases} test cases)` : '') +
+                                `\n\nClick OK to UPDATE the existing test cases.\nClick Cancel to save as a NEW version.`
+                              );
+                              if (choice) {
+                                // Update existing
+                                await updateArtifact(apiBase, check.artifact._id, { title, content: testCases, metadata: { ticketId: tid, totalCases: tableRows.length, llmMeta } });
+                                setExistingArtifact({ ...check.artifact, metadata: { ...check.artifact.metadata, totalCases: tableRows.length }, createdAt: new Date().toISOString() });
+                                setSaveStatus('saved');
+                                setTimeout(() => setSaveStatus(''), 3000);
+                                return;
+                              }
+                              // else fall through to create new
+                            }
+                          }
+                          await saveArtifact(apiBase, { type: 'test-cases', title, content: testCases, metadata: { ticketId: tid, totalCases: tableRows.length, llmMeta } });
+                          if (tid) setExistingArtifact({ _id: 'new', title, metadata: { totalCases: tableRows.length }, createdAt: new Date().toISOString() });
                           setSaveStatus('saved');
                           setTimeout(() => setSaveStatus(''), 3000);
                         } catch (e) { setSaveStatus('error'); alert('Save failed: ' + e.message); setTimeout(() => setSaveStatus(''), 3000); }
