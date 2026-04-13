@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import CustomSelect from './CustomSelect';
 import ReactMarkdown from 'react-markdown';
 import * as XLSX from 'xlsx';
+import { saveArtifact } from '../utils/artifactService';
 
 /* ── Structured Test Coverage + Anti-Hallucination System Prompt (RICE-POT internally) ── */
 const SYSTEM_PROMPT_CONTEXT = `You are a Senior QA Tester / SDET with 15+ years of experience.
@@ -130,6 +131,7 @@ export default function TestCaseGenerator({ connections, apiBase, onTestCasesGen
   const retryTimerRef = useRef(null);
   const retryAttemptsRef = useRef(0);
   const MAX_AUTO_RETRIES = 2;
+  const [saveStatus, setSaveStatus] = useState(''); // '' | 'saving' | 'saved' | 'error'
 
   /* ── Confluence import state ── */
   const [confSpaces, setConfSpaces] = useState([]);
@@ -1504,6 +1506,22 @@ Then the full test case table.`;
                     <button onClick={exportXlsx} className="w-full flex items-center gap-3 px-4 py-3 bg-white dark:bg-slate-800 text-on-surface dark:text-white hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg active:scale-95 transition-all font-bold text-sm border border-outline-variant/20">
                       <span className="material-symbols-outlined text-emerald-600">grid_on</span>
                       Download Excel File
+                    </button>
+                    <button
+                      onClick={async () => {
+                        setSaveStatus('saving');
+                        try {
+                          const title = issueData ? `Test Cases — ${issueData.key || ticketId}` : `Test Cases — ${new Date().toLocaleDateString()}`;
+                          await saveArtifact(apiBase, { type: 'test-cases', title, content: testCases, metadata: { ticketId, totalCases: tableRows.length, llmMeta } });
+                          setSaveStatus('saved');
+                          setTimeout(() => setSaveStatus(''), 3000);
+                        } catch (e) { setSaveStatus('error'); alert('Save failed: ' + e.message); setTimeout(() => setSaveStatus(''), 3000); }
+                      }}
+                      disabled={saveStatus === 'saving'}
+                      className="w-full flex items-center gap-3 px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg active:scale-95 transition-all font-bold text-sm shadow-lg shadow-emerald-600/20"
+                    >
+                      <span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span>
+                      {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to DB!' : 'Save to Database'}
                     </button>
                   </div>
                 </div>

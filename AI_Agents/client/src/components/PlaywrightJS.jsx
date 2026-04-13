@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
+import { saveArtifact } from '../utils/artifactService';
 
 /* ═══════════════════════════════════════════════════════════════════════
    SYSTEM PROMPT — Playwright TypeScript + BDD (Gherkin) Generation
@@ -195,6 +196,7 @@ function parseFileBlocks(output) {
 export default function PlaywrightJS({ connections, apiBase, generatedTestCases, generatedFiles, setGeneratedFiles, activeFileIdx, setActiveFileIdx, selectedGroups, setSelectedGroups, onClearTestCases }) {
   // ── State ──
   const [busy, setBusy] = useState('');
+  const [saveStatus, setSaveStatus] = useState('');
   const [pushStatus, setPushStatus] = useState('');
   const [pushBranch, setPushBranch] = useState('');
   const [pushPath, setPushPath] = useState('tests');
@@ -662,6 +664,20 @@ IMPORTANT:
                 >
                   <span className="material-symbols-outlined text-base">restart_alt</span>
                   Clear All Scripts
+                </button>
+                <button
+                  onClick={async () => {
+                    setSaveStatus('saving');
+                    try {
+                      await saveArtifact(apiBase, { type: 'playwright-js', title: `Playwright BDD — ${new Date().toLocaleDateString()}`, files: generatedFiles, metadata: { fileCount: generatedFiles.length, selectedGroups: [...selectedGroups] } });
+                      setSaveStatus('saved'); setTimeout(() => setSaveStatus(''), 3000);
+                    } catch (e) { setSaveStatus('error'); alert('Save failed: ' + e.message); setTimeout(() => setSaveStatus(''), 3000); }
+                  }}
+                  disabled={saveStatus === 'saving'}
+                  className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg flex items-center justify-center gap-2 transition-all text-sm active:scale-[0.98] shadow-lg shadow-emerald-600/20"
+                >
+                  <span className="material-symbols-outlined text-base">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span>
+                  {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to DB!' : 'Save to Database'}
                 </button>
               </div>
             )}

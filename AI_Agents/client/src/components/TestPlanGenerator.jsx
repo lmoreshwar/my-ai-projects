@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { saveArtifact } from '../utils/artifactService';
 import ReactMarkdown from 'react-markdown';
 
 const TP_STORAGE = 'ai_test_plan_state';
@@ -23,6 +24,7 @@ export default function TestPlanGenerator({ connections, apiBase }) {
   const [inputMode, setInputMode] = useState(saved.inputMode || 'jira'); // 'jira' or 'manual'
   const [manualInput, setManualInput] = useState(saved.manualInput || '');
   const [dataWarning, setDataWarning] = useState(null); // completeness warning
+  const [saveStatus, setSaveStatus] = useState(''); // '' | 'saving' | 'saved' | 'error'
 
   useEffect(() => {
     try { localStorage.setItem(TP_STORAGE, JSON.stringify({ ticketId, issueData, plan, downloadUrl, mdDownloadUrl, context, inputMode, manualInput })); } catch {}
@@ -412,6 +414,22 @@ export default function TestPlanGenerator({ connections, apiBase }) {
                   </button>
                 </div>
               )}
+              <button
+                onClick={async () => {
+                  setSaveStatus('saving');
+                  try {
+                    const title = issueData ? `Test Plan — ${issueData.key || ticketId}` : `Test Plan — ${new Date().toLocaleDateString()}`;
+                    await saveArtifact(apiBase, { type: 'test-plan', title, content: plan, metadata: { ticketId, inputMode } });
+                    setSaveStatus('saved');
+                    setTimeout(() => setSaveStatus(''), 3000);
+                  } catch (e) { setSaveStatus('error'); alert('Save failed: ' + e.message); setTimeout(() => setSaveStatus(''), 3000); }
+                }}
+                disabled={saveStatus === 'saving'}
+                className="mt-3 w-full flex items-center justify-center gap-2 p-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-sm font-bold text-[0.875rem] active:scale-95 transition-all disabled:opacity-50"
+              >
+                <span className="material-symbols-outlined text-base">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span>
+                {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to DB!' : 'Save to Database'}
+              </button>
             </div>
           )}
         </div>

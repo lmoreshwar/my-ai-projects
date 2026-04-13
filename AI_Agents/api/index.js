@@ -34,6 +34,10 @@ app.use('/api/users', userRoutes);
 const testCaseRoutes = require('./routes/testcases');
 app.use('/api/testcases', testCaseRoutes);
 
+// Import and use Artifacts Routes (save/load generated content)
+const artifactRoutes = require('./routes/artifacts');
+app.use('/api/artifacts', artifactRoutes);
+
 // Serve React static files (Render / standalone)
 // Must be BEFORE API routes so static assets (JS, CSS, images) are served directly
 const _clientDist = path.join(__dirname, '..', 'client', 'dist');

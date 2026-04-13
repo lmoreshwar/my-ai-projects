@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { saveArtifact } from '../utils/artifactService';
 
 /* ── Test Scenario Generation System Prompt (from testcases_scenarios.md) ── */
 const SCENARIO_SYSTEM_PROMPT = `You are an experienced QA Engineer. Your task is to generate test scenarios ONLY based strictly on the provided input.
@@ -74,6 +75,7 @@ export default function TestScenarioGenerator({ connections, apiBase }) {
   const [manualReq, setManualReq] = useState(saved.manualReq || '');
   const [scenarios, setScenarios] = useState(saved.scenarios || '');
   const [loading, setLoading] = useState('');
+  const [saveStatus, setSaveStatus] = useState('');
   const [context, setContext] = useState(saved.context || '');
 
   useEffect(() => {
@@ -227,6 +229,21 @@ export default function TestScenarioGenerator({ connections, apiBase }) {
             <button onClick={uploadToZephyr} disabled={!scenarios} className="w-full py-4 bg-surface-container-high text-on-surface dark:text-white rounded-sm font-bold text-[1rem] flex items-center justify-center gap-3 hover:bg-surface-container transition-colors active:scale-95 disabled:opacity-50">
               <span className="material-symbols-outlined">cloud_upload</span>
               Upload to Zephyr
+            </button>
+            <button
+              onClick={async () => {
+                setSaveStatus('saving');
+                try {
+                  const title = issueData ? `Scenarios — ${issueData.key || ticketId}` : `Scenarios — ${new Date().toLocaleDateString()}`;
+                  await saveArtifact(apiBase, { type: 'test-scenarios', title, content: scenarios, metadata: { ticketId } });
+                  setSaveStatus('saved'); setTimeout(() => setSaveStatus(''), 3000);
+                } catch (e) { setSaveStatus('error'); alert('Save failed: ' + e.message); setTimeout(() => setSaveStatus(''), 3000); }
+              }}
+              disabled={!scenarios || saveStatus === 'saving'}
+              className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-sm font-bold text-[1rem] flex items-center justify-center gap-3 active:scale-95 transition-all disabled:opacity-50 shadow-lg shadow-emerald-600/20"
+            >
+              <span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span>
+              {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to DB!' : 'Save to Database'}
             </button>
             {(ticketId || issueData || manualReq || scenarios || context) && (
               <button

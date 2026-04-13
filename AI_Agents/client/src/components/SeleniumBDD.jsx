@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
+import { saveArtifact } from '../utils/artifactService';
 
 const GHERKIN_SYSTEM_PROMPT = `# SELENIUM BDD AUTOMATION GENERATION PROMPT
 
@@ -99,6 +100,7 @@ export default function SeleniumBDD({ connections, apiBase, generatedTestCases, 
   const setGherkinOutput = setSeleniumOutput;
   const [busy, setBusy] = useState('');
   const [activeTab, setActiveTab] = useState('feature'); // 'feature' | 'steps'
+  const [saveStatus, setSaveStatus] = useState('');
 
   // ── Parse & filter automation-tagged test cases into groups ──
   const allParsed = useMemo(() => parseTestCasesFromMarkdown(generatedTestCases), [generatedTestCases]);
@@ -470,6 +472,21 @@ IMPORTANT:
                 <button onClick={downloadFile} disabled={!(activeTab === 'feature' ? parsedFiles.feature : parsedFiles.steps)} className="px-3 py-1.5 bg-surface-container-lowest dark:bg-slate-700 text-on-surface dark:text-white border border-outline-variant/30 dark:border-slate-600 rounded text-xs font-bold hover:bg-surface-variant transition-colors disabled:opacity-40">
                   Download {activeTab === 'feature' ? '.feature' : '.java'}
                 </button>
+                {gherkinOutput && (
+                  <button
+                    onClick={async () => {
+                      setSaveStatus('saving');
+                      try {
+                        await saveArtifact(apiBase, { type: 'selenium-bdd', title: `Selenium BDD — ${new Date().toLocaleDateString()}`, content: gherkinOutput, metadata: { selectedGroups: [...selectedGroups] } });
+                        setSaveStatus('saved'); setTimeout(() => setSaveStatus(''), 3000);
+                      } catch (e) { setSaveStatus('error'); alert('Save failed: ' + e.message); setTimeout(() => setSaveStatus(''), 3000); }
+                    }}
+                    disabled={saveStatus === 'saving'}
+                    className="px-3 py-1.5 bg-emerald-600 text-white border border-emerald-700 rounded text-xs font-bold hover:bg-emerald-700 transition-colors disabled:opacity-50">
+                    <span className="material-symbols-outlined text-sm align-middle mr-1">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span>
+                    {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved!' : 'Save to DB'}
+                  </button>
+                )}
               </div>
             </div>
           </div>

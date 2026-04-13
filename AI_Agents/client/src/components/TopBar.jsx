@@ -26,7 +26,7 @@ export default function TopBar({ children, sidebarCollapsed }) {
         {children}
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-bold text-white uppercase tracking-wider font-headline">
-            AI Test Command Center
+            B.L.A.S.T AI Test Command Center
           </h1>
           <span className="hidden lg:inline-block text-[9px] font-bold bg-white/20 text-white/90 px-2 py-0.5 rounded-full uppercase tracking-widest">
             Powered by GenAI

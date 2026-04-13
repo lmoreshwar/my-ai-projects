@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import * as XLSX from 'xlsx';
+import { saveArtifact } from '../utils/artifactService';
 
 /* ── Parse markdown table → array of row-objects ── */
 function parseMarkdownTable(md) {
@@ -394,6 +395,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
   const [riskExpanded, setRiskExpanded] = useState(false);
   const [rtmExpanded, setRtmExpanded] = useState(false);
   const [testCasesExpanded, setTestCasesExpanded] = useState(true);
+  const [saveStatus, setSaveStatus] = useState(''); // '' | 'saving' | 'saved' | 'error'
   const itemsPerPage = 10;
   const carouselRef = useRef(null);
 
@@ -547,8 +549,8 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
   };
 
   /* ── Export Review .md ── */
-  const exportReviewMd = () => {
-    if (!coverage) return alert('Run analysis first');
+  const exportReviewMd = (returnString = false) => {
+    if (!coverage) { if (!returnString) alert('Run analysis first'); return ''; }
     let content = `# Test Case Review & Coverage Report\n\n## Overall Coverage: ${coverage.overallCoverage}%\n\n`;
     if (coverage.coverageCalculation) {
       content += `## Coverage Summary\n- Total Requirements Analyzed: ${coverage.coverageCalculation.totalRequirements}\n- Covered: ${coverage.coverageCalculation.fullyCovered}\n- Partially Covered: ${coverage.coverageCalculation.partiallyCovered}\n- Uncovered: ${coverage.coverageCalculation.notCovered}\n- Test Cases Analyzed: ${coverage.coverageCalculation.testCasesAnalyzed}\n\n`;
@@ -580,6 +582,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
         content += '| ' + headers.map(h => (tc[h] || '').replace(/\|/g, '\\|')).join(' | ') + ' |\n';
       });
     }
+    if (returnString) return content;
     const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1189,6 +1192,28 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
           className="flex-1 bg-app-red text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 shadow-lg shadow-app-red/20 hover:bg-red-700 active:scale-95 transition-all disabled:opacity-40 disabled:shadow-none disabled:hover:scale-100 disabled:cursor-not-allowed"
         >
           <span className="material-symbols-outlined">check_circle</span> Approve &amp; Export Scenarios
+        </button>
+        <button
+          onClick={async () => {
+            setSaveStatus('saving');
+            try {
+              const title = issueData ? `Review — ${issueData.key || ticketId}` : `Review — ${new Date().toLocaleDateString()}`;
+              const reviewContent = exportReviewMd(true); // returns string instead of downloading
+              await saveArtifact(apiBase, {
+                type: 'test-review',
+                title,
+                content: typeof reviewContent === 'string' ? reviewContent : JSON.stringify(coverage),
+                metadata: { ticketId, overallCoverage: coverage?.overallCoverage, totalCases: parsedCases.length }
+              });
+              setSaveStatus('saved');
+              setTimeout(() => setSaveStatus(''), 3000);
+            } catch (e) { setSaveStatus('error'); alert('Save failed: ' + e.message); setTimeout(() => setSaveStatus(''), 3000); }
+          }}
+          disabled={!coverage || saveStatus === 'saving'}
+          className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 shadow-lg shadow-emerald-600/20 active:scale-95 transition-all disabled:opacity-40 disabled:shadow-none disabled:cursor-not-allowed"
+        >
+          <span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span>
+          {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to DB!' : 'Save Review to DB'}
         </button>
       </div>
     </div>

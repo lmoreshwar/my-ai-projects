@@ -14,6 +14,7 @@ import PlaywrightJS from './components/PlaywrightJS';
 import PlaywrightPOM from './components/PlaywrightPOM';
 import GitHubIntegration from './components/GitHubIntegration';
 import GitHubCICD from './components/GitHubCICD';
+import SavedHistory from './components/SavedHistory';
 import Login from './pages/Login';
 import SignUp from './pages/SignUp';
 
@@ -246,6 +247,9 @@ function App() {
         </div>
         <div style={{ display: activePage === 'github-cicd' ? undefined : 'none' }}>
           {visitedPages.has('github-cicd') && <GitHubCICD connections={connections} apiBase={API_BASE} cicdState={cicdState} setCicdState={setCicdState} />}
+        </div>
+        <div style={{ display: activePage === 'saved-history' ? undefined : 'none' }}>
+          {visitedPages.has('saved-history') && <SavedHistory apiBase={API_BASE} />}
         </div>
       </main>
 
