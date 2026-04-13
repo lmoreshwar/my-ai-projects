@@ -503,16 +503,44 @@ function stripBr(text) {
   return text.replace(/<br\s*\/?>/gi, ' ').replace(/\s{2,}/g, ' ').trim();
 }
 
-/* ── Split numbered steps "1. Foo 2. Bar" → ["1. Foo", "2. Bar"] ── */
+/* ── Split numbered steps "1. Foo 2. Bar" → ["Foo", "Bar"] ── */
 function splitNumberedSteps(text) {
   if (!text) return [];
   const clean = stripBr(text);
-  // Split on patterns like "1." "2." etc. that appear mid-string
-  const parts = clean.split(/(?=\b\d+\.\s)/).map(s => s.trim()).filter(Boolean);
-  if (parts.length > 1) return parts;
+
+  // Strategy: extract steps using sequential numbering (1. 2. 3. ...)
+  // Only treat "N." as a step marker if N follows the expected sequence
+  const steps = [];
+  let expected = 1;
+  let remaining = clean;
+
+  while (remaining.length > 0) {
+    // Find where the NEXT expected step number starts
+    const nextNum = expected + 1;
+    const nextPattern = new RegExp(`(?<=[.!?\\s])${nextNum}\\.\\s`);
+    const nextMatch = remaining.match(nextPattern);
+
+    if (nextMatch && nextMatch.index !== undefined) {
+      // Everything before the next marker is the current step
+      let stepText = remaining.substring(0, nextMatch.index).trim();
+      // Strip leading "N. " from step text
+      stepText = stepText.replace(/^\d+\.\s*/, '');
+      if (stepText) steps.push(stepText);
+      remaining = remaining.substring(nextMatch.index);
+      expected = nextNum;
+    } else {
+      // No more sequential markers — rest is the last step
+      let stepText = remaining.trim().replace(/^\d+\.\s*/, '');
+      if (stepText) steps.push(stepText);
+      break;
+    }
+  }
+
+  if (steps.length > 1) return steps;
+
   // Fallback: try splitting on semicolons or " - "
   const alt = clean.split(/;\s*|\s+-\s+/).map(s => s.trim()).filter(Boolean);
-  if (alt.length > 1) return alt.map((s, i) => `${i + 1}. ${s}`);
+  if (alt.length > 1) return alt;
   return [clean];
 }
 
@@ -533,7 +561,7 @@ function DetailBlock({ icon, label, value, wide, numbered }) {
               <span className="flex-shrink-0 w-5 h-5 bg-app-red/10 text-app-red text-[10px] font-black rounded-full flex items-center justify-center mt-0.5">
                 {i + 1}
               </span>
-              <span className="flex-1">{step.replace(/^\d+\.\s*/, '')}</span>
+              <span className="flex-1">{step}</span>
             </li>
           ))}
         </ol>
