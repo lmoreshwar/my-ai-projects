@@ -864,7 +864,7 @@ Then the full test case table.`;
                             <button onClick={() => { onNavigate('saved-history'); }}
                               className="text-[10px] font-bold bg-amber-200 dark:bg-amber-800 text-amber-800 dark:text-amber-300 px-2.5 py-1 rounded hover:bg-amber-300 dark:hover:bg-amber-700 transition">
                               <span className="material-symbols-outlined text-xs align-middle mr-0.5">history</span>
-                              View in History
+                              View in Library
                             </button>
                             <span className="text-[10px] text-amber-500">You can still generate fresh test cases below</span>
                           </div>
@@ -1589,7 +1589,7 @@ Then the full test case table.`;
                       className="w-full flex items-center gap-3 px-4 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg active:scale-95 transition-all font-bold text-sm shadow-lg shadow-emerald-600/20"
                     >
                       <span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span>
-                      {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to DB!' : 'Save to Database'}
+                      {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to Library!' : 'Save to Library'}
                     </button>
                   </div>
                 </div>

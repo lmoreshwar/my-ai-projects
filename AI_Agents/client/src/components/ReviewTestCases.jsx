@@ -1213,7 +1213,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
           className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 shadow-lg shadow-emerald-600/20 active:scale-95 transition-all disabled:opacity-40 disabled:shadow-none disabled:cursor-not-allowed"
         >
           <span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span>
-          {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to DB!' : 'Save Review to DB'}
+          {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to Library!' : 'Save to Library'}
         </button>
       </div>
     </div>

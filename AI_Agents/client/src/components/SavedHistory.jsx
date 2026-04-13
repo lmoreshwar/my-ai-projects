@@ -331,8 +331,8 @@ export default function SavedHistory({ apiBase }) {
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6 gap-4">
         <div>
           <h1 className="text-2xl font-black text-on-surface dark:text-white tracking-tight flex items-center gap-2">
-            <span className="material-symbols-outlined text-app-red">history</span>
-            Saved History
+            <span className="material-symbols-outlined text-app-red">inventory_2</span>
+            Test Artifacts
           </h1>
           <p className="text-sm text-tertiary dark:text-slate-400 mt-1">Browse your saved test plans, cases, reviews and automation scripts.</p>
         </div>
@@ -389,7 +389,7 @@ export default function SavedHistory({ apiBase }) {
                 {searchQuery ? 'No items match your search' : filterType ? `No ${TYPE_META[filterType]?.label || filterType} saved yet` : 'No saved items yet'}
               </p>
               <p className="text-xs text-tertiary dark:text-slate-600 mt-1">
-                {searchQuery ? 'Try a different search term' : 'Generate test plans, cases, or automation and click "Save to Database"'}
+                {searchQuery ? 'Try a different search term' : 'Generate test plans, cases, or automation and click "Save to Library"'}
               </p>
             </div>
           ) : (

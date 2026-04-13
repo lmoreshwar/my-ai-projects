@@ -16,7 +16,7 @@ const automationChildren = [
 ];
 
 const bottomItems = [
-  { id: 'saved-history', icon: 'history', label: 'Saved History', filled: true },
+  { id: 'saved-history', icon: 'inventory_2', label: 'Test Artifacts', filled: true },
   { id: 'zephyr-dashboard', icon: 'dashboard', label: 'Zephyr Dashboard', filled: true },
 ];
 

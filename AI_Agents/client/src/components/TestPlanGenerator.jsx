@@ -428,7 +428,7 @@ export default function TestPlanGenerator({ connections, apiBase }) {
                 className="mt-3 w-full flex items-center justify-center gap-2 p-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-sm font-bold text-[0.875rem] active:scale-95 transition-all disabled:opacity-50"
               >
                 <span className="material-symbols-outlined text-base">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span>
-                {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to DB!' : 'Save to Database'}
+                {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to Library!' : 'Save to Library'}
               </button>
             </div>
           )}

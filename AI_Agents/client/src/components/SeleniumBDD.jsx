@@ -484,7 +484,7 @@ IMPORTANT:
                     disabled={saveStatus === 'saving'}
                     className="px-3 py-1.5 bg-emerald-600 text-white border border-emerald-700 rounded text-xs font-bold hover:bg-emerald-700 transition-colors disabled:opacity-50">
                     <span className="material-symbols-outlined text-sm align-middle mr-1">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span>
-                    {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved!' : 'Save to DB'}
+                    {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to Library!' : 'Save to Library'}
                   </button>
                 )}
               </div>

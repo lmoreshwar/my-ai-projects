@@ -662,7 +662,7 @@ IMPORTANT:
                   className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg flex items-center justify-center gap-2 transition-all text-sm active:scale-[0.98] shadow-lg shadow-emerald-600/20"
                 >
                   <span className="material-symbols-outlined text-base">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span>
-                  {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to DB!' : 'Save to Database'}
+                  {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to Library!' : 'Save to Library'}
                 </button>
               </div>
             )}
