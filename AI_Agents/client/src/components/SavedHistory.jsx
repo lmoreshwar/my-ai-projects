@@ -218,24 +218,29 @@ export default function SavedHistory({ apiBase }) {
                     <span className="text-[10px] font-black text-white tracking-wide whitespace-nowrap">{srl}</span>
                   </div>
 
-                  {/* Title + description */}
+                  {/* Title + description + tags */}
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-bold text-on-surface dark:text-white truncate">{title}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-bold text-on-surface dark:text-white truncate">{title}</p>
+                      {/* Type badge inline with title */}
+                      {tcType && (
+                        <span className={`flex-shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-md ${typeBadge(tcType)}`}>
+                          {tcType}
+                        </span>
+                      )}
+                    </div>
                     {desc && <p className="text-[11px] text-tertiary dark:text-slate-400 truncate mt-0.5">{desc}</p>}
-                  </div>
-
-                  {/* Type badge */}
-                  {tcType && (
-                    <span className={`flex-shrink-0 text-[10px] font-bold px-2 py-1 rounded-md ${typeBadge(tcType)}`}>
-                      {tcType}
-                    </span>
-                  )}
-
-                  {/* Execution tags */}
-                  <div className="flex-shrink-0 flex gap-1 max-w-[180px] flex-wrap justify-end">
-                    {(execTag || tags || '').split(',').filter(Boolean).slice(0, 3).map((t, ti) => (
-                      <span key={ti} className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${tagBadge(t)}`}>{t.trim()}</span>
-                    ))}
+                    {/* Tags row below title */}
+                    {(execTag || tags) && (
+                      <div className="flex gap-1 flex-wrap mt-1">
+                        {[...(tags || '').split(','), ...(execTag || '').split(',')]
+                          .map(t => t.trim()).filter(Boolean)
+                          .filter((v, i, a) => a.indexOf(v) === i)  /* dedupe */
+                          .map((t, ti) => (
+                            <span key={ti} className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${tagBadge(t)}`}>{t}</span>
+                          ))}
+                      </div>
+                    )}
                   </div>
 
                   {/* Expand icon */}
