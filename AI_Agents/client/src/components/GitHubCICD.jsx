@@ -339,7 +339,7 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
 
   /* ── Render ── */
   return (
-    <div className="max-w-7xl mx-auto px-6 pt-8 pb-16">
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 pt-8 pb-16">
       {/* Header */}
       <div className="mb-10">
         <div className="flex items-center justify-between">

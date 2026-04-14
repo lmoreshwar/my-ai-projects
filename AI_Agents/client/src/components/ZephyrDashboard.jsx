@@ -61,7 +61,7 @@ export default function ZephyrDashboard({ connections }) {
   const barHeight = (val) => Math.max(8, (val / maxVal) * 200);
 
   return (
-    <div className="max-w-6xl mx-auto px-6 pt-12 pb-16">
+    <div className="max-w-6xl mx-auto px-3 sm:px-6 pt-8 sm:pt-12 pb-16">
       {/* Demo Banner */}
       {!isConnected && (
         <div className="mb-6 flex items-center gap-3 px-5 py-3 bg-amber-50 dark:bg-amber-900/20 rounded-xl border border-amber-200 dark:border-amber-800">
@@ -141,7 +141,7 @@ export default function ZephyrDashboard({ connections }) {
       {/* Status Breakdown + Release Health */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-12">
         {/* Status Breakdown */}
-        <div className="lg:col-span-1 bg-white dark:bg-slate-900 p-8 rounded-xl border-l-4 border-app-red shadow-sm">
+        <div className="lg:col-span-1 bg-white dark:bg-slate-900 p-5 sm:p-8 rounded-xl border-l-4 border-app-red shadow-sm">
           <h3 className="text-xl font-bold text-on-surface dark:text-white mb-6">Status Breakdown</h3>
           <div className="space-y-5">
             {[
@@ -163,7 +163,7 @@ export default function ZephyrDashboard({ connections }) {
         </div>
 
         {/* Release Health Dynamics — bar chart */}
-        <div className="lg:col-span-2 bg-white dark:bg-slate-900 p-8 rounded-xl border border-slate-100 dark:border-slate-800 flex flex-col">
+        <div className="lg:col-span-2 bg-white dark:bg-slate-900 p-5 sm:p-8 rounded-xl border border-slate-100 dark:border-slate-800 flex flex-col">
           <h3 className="text-xl font-bold text-on-surface dark:text-white mb-8">Release Health Dynamics</h3>
           <div className="flex-1 flex items-end justify-between gap-4 pb-4">
             {[
@@ -187,7 +187,7 @@ export default function ZephyrDashboard({ connections }) {
 
       {/* Blocked Test Cases Table */}
       <div className="bg-white dark:bg-slate-900 rounded-xl shadow-sm overflow-hidden border border-slate-100 dark:border-slate-800">
-        <div className="px-8 py-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
+        <div className="px-4 sm:px-8 py-4 sm:py-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
           <h3 className="text-xl font-bold text-on-surface dark:text-white">
             Critical Inhibitors: Blocked Test Cases
           </h3>

@@ -245,7 +245,7 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
   };
 
   return (
-    <div className="max-w-6xl mx-auto px-6 pt-12 pb-32">
+    <div className="max-w-6xl mx-auto px-4 sm:px-6 pt-8 sm:pt-12 pb-32">
       {/* Save Toast - green for success, red for failure */}
       {savedMsg && (
         <div className={`fixed top-20 right-6 z-50 animate-in flex items-center gap-3 px-5 py-3 rounded-xl border shadow-lg ${
@@ -276,9 +276,9 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
         </p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 sm:gap-8">
         {/* JIRA Connection */}
-        <section className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-xl p-8 shadow-sm flex flex-col gap-6">
+        <section className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-xl p-5 sm:p-8 shadow-sm flex flex-col gap-6">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-lg bg-slate-50 dark:bg-slate-800 flex items-center justify-center border border-slate-100 dark:border-slate-700">
@@ -344,7 +344,7 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
         </section>
 
         {/* LLM Connection */}
-        <section className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-xl p-8 shadow-sm flex flex-col gap-6">
+        <section className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-xl p-5 sm:p-8 shadow-sm flex flex-col gap-6">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-lg bg-slate-50 dark:bg-slate-800 flex items-center justify-center border border-slate-100 dark:border-slate-700">
@@ -478,7 +478,7 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
         </section>
 
         {/* ZEPHYR */}
-        <section className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-xl p-8 shadow-sm flex flex-col gap-6">
+        <section className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-xl p-5 sm:p-8 shadow-sm flex flex-col gap-6">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-lg bg-slate-50 dark:bg-slate-800 flex items-center justify-center border border-slate-100 dark:border-slate-700">
@@ -544,7 +544,7 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
         </section>
 
         {/* GITHUB */}
-        <section className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-xl p-8 shadow-sm flex flex-col gap-6">
+        <section className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-xl p-5 sm:p-8 shadow-sm flex flex-col gap-6">
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-lg bg-slate-50 dark:bg-slate-800 flex items-center justify-center border border-slate-100 dark:border-slate-700">
@@ -630,8 +630,8 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
       </div>
 
       {/* Info Cards */}
-      <div className="mt-16 grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
-        <div className="md:col-span-2 bg-[#f0f4f9] dark:bg-slate-900 rounded-xl p-10 flex flex-col justify-between border-l-8 border-app-blue">
+      <div className="mt-10 sm:mt-16 grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8 mb-12">
+        <div className="md:col-span-2 bg-[#f0f4f9] dark:bg-slate-900 rounded-xl p-6 sm:p-10 flex flex-col justify-between border-l-8 border-app-blue">
           <div>
             <h4 className="text-xl font-bold text-on-surface dark:text-white mb-3">Automated Validation Logic</h4>
             <p className="text-slate-600 dark:text-slate-400 text-sm mb-8 leading-relaxed max-w-lg">
@@ -649,7 +649,7 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
             </div>
           </div>
         </div>
-        <div className="bg-app-blue rounded-xl p-8 relative overflow-hidden flex flex-col justify-end text-white">
+        <div className="bg-app-blue rounded-xl p-6 sm:p-8 relative overflow-hidden flex flex-col justify-end text-white">
           <div className="absolute top-0 right-0 p-6 opacity-10">
             <span className="material-symbols-outlined text-7xl">security</span>
           </div>

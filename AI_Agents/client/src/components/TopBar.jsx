@@ -21,12 +21,13 @@ export default function TopBar({ children, sidebarCollapsed }) {
   }, []);
 
   return (
-    <header className={`bg-app-red dark:bg-app-dark-red flex items-center justify-between px-6 h-16 sticky top-0 z-40 transition-all duration-300 ${sidebarCollapsed ? 'lg:ml-[72px]' : 'lg:ml-80'}`}>
+    <header className={`bg-app-red dark:bg-app-dark-red flex items-center justify-between px-3 sm:px-6 h-16 sticky top-0 z-40 transition-all duration-300 ${sidebarCollapsed ? 'lg:ml-[72px]' : 'lg:ml-80'}`}>
       <div className="flex items-center gap-4">
         {children}
         <div className="flex items-center gap-3">
-          <h1 className="text-lg font-bold text-white uppercase tracking-wider font-headline">
-            B.L.A.S.T AI Test Command Center
+          <h1 className="text-sm sm:text-lg font-bold text-white uppercase tracking-wider font-headline">
+            <span className="hidden sm:inline">B.L.A.S.T AI Test Command Center</span>
+            <span className="sm:hidden">B.L.A.S.T</span>
           </h1>
           <span className="hidden lg:inline-block text-[9px] font-bold bg-white/20 text-white/90 px-2 py-0.5 rounded-full uppercase tracking-widest">
             Powered by GenAI

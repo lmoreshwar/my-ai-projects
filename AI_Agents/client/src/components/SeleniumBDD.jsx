@@ -262,7 +262,7 @@ IMPORTANT:
   };
 
   return (
-    <div className="max-w-6xl mx-auto space-y-8 px-6 pt-8 pb-16">
+    <div className="max-w-6xl mx-auto space-y-8 px-3 sm:px-6 pt-8 pb-16">
       {/* ── Header ── */}
       <header className="space-y-2">
         <div className="flex items-center gap-2 text-secondary font-semibold text-sm uppercase tracking-wider">

@@ -350,7 +350,7 @@ export default function GitHubIntegration({ connections, apiBase, onNavigate, pe
      RENDER
      ═══════════════════════════════════════════════════════════════════ */
   return (
-    <div className="max-w-7xl mx-auto px-6 pt-8 pb-16 space-y-8">
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 pt-8 pb-16 space-y-8">
       {/* ── Header ── */}
       <header className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6">
         <div className="max-w-2xl">

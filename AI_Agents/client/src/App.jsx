@@ -213,7 +213,7 @@ function App() {
       </TopBar>
 
       {/* Main Content */}
-      <main className={`min-h-screen pb-12 transition-all duration-300 ${sidebarCollapsed ? 'lg:ml-[72px]' : 'lg:ml-80'}`}>
+      <main className={`min-h-screen pb-24 lg:pb-12 transition-all duration-300 ${sidebarCollapsed ? 'lg:ml-[72px]' : 'lg:ml-80'}`}>
         {/* Tab-persistent rendering: visited pages stay mounted so async ops survive tab switches */}
         <div style={{ display: activePage === 'connections' ? undefined : 'none' }}>
           {visitedPages.has('connections') && <ConnectionSettings connections={connections} setConnections={setConnections} apiBase={API_BASE} onResetGenerated={handleResetGenerated} />}
@@ -253,32 +253,37 @@ function App() {
         </div>
       </main>
 
-      {/* Mobile Bottom Nav */}
-      <nav className="fixed bottom-0 left-0 w-full flex justify-around items-center px-4 py-3 bg-app-blue dark:bg-app-dark-blue z-50 shadow-[0_-4px_12px_rgba(0,0,0,0.1)] lg:hidden">
-        <button onClick={() => setActivePage('connections')} className={`flex flex-col items-center justify-center transition-all ${activePage === 'connections' ? 'text-white bg-white/15 rounded-xl px-4 py-1' : 'text-white/70 hover:text-white'}`}>
-          <span className="material-symbols-outlined">hub</span>
-          <span className="text-[11px] font-medium tracking-wide mt-1">Settings</span>
-        </button>
-        <button onClick={() => setActivePage('test-plan')} className={`flex flex-col items-center justify-center transition-all ${activePage === 'test-plan' ? 'text-white bg-white/15 rounded-xl px-4 py-1' : 'text-white/70 hover:text-white'}`}>
-          <span className="material-symbols-outlined">assignment</span>
-          <span className="text-[11px] font-medium tracking-wide mt-1">Plan</span>
-        </button>
-        <button onClick={() => setActivePage('test-cases')} className={`flex flex-col items-center justify-center transition-all ${activePage === 'test-cases' ? 'text-white bg-white/15 rounded-xl px-4 py-1' : 'text-white/70 hover:text-white'}`}>
-          <span className="material-symbols-outlined">edit_note</span>
-          <span className="text-[11px] font-medium tracking-wide mt-1">Cases</span>
-        </button>
-        <button onClick={() => setActivePage('review-cases')} className={`flex flex-col items-center justify-center transition-all ${activePage === 'review-cases' ? 'text-white bg-white/15 rounded-xl px-4 py-1' : 'text-white/70 hover:text-white'}`}>
-          <span className="material-symbols-outlined">fact_check</span>
-          <span className="text-[11px] font-medium tracking-wide mt-1">Review</span>
-        </button>
-        <button onClick={() => setActivePage('test-scenarios')} className={`flex flex-col items-center justify-center transition-all ${activePage === 'test-scenarios' ? 'text-white bg-white/15 rounded-xl px-4 py-1' : 'text-white/70 hover:text-white'}`}>
-          <span className="material-symbols-outlined">schema</span>
-          <span className="text-[11px] font-medium tracking-wide mt-1">Scenarios</span>
-        </button>
-        <button onClick={() => setActivePage('zephyr-dashboard')} className={`flex flex-col items-center justify-center transition-all ${activePage === 'zephyr-dashboard' ? 'text-white bg-white/15 rounded-xl px-4 py-1' : 'text-white/70 hover:text-white'}`}>
-          <span className="material-symbols-outlined">dashboard</span>
-          <span className="text-[11px] font-medium tracking-wide mt-1">Zephyr</span>
-        </button>
+      {/* Mobile Bottom Nav — scrollable to fit all pages */}
+      <nav className="fixed bottom-0 left-0 w-full bg-app-blue dark:bg-app-dark-blue z-50 shadow-[0_-4px_12px_rgba(0,0,0,0.1)] lg:hidden">
+        <div className="flex items-center overflow-x-auto px-2 py-2 gap-1 scrollbar-hide">
+          {[
+            { id: 'connections', icon: 'hub', label: 'Settings' },
+            { id: 'test-plan', icon: 'assignment', label: 'Plan' },
+            { id: 'test-cases', icon: 'edit_note', label: 'Cases' },
+            { id: 'review-cases', icon: 'fact_check', label: 'Review' },
+            { id: 'test-scenarios', icon: 'schema', label: 'Scenarios' },
+            { id: 'selenium-bdd', icon: 'terminal', label: 'Selenium' },
+            { id: 'playwright-js', icon: 'code', label: 'PW·BDD' },
+            { id: 'playwright-pom', icon: 'account_tree', label: 'PW·POM' },
+            { id: 'github', icon: 'cloud_upload', label: 'GitHub' },
+            { id: 'github-cicd', icon: 'rocket_launch', label: 'CI/CD' },
+            { id: 'saved-history', icon: 'inventory_2', label: 'Artifacts' },
+            { id: 'zephyr-dashboard', icon: 'dashboard', label: 'Zephyr' },
+          ].map(item => (
+            <button
+              key={item.id}
+              onClick={() => setActivePage(item.id)}
+              className={`flex flex-col items-center justify-center shrink-0 px-3 py-1.5 rounded-xl transition-all ${
+                activePage === item.id
+                  ? 'text-white bg-white/15'
+                  : 'text-white/60 hover:text-white active:bg-white/10'
+              }`}
+            >
+              <span className="material-symbols-outlined text-[20px]">{item.icon}</span>
+              <span className="text-[9px] font-semibold tracking-wide mt-0.5 whitespace-nowrap">{item.label}</span>
+            </button>
+          ))}
+        </div>
       </nav>
     </div>
   );

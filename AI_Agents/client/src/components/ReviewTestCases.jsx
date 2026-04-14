@@ -666,7 +666,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
 
   /* ═══════ RENDER ═══════ */
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-8 pb-32 space-y-8">
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 pt-8 pb-32 space-y-8">
 
       {/* ── Page Header & Coverage Status Circle ── */}
       <div className="flex flex-col md:flex-row justify-between items-end gap-6">

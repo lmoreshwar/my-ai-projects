@@ -799,7 +799,7 @@ Then the full test case table.`;
 
   /* ═══════════ RENDER ═══════════ */
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12 pb-32">
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-8 sm:pt-12 pb-32">
       <div className="mb-12">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">Test Case Architect</h1>
         <p className="text-on-surface-variant dark:text-slate-400 max-w-3xl font-medium leading-relaxed mt-3">

@@ -326,7 +326,7 @@ export default function SavedHistory({ apiBase }) {
      RENDER
      ═══════════════════════════════════════════════════ */
   return (
-    <div className="px-6 pt-28 pb-12 max-w-screen-xl mx-auto">
+    <div className="px-3 sm:px-6 pt-28 pb-12 max-w-screen-xl mx-auto">
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between mb-6 gap-4">
         <div>

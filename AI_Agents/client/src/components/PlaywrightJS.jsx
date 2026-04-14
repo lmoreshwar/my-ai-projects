@@ -505,7 +505,7 @@ IMPORTANT:
      RENDER
      ═══════════════════════════════════════════════════════════════════ */
   return (
-    <div className="max-w-7xl mx-auto space-y-8 px-6 pt-8 pb-16">
+    <div className="max-w-7xl mx-auto space-y-8 px-3 sm:px-6 pt-8 pb-16">
       {/* ── Header ── */}
       <header className="space-y-2">
         <span className="text-secondary font-bold text-xs tracking-widest uppercase block font-label">

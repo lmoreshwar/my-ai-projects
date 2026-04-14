@@ -246,7 +246,7 @@ export default function TestPlanGenerator({ connections, apiBase }) {
   };
 
   return (
-    <div className="max-w-6xl mx-auto px-6 pt-12 pb-32">
+    <div className="max-w-6xl mx-auto px-3 sm:px-6 pt-8 sm:pt-12 pb-32">
       {/* Hero */}
       <div className="mb-12">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">Test Plan Generator</h1>

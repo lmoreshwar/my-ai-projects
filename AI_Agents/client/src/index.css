@@ -51,3 +51,12 @@ body {
 .animate-spin-slow {
   animation: spin 2s linear infinite;
 }
+
+/* Hide scrollbar for mobile bottom nav */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
