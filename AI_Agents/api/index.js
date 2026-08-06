@@ -38,6 +38,16 @@ app.use('/api/testcases', testCaseRoutes);
 const artifactRoutes = require('./routes/artifacts');
 app.use('/api/artifacts', artifactRoutes);
 
+// Import and use AI Native Playwright Automation Routes
+const automationRoutes = require('./routes/automation');
+app.use('/api/automation', automationRoutes);
+
+// Serve the framework's Playwright HTML report so the UI can open it inline.
+if (process.env.FRAMEWORK_PATH) {
+    const _reportDir = path.join(process.env.FRAMEWORK_PATH, 'playwright-report');
+    app.use('/automation-report', express.static(_reportDir));
+}
+
 // Serve React static files (Render / standalone)
 // Must be BEFORE API routes so static assets (JS, CSS, images) are served directly
 const _clientDist = path.join(__dirname, '..', 'client', 'dist');

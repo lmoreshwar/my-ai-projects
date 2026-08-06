@@ -6,17 +6,18 @@ import TopBar from './components/TopBar';
 import ConnectionSettings from './components/ConnectionSettings';
 import TestPlanGenerator from './components/TestPlanGenerator';
 import TestCaseGenerator from './components/TestCaseGenerator';
-import TestScenarioGenerator from './components/TestScenarioGenerator';
 import ReviewTestCases from './components/ReviewTestCases';
 import ZephyrDashboard from './components/ZephyrDashboard';
 import SeleniumBDD from './components/SeleniumBDD';
 import PlaywrightJS from './components/PlaywrightJS';
 import PlaywrightPOM from './components/PlaywrightPOM';
+import AINativePlaywright from './components/AINativePlaywright';
 import GitHubIntegration from './components/GitHubIntegration';
 import GitHubCICD from './components/GitHubCICD';
 import SavedHistory from './components/SavedHistory';
 import Login from './pages/Login';
 import SignUp from './pages/SignUp';
+import DevHome from './pages/DevHome';
 
 const STORAGE_KEY = 'ai_test_agent_connections';
 const TC_STORAGE_KEY = 'ai_test_agent_testcases';
@@ -224,9 +225,6 @@ function App() {
         <div style={{ display: activePage === 'test-cases' ? undefined : 'none' }}>
           {visitedPages.has('test-cases') && <TestCaseGenerator connections={connections} apiBase={API_BASE} onTestCasesGenerated={setGeneratedTestCases} onNavigate={setActivePage} />}
         </div>
-        <div style={{ display: activePage === 'test-scenarios' ? undefined : 'none' }}>
-          {visitedPages.has('test-scenarios') && <TestScenarioGenerator connections={connections} apiBase={API_BASE} />}
-        </div>
         <div style={{ display: activePage === 'review-cases' ? undefined : 'none' }}>
           {visitedPages.has('review-cases') && <ReviewTestCases connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} reviewCoverage={reviewCoverage} setReviewCoverage={setReviewCoverage} localState={reviewLocalState} setLocalState={setReviewLocalState} onClearTestCases={handleClearTestCases} />}
         </div>
@@ -241,6 +239,9 @@ function App() {
         </div>
         <div style={{ display: activePage === 'playwright-pom' ? undefined : 'none' }}>
           {visitedPages.has('playwright-pom') && <PlaywrightPOM connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={pomFiles} setGeneratedFiles={setPomFiles} activeFileIdx={pomActiveIdx} setActiveFileIdx={setPomActiveIdx} selectedGroups={pomSelectedGroups} setSelectedGroups={setPomSelectedGroups} langFilter={pomLangFilter} setLangFilter={setPomLangFilter} onNavigate={setActivePage} onPushFiles={setPendingPushFiles} onClearTestCases={handleClearTestCases} />}
+        </div>
+        <div style={{ display: activePage === 'ai-native-playwright' ? undefined : 'none' }}>
+          {visitedPages.has('ai-native-playwright') && <AINativePlaywright connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} />}
         </div>
         <div style={{ display: activePage === 'github' ? undefined : 'none' }}>
           {visitedPages.has('github') && <GitHubIntegration connections={connections} apiBase={API_BASE} onNavigate={setActivePage} pendingPushFiles={pendingPushFiles} setPendingPushFiles={setPendingPushFiles} />}
@@ -261,10 +262,10 @@ function App() {
             { id: 'test-plan', icon: 'assignment', label: 'Plan' },
             { id: 'test-cases', icon: 'edit_note', label: 'Cases' },
             { id: 'review-cases', icon: 'fact_check', label: 'Review' },
-            { id: 'test-scenarios', icon: 'schema', label: 'Scenarios' },
             { id: 'selenium-bdd', icon: 'terminal', label: 'Selenium' },
             { id: 'playwright-js', icon: 'code', label: 'PW·BDD' },
             { id: 'playwright-pom', icon: 'account_tree', label: 'PW·POM' },
+            { id: 'ai-native-playwright', icon: 'smart_toy', label: 'AI·PW' },
             { id: 'github', icon: 'cloud_upload', label: 'GitHub' },
             { id: 'github-cicd', icon: 'rocket_launch', label: 'CI/CD' },
             { id: 'saved-history', icon: 'inventory_2', label: 'Artifacts' },
@@ -290,10 +291,11 @@ function App() {
 
   return (
     <Routes>
+      <Route path="/" element={<DevHome />} />
       <Route path="/login" element={<Login onLogin={handleLogin} />} />
       <Route path="/signup" element={<SignUp />} />
+      <Route path="/app" element={dashboardContent} />
       <Route path="/dashboard" element={dashboardContent} />
-      <Route path="/" element={<Navigate to="/login" />} />
     </Routes>
   );
 }

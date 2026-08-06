@@ -5,7 +5,6 @@ const navItems = [
   { id: 'connections', icon: 'hub', label: 'Test Connection' },
   { id: 'test-plan', icon: 'assignment', label: 'Create Test Plan' },
   { id: 'test-cases', icon: 'edit_note', label: 'Create Test Cases' },
-  { id: 'test-scenarios', icon: 'schema', label: 'Create Test Scenarios' },
   { id: 'review-cases', icon: 'fact_check', label: 'Review Test Cases' },
 ];
 
@@ -13,6 +12,7 @@ const automationChildren = [
   { id: 'selenium-bdd', icon: 'terminal', label: 'Selenium · Cucumber' },
   { id: 'playwright-js', icon: 'code', label: 'Playwright · BDD' },
   { id: 'playwright-pom', icon: 'account_tree', label: 'Playwright · Page Objects' },
+  { id: 'ai-native-playwright', icon: 'smart_toy', label: 'AI Native Playwright' },
 ];
 
 const bottomItems = [
@@ -144,7 +144,7 @@ export default function Sidebar({ activePage, onNavigate, onToggleDark, collapse
               {!collapsed && (
                 <div
                   className="overflow-hidden transition-all duration-300 ease-in-out"
-                  style={{ maxHeight: autoOpen ? '200px' : '0px' }}
+                  style={{ maxHeight: autoOpen ? '320px' : '0px' }}
                 >
                   <div className="bg-black/[0.03] dark:bg-white/[0.04] rounded-b-sm">
                     {automationChildren.map((child) => (

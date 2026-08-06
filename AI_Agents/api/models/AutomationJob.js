@@ -1,0 +1,101 @@
+const mongoose = require('mongoose');
+
+// Lifecycle states for an AI Native Playwright automation job.
+const JOB_STATUSES = [
+  'Pending',
+  'Planning',
+  'WaitingForApproval',
+  'Queued',
+  'Generating',
+  'Executing',
+  'Passed',
+  'Failed',
+  'PushedToGate',
+  'Completed',
+];
+
+const TestCaseRefSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true },   // e.g. TC-01 (SRL No.)
+    title: { type: String, default: '' },
+    tags: { type: String, default: '' },
+    executionTags: { type: String, default: '' },
+    complexity: { type: String, enum: ['Low', 'Medium', 'High'], default: 'Medium' },
+    // Full case detail so the automation handoff sees the real steps, not just the title.
+    description: { type: String, default: '' },
+    preconditions: { type: String, default: '' },
+    testData: { type: String, default: '' },
+    steps: { type: String, default: '' },
+    expectedResults: { type: String, default: '' },
+    comments: { type: String, default: '' },
+  },
+  { _id: false }
+);
+
+const GeneratedFileSchema = new mongoose.Schema(
+  {
+    path: { type: String, required: true },
+    layer: { type: String, enum: ['page', 'module', 'spec', 'fixture', 'config', 'other'], default: 'other' },
+    reused: { type: Boolean, default: false },
+  },
+  { _id: false }
+);
+
+const AutomationJobSchema = new mongoose.Schema({
+  jobId: { type: String, required: true, unique: true },  // human-friendly, e.g. AUTO-1001
+  userId: { type: String, default: 'dev-user-id' },
+
+  // Request inputs
+  project: { type: String, default: '' },
+  environment: { type: String, enum: ['QA', 'UAT', 'Production'], default: 'QA' },
+  url: { type: String, default: '' },
+  agent: { type: String, default: 'AI Native Playwright Engineer' },
+  skill: {
+    type: String,
+    enum: ['New Automation', 'Modify Automation', 'Debug', 'Self Healing', 'Visual Testing'],
+    default: 'New Automation',
+  },
+  executionMode: {
+    type: String,
+    enum: ['GenerateOnly', 'GenerateAndExecute', 'GenerateExecutePushToGate'],
+    default: 'GenerateAndExecute',
+  },
+  comments: { type: String, default: '' },
+  testCases: [TestCaseRefSchema],
+
+  // Orchestration state
+  status: { type: String, enum: JOB_STATUSES, default: 'Pending' },
+  plan: { type: String, default: '' },              // implementation plan returned by the AI service
+  missingInfo: [{ type: String }],                  // questions that block generation until answered
+  approved: { type: Boolean, default: false },
+
+  // Provider / coding-agent delegation (GitHub Copilot coding agent)
+  provider: { type: String, enum: ['simulation', 'service', 'github', 'local', 'runner', 'github-actions'], default: 'simulation' },
+  // Runner (pull-based worker) claim metadata — set when a runner picks up a Queued job.
+  claimedBy: { type: String, default: '' },
+  claimedAt: { type: Date, default: null },
+  issueNumber: { type: Number, default: null },
+  issueUrl: { type: String, default: '' },
+  checksStatus: { type: String, enum: ['', 'none', 'pending', 'passed', 'failed'], default: '' },
+
+  // Results
+  generatedFiles: [GeneratedFileSchema],
+  reusedFiles: [{ type: String }],
+  executionStatus: { type: String, enum: ['', 'PASSED', 'FAILED', 'SKIPPED'], default: '' },
+  reportUrl: { type: String, default: '' },
+  prUrl: { type: String, default: '' },
+  branch: { type: String, default: '' },            // git branch created on push-to-gate
+  logs: [{ type: String }],
+  error: { type: String, default: '' },
+
+  createdAt: { type: Date, default: Date.now },
+  updatedAt: { type: Date, default: Date.now },
+});
+
+AutomationJobSchema.pre('save', function (next) {
+  this.updatedAt = Date.now();
+  next();
+});
+
+module.exports = mongoose.model('AutomationJob', AutomationJobSchema);
+module.exports.JOB_STATUSES = JOB_STATUSES;

@@ -11,19 +11,19 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
 
   const saveConnectionToDB = async (section, data) => {
     const token = localStorage.getItem('blast_token');
-    if (!token) {
+    // Locally the backend runs in DEV_MODE and bypasses auth, so a token isn't required.
+    if (!token && !isLocal) {
       setSavedMsg('You must be logged in to save connections securely.');
       setTimeout(() => setSavedMsg(''), 4000);
       return false;
     }
 
     try {
+      const headers = { 'Content-Type': 'application/json' };
+      if (token) headers.Authorization = `Bearer ${token}`;
       const response = await fetch(`${apiBase}/api/users/connections/${section}`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`
-        },
+        headers,
         body: JSON.stringify(data)
       });
       
@@ -383,7 +383,6 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                 options={
                   connections.llm.platform === 'gemini'
                     ? [
-                        { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (Preview)' },
                         { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
                         { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
                         { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },

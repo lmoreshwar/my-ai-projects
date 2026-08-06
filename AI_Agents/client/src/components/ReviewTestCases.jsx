@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import * as XLSX from 'xlsx';
 import { saveArtifact, checkExistingArtifact, updateArtifact } from '../utils/artifactService';
@@ -20,6 +20,23 @@ function parseMarkdownTable(md) {
     rows.push(row);
   }
   return rows;
+}
+
+/* Stable row ids for review selection (survives filter/pagination; not exported) */
+function attachReviewRowIds(rows) {
+  return rows.map((row, i) => {
+    if (row._reviewRowId) return row;
+    const suffix =
+      typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `${Date.now()}-${i}-${Math.random().toString(36).slice(2, 9)}`;
+    return { ...row, _reviewRowId: `tc-${suffix}` };
+  });
+}
+
+function publicTableHeaders(sampleRow) {
+  if (!sampleRow) return [];
+  return Object.keys(sampleRow).filter((h) => !h.startsWith('_'));
 }
 
 /* ── Deterministic Coverage Engine (client-side, no LLM dependency) ── */
@@ -331,49 +348,6 @@ function computeCoverage(requirements, testCases) {
   return { traceability, total, full, partial, none, pct };
 }
 
-/* ── Coverage Analysis System Prompt (qualitative analysis only) ── */
-const COVERAGE_PROMPT = `You are a **Senior QA Lead / Test Architect**. You will receive requirements and test cases along with a pre-calculated coverage percentage.
-
-## ANTI-HALLUCINATION SCOPE RULE
-The coverage engine has already filtered out non-testable items (user story wrappers, feature labels without acceptance criteria, section headers, etc.) per IEEE 829 / ISO 29119 standards. 
-- Do NOT flag features that lack acceptance criteria as "gaps" — they are correctly excluded from the coverage denominator.
-- Only assess gap analysis against the TESTABLE requirements that appear in the traceability matrix.
-- If the pre-calculated coverage is high (>80%) but many features were excluded due to missing criteria, note this as a strategic observation — NOT as a gap.
-
-## TASK
-Provide QUALITATIVE analysis only. The coverage percentage is already calculated — DO NOT recalculate it. Focus on:
-1. Duplicate detection — identify test cases that test the same thing
-2. Strategic insights — what the test suite covers well
-3. Improvement opportunities — what ADDITIONAL test cases could be added to increase coverage (these are OPTIONAL suggestions for expanding the suite, NOT criticisms of existing test cases)
-
-## IMPORTANT CONTEXT FOR RECOMMENDATIONS
-- The user may have intentionally limited the number of test cases (e.g., "generate only 5 test cases"). The current test cases are NOT wrong or incomplete — they may simply be a subset.
-- Frame recommendations as OPTIONAL expansion opportunities: "To increase coverage from X% to Y%, consider adding..."
-- Each recommendation MUST include a brief reason (e.g., "because requirement R3 mentions empty field validation which is not yet covered by any test case")
-- Do NOT recommend adding test cases for requirements that are already marked as Fully covered
-- Do NOT use phrases like "quality issues" or "weak test cases" — the AI generated these test cases and they follow best practices
-
-## OUTPUT FORMAT (STRICT JSON — no markdown, no code fences)
-Return ONLY valid JSON:
-{
-  "duplicates": [
-    {"group": 1, "testCaseIds": ["TC_001", "TC_002"], "recommendation": "merge into one"}
-  ],
-  "insights": "2-3 sentences of strategic analysis. Start with what the test suite covers well. Then mention what percentage of requirements are covered and what areas could benefit from additional test cases.",
-  "strengths": ["strength 1", "strength 2"],
-  "recommendations": ["To increase coverage, consider adding a test case for [specific scenario] — because [specific requirement] mentions [specific behavior] that is not yet covered by any existing test case"],
-  "negativeStatus": "Optimized|Partially Covered|High Risk",
-  "edgeCaseStatus": "Optimized|Partially Covered|High Risk"
-}
-
-## RULES
-- DO NOT include overallCoverage or requirementTraceability — those are pre-calculated
-- DO NOT include gapAnalysis or qualityIssues fields — those sections have been removed from the UI
-- Frame everything positively — strengths first, then optional improvement opportunities
-- Each recommendation must explain WHY it would help (link to specific uncovered requirement)
-- Do NOT hallucinate gaps for features without documented acceptance criteria
-- Return ONLY the JSON object`;
-
 export default function ReviewTestCases({ connections, apiBase, generatedTestCases, onNavigate, reviewCoverage, setReviewCoverage, localState, setLocalState, onClearTestCases }) {
   /* ── State ── */
   const [testCases, setTestCases] = useState('');
@@ -396,8 +370,13 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
   const [rtmExpanded, setRtmExpanded] = useState(false);
   const [testCasesExpanded, setTestCasesExpanded] = useState(true);
   const [saveStatus, setSaveStatus] = useState(''); // '' | 'saving' | 'saved' | 'error'
+  const [selectedRowKeys, setSelectedRowKeys] = useState(() => new Set());
+  const [reviewByRowKey, setReviewByRowKey] = useState({});
+  const selectAllCheckboxRef = useRef(null);
   const itemsPerPage = 10;
   const carouselRef = useRef(null);
+
+  const getRowKey = (tc) => tc._reviewRowId || '';
 
   // Determine which input method is active (for mutual exclusion)
   const activeInputMethod = ticketId.trim() || issueData ? 'jira' : manualReq.trim() ? 'upload' : null;
@@ -415,10 +394,21 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
         setTestCases(generatedTestCases);
         setParsedCases(parseMarkdownTable(generatedTestCases));
         setTestCasesCleared(false);
+        setSelectedRowKeys(new Set());
+        setReviewByRowKey({});
       }
       prevGenRef.current = generatedTestCases;
     }
   }, [generatedTestCases]);
+
+  /* Ensure every parsed row has a stable id for checkboxes / approve / reject */
+  useEffect(() => {
+    setParsedCases((prev) => {
+      if (!prev.length) return prev;
+      if (!prev.some((tc) => !tc._reviewRowId)) return prev;
+      return attachReviewRowIds(prev);
+    });
+  }, [testCases, parsedCases.length]);
 
   /* ── Fetch JIRA ── */
   const fetchJira = async () => {
@@ -439,14 +429,6 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
     setFetchingJira(false);
   };
 
-  /* ── Build requirement context ── */
-  const buildReqContext = useCallback(() => {
-    let ctx = '';
-    if (issueData) ctx += `## JIRA REQUIREMENT\n- ID: ${issueData.id}\n- Summary: ${issueData.summary}\n- Description:\n${issueData.description}\n\n`;
-    if (manualReq.trim()) ctx += `## MANUAL REQUIREMENT\n${manualReq}\n\n`;
-    return ctx;
-  }, [issueData, manualReq]);
-
   const hasReq = !!issueData || manualReq.trim().length > 0;
   const hasTests = parsedCases.length > 0 || testCases.trim().length > 0;
 
@@ -454,71 +436,25 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
   const runAnalysis = async () => {
     if (!hasReq) return alert('Provide requirements (JIRA or manual) to compare against');
     if (!hasTests) return alert('No test cases found. Generate test cases first.');
-    if (connections.llm.status !== 'connected') return alert('Connect LLM first in Settings');
     setAnalyzing(true);
     setCoverage(null);
     try {
-      const reqCtx = buildReqContext();
-
-      // ── STEP 1: Deterministic client-side coverage calculation ──
+      // ── Deterministic client-side coverage calculation ──
       // Use testableDescription (excludes parent epic context) for coverage analysis
       // Falls back to full description if testableDescription is not available
       const reqText = issueData
         ? `${issueData.summary || ''}\n${issueData.testableDescription || issueData.description || ''}`
         : manualReq;
       
-      // Extract all lines (for logging), then filter to testable only
-      const allLines = reqText.replace(/\r\n/g, '\n').split('\n')
-        .map(s => s.trim()).filter(s => s.length > 5);
       const requirements = extractRequirements(reqText);
-      
+
       const cvg = computeCoverage(requirements, parsedCases);
 
-      // Build structured test case summary for LLM qualitative analysis
-      let tcSummary = '';
-      if (parsedCases.length > 0) {
-        tcSummary = '## TEST CASE SUMMARY\n';
-        parsedCases.forEach((tc, i) => {
-          const id = tc['SRL No.'] || `TC_${String(i + 1).padStart(3, '0')}`;
-          const title = tc['Test Case Title'] || tc['Description'] || 'Untitled';
-          const type = tc['Test Case Type'] || 'Functional';
-          tcSummary += `- **${id}**: ${title} [${type}]\n`;
-        });
-        tcSummary += '\n';
-      }
-
-      // ── STEP 2: Call LLM for qualitative analysis only ──
-      let llmData = {};
-      try {
-        const res = await fetch(`${apiBase}/generate-plan`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            issueData: {
-              product: 'Coverage Analysis',
-              id: 'COVERAGE',
-              summary: 'Test Case Coverage Analysis',
-              description: `## REQUIREMENTS\n${reqCtx}\n\n${tcSummary}\n## PRE-CALCULATED COVERAGE: ${cvg.pct}% (${cvg.full} Full, ${cvg.partial} Partial, ${cvg.none} None out of ${cvg.total} requirements)\n\nProvide qualitative analysis only.`,
-              additional_context: COVERAGE_PROMPT,
-            },
-            llm: connections.llm,
-          }),
-        });
-        if (res.ok) {
-          const data = await res.json();
-          const jsonMatch = data.plan.match(/\{[\s\S]*\}/);
-          if (jsonMatch) llmData = JSON.parse(jsonMatch[0]);
-        }
-      } catch (llmErr) {
-        console.warn('[Coverage] LLM qualitative analysis failed, using client-side only:', llmErr.message);
-      }
-
-      // ── STEP 3: Merge deterministic coverage + LLM qualitative analysis ──
       const statusFromPct = (pct) => pct > 80 ? 'Optimized' : pct > 40 ? 'Partially Covered' : 'High Risk';
       const mappedCount = cvg.full + cvg.partial;
+      const pathwayStatus = statusFromPct(cvg.pct);
 
       const result = {
-        // Deterministic values (ALWAYS from client-side engine)
         overallCoverage: cvg.pct,
         requirementTraceability: cvg.traceability,
         coverageCalculation: {
@@ -529,16 +465,11 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
           testCasesAnalyzed: parsedCases.length,
           formula: `(${cvg.full} + 0.5×${cvg.partial}) / ${cvg.total} × 100 = ${cvg.pct}%`
         },
-        functionalStatus: statusFromPct(cvg.pct),
+        functionalStatus: pathwayStatus,
         mappedFunctional: [mappedCount, cvg.total],
         mappedNonFunctional: [0, 0],
-        // Qualitative values (from LLM, with defaults)
-        negativeStatus: llmData.negativeStatus || statusFromPct(cvg.pct),
-        edgeCaseStatus: llmData.edgeCaseStatus || statusFromPct(cvg.pct),
-        duplicates: llmData.duplicates || [],
-        insights: llmData.insights || `Your test suite contains ${parsedCases.length} test cases covering ${cvg.full} out of ${cvg.total} requirements fully${cvg.partial > 0 ? `, with ${cvg.partial} partially covered` : ''}. ${cvg.pct >= 80 ? 'The overall coverage is strong.' : cvg.pct >= 50 ? 'There is room to expand coverage with additional test cases.' : 'Consider generating additional test cases to improve coverage.'}`,
-        strengths: llmData.strengths || (cvg.full > 0 ? [`${cvg.full} out of ${cvg.total} requirement(s) fully covered by existing test cases`] : [`${parsedCases.length} test cases generated and ready for review`]),
-        recommendations: llmData.recommendations || (cvg.none > 0 ? [`To increase coverage from ${cvg.pct}% to 100%, consider adding test cases for the ${cvg.none} uncovered requirement(s) listed in the Requirement Coverage table below`] : ['All requirements are covered by existing test cases — no additional test cases needed']),
+        negativeStatus: pathwayStatus,
+        edgeCaseStatus: pathwayStatus,
       };
 
       setCoverage(result);
@@ -566,7 +497,6 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
       });
       content += '\n';
     }
-    content += `## AI Analysis\n${coverage.insights}\n\n### Strengths\n${(coverage.strengths || []).map(s => '- ' + s).join('\n')}\n\n### Coverage Improvement Opportunities\n${(coverage.recommendations || []).map(r => '- ' + r).join('\n')}\n\n---\n\n`;
 
     // Rebuild Test Cases section from parsedCases (reflects removals)
     // Preserve non-table content (OUT OF SCOPE, SELF-VALIDATION, etc.) from original
@@ -575,7 +505,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
     content += `## Test Cases\n`;
     if (nonTablePart) content += nonTablePart + '\n\n';
     if (parsedCases.length > 0) {
-      const headers = Object.keys(parsedCases[0]);
+      const headers = publicTableHeaders(parsedCases[0]);
       content += '| ' + headers.join(' | ') + ' |\n';
       content += '|' + headers.map(() => '---').join('|') + '|\n';
       parsedCases.forEach(tc => {
@@ -649,6 +579,60 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
   const safePage = Math.min(currentPage, totalPages);
   const paginatedCases = filteredCases.slice((safePage - 1) * itemsPerPage, safePage * itemsPerPage);
 
+  const allFilteredKeys = filteredCases.map((tc) => getRowKey(tc)).filter(Boolean);
+  const allFilteredSelected = allFilteredKeys.length > 0 && allFilteredKeys.every((k) => selectedRowKeys.has(k));
+  const someFilteredSelected = allFilteredKeys.some((k) => selectedRowKeys.has(k));
+
+  useEffect(() => {
+    const el = selectAllCheckboxRef.current;
+    if (el) el.indeterminate = someFilteredSelected && !allFilteredSelected;
+  }, [someFilteredSelected, allFilteredSelected]);
+
+  const approvedCount = Object.values(reviewByRowKey).filter((s) => s === 'approved').length;
+  const rejectedCount = Object.values(reviewByRowKey).filter((s) => s === 'rejected').length;
+
+  const toggleRowSelected = (rowKey) => {
+    if (!rowKey) return;
+    setSelectedRowKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(rowKey)) next.delete(rowKey);
+      else next.add(rowKey);
+      return next;
+    });
+  };
+
+  const toggleSelectAllFiltered = () => {
+    if (allFilteredSelected) {
+      setSelectedRowKeys((prev) => {
+        const next = new Set(prev);
+        allFilteredKeys.forEach((k) => next.delete(k));
+        return next;
+      });
+    } else {
+      setSelectedRowKeys((prev) => {
+        const next = new Set(prev);
+        allFilteredKeys.forEach((k) => next.add(k));
+        return next;
+      });
+    }
+  };
+
+  const applyReviewDecision = (decision) => {
+    if (selectedRowKeys.size === 0) {
+      alert('Select at least one test case.');
+      return;
+    }
+    const keys = [...selectedRowKeys];
+    setReviewByRowKey((prev) => {
+      const next = { ...prev };
+      keys.forEach((k) => {
+        next[k] = decision;
+      });
+      return next;
+    });
+    setSelectedRowKeys(new Set());
+  };
+
   const scrollCarousel = (dir) => {
     if (carouselRef.current) {
       carouselRef.current.scrollBy({ left: dir * 400, behavior: 'smooth' });
@@ -674,7 +658,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
           <h1 className="text-3xl font-extrabold text-app-red tracking-tighter">Review Test Cases</h1>
           <p className="text-on-surface-variant dark:text-slate-400 text-sm">Validate and refine AI-generated test scenarios for production deployment.</p>
           {parsedCases.length > 0 && onClearTestCases && (
-            <button onClick={() => { if (confirm('Clear all imported test cases?')) { onClearTestCases(); setTestCases(''); setParsedCases([]); setCoverage(null); setTestCasesCleared(true); } }}
+            <button onClick={() => { if (confirm('Clear all imported test cases?')) { onClearTestCases(); setTestCases(''); setParsedCases([]); setCoverage(null); setTestCasesCleared(true); setSelectedRowKeys(new Set()); setReviewByRowKey({}); } }}
               className="mt-2 flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 text-xs font-bold hover:bg-red-50 hover:text-red-600 hover:border-red-300 dark:hover:bg-red-900/20 dark:hover:text-red-400 border border-slate-200 dark:border-slate-700 transition-colors">
               <span className="material-symbols-outlined text-sm">delete_sweep</span> Clear Test Cases
             </button>
@@ -904,78 +888,6 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
         </div>
       )}
 
-      {/* ── AI Analysis Summary ── */}
-      {coverage && (
-        <section className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-outline-variant/10 overflow-hidden">
-          <div className="p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <span className="material-symbols-outlined text-app-red text-xl" style={{ fontVariationSettings: "'FILL' 1" }}>psychology</span>
-              <h2 className="text-lg font-bold text-on-surface dark:text-white tracking-tight">AI Analysis Summary</h2>
-            </div>
-
-            {/* Summary Text */}
-            <p className="text-sm text-on-surface-variant dark:text-slate-400 leading-relaxed mb-5">{coverage.insights}</p>
-
-            {/* Strengths & Recommendations side by side */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {/* Strengths */}
-              {coverage.strengths && coverage.strengths.length > 0 && (
-                <div>
-                  <h4 className="text-xs font-bold uppercase tracking-widest text-green-600 mb-2 flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>thumb_up</span> Strengths
-                  </h4>
-                  <ul className="space-y-1.5">
-                    {coverage.strengths.map((s, i) => (
-                      <li key={i} className="text-xs text-on-surface dark:text-slate-300 flex items-start gap-2 bg-green-50 dark:bg-green-900/10 px-3 py-2 rounded-lg">
-                        <span className="material-symbols-outlined text-green-500 text-sm mt-0.5 shrink-0" style={{ fontVariationSettings: "'FILL' 1" }}>check_circle</span>
-                        {s}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-
-              {/* Coverage Improvement Opportunities */}
-              {coverage.recommendations && coverage.recommendations.length > 0 && (
-                <div>
-                  <h4 className="text-xs font-bold uppercase tracking-widest text-blue-600 mb-1 flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-sm" style={{ fontVariationSettings: "'FILL' 1" }}>lightbulb</span> Coverage Improvement Opportunities
-                  </h4>
-                  <p className="text-[10px] text-secondary mb-2 leading-relaxed">
-                    These are optional suggestions to increase coverage. Your current test cases are valid — these highlight additional scenarios from your requirements that aren&apos;t covered yet.
-                  </p>
-                  <ul className="space-y-1.5">
-                    {coverage.recommendations.map((r, i) => (
-                      <li key={i} className="text-xs text-on-surface dark:text-slate-300 flex items-start gap-2 bg-blue-50 dark:bg-blue-900/10 px-3 py-2 rounded-lg">
-                        <span className="material-symbols-outlined text-blue-500 text-sm mt-0.5 shrink-0">arrow_forward</span>
-                        {r}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-
-            {/* Duplicate Test Cases (inline, only if found) */}
-            {coverage.duplicates && coverage.duplicates.length > 0 && (
-              <div className="mt-5 pt-4 border-t border-slate-100 dark:border-slate-800">
-                <h4 className="text-xs font-bold uppercase tracking-widest text-amber-600 mb-2 flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-sm">content_copy</span> Potential Duplicates ({coverage.duplicates.length})
-                </h4>
-                <div className="space-y-1.5">
-                  {coverage.duplicates.map((d, i) => (
-                    <div key={i} className="flex items-center gap-3 text-xs bg-amber-50 dark:bg-amber-900/10 px-3 py-2 rounded-lg">
-                      <span className="font-mono font-bold text-blue-600">{(d.testCaseIds || []).join(', ')}</span>
-                      <span className="text-on-surface-variant dark:text-slate-400">— {d.recommendation}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        </section>
-      )}
-
       {/* ── Requirement Coverage ── */}
       {coverage?.requirementTraceability && coverage.requirementTraceability.length > 0 && (
         <section className="bg-white dark:bg-slate-900 rounded-xl shadow-sm border border-outline-variant/10 overflow-hidden">
@@ -1077,7 +989,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
             {/* Filter & Clear controls */}
             <div className="flex items-center justify-end gap-3 px-5 py-3 bg-slate-50/50 dark:bg-slate-800/30">
               {parsedCases.length > 0 && (
-                <button onClick={() => { if (confirm('Clear all test cases?')) { setTestCases(''); setParsedCases([]); setCoverage(null); setTestCasesCleared(true); } }}
+                <button onClick={() => { if (confirm('Clear all test cases?')) { setTestCases(''); setParsedCases([]); setCoverage(null); setTestCasesCleared(true); setSelectedRowKeys(new Set()); setReviewByRowKey({}); } }}
                   className="text-[10px] font-bold text-slate-400 hover:text-red-500 flex items-center gap-0.5 transition" title="Clear all">
                   <span className="material-symbols-outlined text-xs">delete_sweep</span> Clear
                 </button>
@@ -1102,39 +1014,122 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
             )}
             {parsedCases.length > 0 ? (
             <>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between px-5 py-3 bg-slate-50 dark:bg-slate-800/40 border-b border-outline-variant/10">
+                <p className="text-xs text-on-surface-variant dark:text-slate-400">
+                  <span className="font-bold text-on-surface dark:text-slate-200">{selectedRowKeys.size}</span> selected
+                  <span className="mx-2 text-slate-300 dark:text-slate-600">·</span>
+                  <span className="text-green-700 dark:text-green-400 font-semibold">{approvedCount} approved</span>
+                  <span className="mx-2 text-slate-300 dark:text-slate-600">·</span>
+                  <span className="text-red-700 dark:text-red-400 font-semibold">{rejectedCount} rejected</span>
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => applyReviewDecision('approved')}
+                    disabled={selectedRowKeys.size === 0}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-green-600 px-4 py-2 text-xs font-bold text-white shadow-sm hover:bg-green-700 disabled:cursor-not-allowed disabled:opacity-40 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-base" style={{ fontVariationSettings: "'FILL' 1" }}>check_circle</span>
+                    Approve
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => applyReviewDecision('rejected')}
+                    disabled={selectedRowKeys.size === 0}
+                    className="inline-flex items-center gap-1.5 rounded-lg border-2 border-red-500 bg-white dark:bg-slate-900 px-4 py-2 text-xs font-bold text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 disabled:cursor-not-allowed disabled:opacity-40 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-base">cancel</span>
+                    Reject
+                  </button>
+                </div>
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="bg-slate-50 dark:bg-slate-800 border-b border-outline-variant/15">
-                      <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-widest text-secondary w-24">ID</th>
-                      <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-widest text-secondary">Summary</th>
-                      <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-widest text-secondary w-32 text-center">Type</th>
-                      <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-widest text-secondary w-24 text-right">Actions</th>
+                      <th className="w-12 px-3 py-4 text-center">
+                        <input
+                          ref={selectAllCheckboxRef}
+                          type="checkbox"
+                          checked={allFilteredSelected}
+                          onChange={toggleSelectAllFiltered}
+                          className="h-4 w-4 rounded border-slate-300 text-app-red focus:ring-app-red"
+                          title={filterText.trim() ? 'Select all matching filter' : 'Select all test cases'}
+                          aria-label="Select all filtered test cases"
+                        />
+                      </th>
+                      <th className="px-4 py-4 text-[11px] font-extrabold uppercase tracking-widest text-secondary w-24">ID</th>
+                      <th className="px-4 py-4 text-[11px] font-extrabold uppercase tracking-widest text-secondary">Summary</th>
+                      <th className="px-4 py-4 text-[11px] font-extrabold uppercase tracking-widest text-secondary w-36 text-center">Type</th>
+                      <th className="px-4 py-4 text-[11px] font-extrabold uppercase tracking-widest text-secondary w-24 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-outline-variant/10">
                     {paginatedCases.map((tc, idx) => {
-                      const globalIdx = filteredCases.indexOf(tc);
                       const origIdx = parsedCases.indexOf(tc);
+                      const rowKey = getRowKey(tc);
                       const tcId = tc['SRL No.'] || `TC_${String(origIdx + 1).padStart(3, '0')}`;
                       const title = tc['Test Case Title'] || tc['Description'] || 'Untitled';
                       const desc = tc['Description'] || '';
                       const type = tc['Test Case Type'] || 'Functional';
+                      const rowDecision = rowKey ? reviewByRowKey[rowKey] : null;
+                      const rowBg =
+                        rowDecision === 'approved'
+                          ? 'bg-green-50/90 dark:bg-green-900/20'
+                          : rowDecision === 'rejected'
+                            ? 'bg-red-50/90 dark:bg-red-900/20'
+                            : '';
                       return (
-                        <tr key={idx} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                          <td className="px-6 py-4 font-mono text-sm text-app-red font-bold">{tcId}</td>
-                          <td className="px-6 py-4">
+                        <tr key={rowKey || `orig-${origIdx}`} className={`${rowBg} hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors`}>
+                          <td className="px-3 py-4 text-center align-middle">
+                            <input
+                              type="checkbox"
+                              checked={rowKey ? selectedRowKeys.has(rowKey) : false}
+                              onChange={() => toggleRowSelected(rowKey)}
+                              disabled={!rowKey}
+                              className="h-4 w-4 rounded border-slate-300 text-app-red focus:ring-app-red disabled:opacity-40"
+                              aria-label={`Select ${tcId}`}
+                            />
+                          </td>
+                          <td className="px-4 py-4 font-mono text-sm text-app-red font-bold">{tcId}</td>
+                          <td className="px-4 py-4">
                             <div className="text-sm font-semibold text-on-surface dark:text-white">{title}</div>
                             {desc && desc !== title && (
                               <div className="text-xs text-on-surface-variant dark:text-slate-400 truncate max-w-md">{desc}</div>
                             )}
                           </td>
-                          <td className="px-6 py-4">
-                            <div className={`mx-auto w-fit px-2 py-1 rounded text-[10px] font-bold uppercase ${getPriorityStyle(type)}`}>{type}</div>
+                          <td className="px-4 py-4">
+                            <div className="flex flex-col items-center gap-1">
+                              <div className={`mx-auto w-fit px-2 py-1 rounded text-[10px] font-bold uppercase ${getPriorityStyle(type)}`}>{type}</div>
+                              {rowDecision === 'approved' && (
+                                <span className="text-[10px] font-bold uppercase tracking-wide text-green-700 dark:text-green-400">Approved</span>
+                              )}
+                              {rowDecision === 'rejected' && (
+                                <span className="text-[10px] font-bold uppercase tracking-wide text-red-700 dark:text-red-400">Rejected</span>
+                              )}
+                            </div>
                           </td>
-                          <td className="px-6 py-4 text-right">
-                            <button onClick={() => { setParsedCases(prev => prev.filter((_, i) => i !== origIdx)); setCoverage(null); setCurrentPage(1); }}
-                              className="text-on-surface-variant dark:text-slate-400 hover:text-red-500 transition-colors">
+                          <td className="px-4 py-4 text-right">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (!rowKey) return;
+                                setSelectedRowKeys((prev) => {
+                                  const n = new Set(prev);
+                                  n.delete(rowKey);
+                                  return n;
+                                });
+                                setReviewByRowKey((prev) => {
+                                  const n = { ...prev };
+                                  delete n[rowKey];
+                                  return n;
+                                });
+                                setParsedCases((prev) => prev.filter((_, i) => i !== origIdx));
+                                setCoverage(null);
+                                setCurrentPage(1);
+                              }}
+                              className="text-on-surface-variant dark:text-slate-400 hover:text-red-500 transition-colors"
+                            >
                               <span className="material-symbols-outlined text-lg">delete</span>
                             </button>
                           </td>
@@ -1180,6 +1175,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
             if (confirm('Clear all data? This will reset JIRA ID, uploaded files, manual input, and all review results.')) {
               setTicketId(''); setIssueData(null); setManualReq(''); setManualExpanded(false);
               setTestCases(''); setParsedCases([]); setCoverage(null); setFilterText(''); setCurrentPage(1); setRiskExpanded(false); setRtmExpanded(false); setTestCasesExpanded(true); setTestCasesCleared(true);
+              setSelectedRowKeys(new Set()); setReviewByRowKey({});
             }
           }}
           className="flex-1 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
@@ -1191,7 +1187,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
           title={!coverage ? 'Complete the review analysis first' : ''}
           className="flex-1 bg-app-red text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 shadow-lg shadow-app-red/20 hover:bg-red-700 active:scale-95 transition-all disabled:opacity-40 disabled:shadow-none disabled:hover:scale-100 disabled:cursor-not-allowed"
         >
-          <span className="material-symbols-outlined">check_circle</span> Approve &amp; Export Scenarios
+          <span className="material-symbols-outlined">table_chart</span> Export trace matrix
         </button>
         <button
           onClick={async () => {

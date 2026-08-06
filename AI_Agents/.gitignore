@@ -24,8 +24,14 @@ Thumbs.db
 .tmp/
 *.log
 
+# Dev mode local storage
+dev-connections.json
+dev-automation-jobs.json
+
 # Gemini
 .gemini/
 
 .vercel
 .env*.local
+.env.bak*
+*.bak-gemini

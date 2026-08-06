@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node api/index.js",
+    "runner": "node scripts/blast-runner.js",
     "render-build": "npm install && cd client && npm install && npm run build"
   },
   "dependencies": {

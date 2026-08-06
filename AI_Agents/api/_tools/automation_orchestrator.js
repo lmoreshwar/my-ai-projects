@@ -1,0 +1,249 @@
+/**
+ * automation_orchestrator.js — Service layer between B.L.A.S.T. and the
+ * AI Native Playwright Service.
+ *
+ * B.L.A.S.T. NEVER generates Playwright code itself. It delegates planning,
+ * generation, execution and reporting to the AI Service over REST.
+ *
+ * If AI_SERVICE_URL is not configured, a local SIMULATION is used so the UI
+ * flow is fully demonstrable end-to-end. Swap in the real service by setting
+ * AI_SERVICE_URL in .env — no route/UI changes required.
+ */
+const axios = require('axios');
+const githubAgent = require('./github_agent');
+const localAgent = require('./local_agent');
+
+const AI_SERVICE_URL = (process.env.AI_SERVICE_URL || '').replace(/\/$/, '');
+const AI_TIMEOUT = Number(process.env.AI_SERVICE_TIMEOUT_MS || 120000);
+
+/**
+ * Resolve the active provider:
+ *   'github'     → delegate to the GitHub Copilot coding agent (real, async, paid)
+ *   'local'      → generate with the local LLM + run Playwright locally (real, sync)
+ *   'service'    → delegate to a self-hosted AI Service (real, sync REST)
+ *   'simulation' → local demo flow
+ * An explicit AUTOMATION_PROVIDER wins; otherwise the best real provider is used.
+ */
+function provider() {
+  const forced = (process.env.AUTOMATION_PROVIDER || '').toLowerCase();
+  // 'runner' = pull-based worker model: the API only enqueues; a separate runner
+  // process claims the job and executes it, reporting logs/results back over REST.
+  if (forced === 'runner') return 'runner';
+  // 'github-actions' = cloud runner: the API triggers a GitHub Actions workflow
+  // that generates + runs the tests and opens a PR. No laptop/worker needed.
+  if (forced === 'github-actions') return 'github-actions';
+  if (forced === 'github' && githubAgent.isConfigured()) return 'github';
+  if (forced === 'local' && localAgent.isConfigured()) return 'local';
+  if (forced === 'service' && AI_SERVICE_URL) return 'service';
+  if (localAgent.isConfigured()) return 'local';
+  if (AI_SERVICE_URL) return 'service';
+  return 'simulation';
+}
+
+// Map a skill label to the AI Service REST endpoint.
+const SKILL_ENDPOINT = {
+  'New Automation': '/api/automation/generate',
+  'Modify Automation': '/api/automation/modify',
+  Debug: '/api/automation/debug',
+  'Self Healing': '/api/automation/self-heal',
+  'Visual Testing': '/api/automation/visual-test',
+};
+
+function toFeatureName(label) {
+  const base = (label || 'App').replace(/[^A-Za-z0-9]+/g, ' ').trim() || 'App';
+  return base
+    .split(/\s+/)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join('');
+}
+
+// Group selected test cases by their primary tag (feature).
+function groupFeatures(testCases) {
+  const groups = {};
+  (testCases || []).forEach((tc) => {
+    const primary = (tc.tags || 'General').split(',')[0].trim() || 'General';
+    (groups[primary] = groups[primary] || []).push(tc);
+  });
+  return groups;
+}
+
+/**
+ * Ask the AI Service for an implementation plan (reuse-first, evidence-based).
+ * Returns { plan, missingInfo, reusedFiles }.
+ */
+async function requestPlan(job) {
+  if (provider() === 'local') {
+    return localAgent.buildPlan(job);
+  }
+  if (AI_SERVICE_URL) {
+    const { data } = await axios.post(
+      `${AI_SERVICE_URL}${SKILL_ENDPOINT[job.skill] || '/api/automation/generate'}`,
+      { ...serializeRequest(job), stage: 'plan' },
+      { timeout: AI_TIMEOUT }
+    );
+    return {
+      plan: data.plan || '',
+      missingInfo: data.missingInfo || [],
+      reusedFiles: data.reusedFiles || [],
+    };
+  }
+  return simulatePlan(job);
+}
+
+/**
+ * Ask the AI Service to generate + (optionally) execute.
+ * Returns { generatedFiles, reusedFiles, executionStatus, reportUrl, logs }.
+ */
+async function requestGenerate(job, onLog) {
+  if (provider() === 'github') {
+    const issue = await githubAgent.createAutomationIssue(job);
+    return {
+      provider: 'github',
+      async: true,
+      issueNumber: issue.issueNumber,
+      issueUrl: issue.issueUrl,
+      generatedFiles: [],
+      reusedFiles: [],
+      executionStatus: '',
+      reportUrl: '',
+      logs: [
+        `[github] Created issue #${issue.issueNumber} and assigned it to the Copilot coding agent (${issue.copilotLogin}).`,
+        `[github] Track progress: ${issue.issueUrl}`,
+      ],
+    };
+  }
+  if (provider() === 'local') {
+    return localAgent.generateAndRun(job, onLog);
+  }
+  if (AI_SERVICE_URL) {
+    const { data } = await axios.post(
+      `${AI_SERVICE_URL}${SKILL_ENDPOINT[job.skill] || '/api/automation/generate'}`,
+      { ...serializeRequest(job), stage: 'generate' },
+      { timeout: AI_TIMEOUT }
+    );
+    return {
+      generatedFiles: data.generatedFiles || [],
+      reusedFiles: data.reusedFiles || [],
+      executionStatus: data.executionStatus || '',
+      reportUrl: data.reportUrl || '',
+      logs: data.logs || [],
+    };
+  }
+  return simulateGenerate(job);
+}
+
+/**
+ * Poll the active provider for job progress. Only meaningful for async
+ * providers (github); sync providers return the job state unchanged.
+ * Returns { status, prUrl, checksStatus, executionStatus, logs }.
+ */
+async function requestProgress(job) {
+  if (provider() === 'github') {
+    return githubAgent.getProgress(job);
+  }
+  return { status: job.status, prUrl: job.prUrl || '', checksStatus: job.checksStatus || '', executionStatus: job.executionStatus || '', logs: [] };
+}
+
+/**
+ * Ask the AI Service (or GitHub) to open a PR into the framework repo.
+ * Returns { prUrl }.
+ */
+async function requestPushToGate(job, onLog) {
+  if (provider() === 'github') {
+    // With the coding agent, the PR IS the gate — it already exists once checks pass.
+    const progress = await githubAgent.getProgress(job);
+    return { prUrl: progress.prUrl || job.prUrl || '' };
+  }
+  if (provider() === 'local') {
+    const { compareUrl, branch, logs } = await localAgent.pushBranch(job, onLog);
+    return { prUrl: compareUrl, branch, logs: logs || [] };
+  }
+  if (AI_SERVICE_URL) {
+    const { data } = await axios.post(
+      `${AI_SERVICE_URL}/api/automation/push-to-gate`,
+      serializeRequest(job),
+      { timeout: AI_TIMEOUT }
+    );
+    return { prUrl: data.prUrl || '' };
+  }
+  return { prUrl: `https://github.com/example/ai-native-playwright/pull/${Math.floor(Math.random() * 900 + 100)}` };
+}
+
+function serializeRequest(job) {
+  return {
+    jobId: job.jobId,
+    project: job.project,
+    environment: job.environment,
+    url: job.url,
+    agent: job.agent,
+    skill: job.skill,
+    executionMode: job.executionMode,
+    comments: job.comments,
+    testCases: (job.testCases || []).map((tc) => ({ id: tc.id, title: tc.title, tags: tc.tags })),
+  };
+}
+
+/* ─────────────────────────── SIMULATION ─────────────────────────── */
+
+function simulatePlan(job) {
+  const missingInfo = [];
+  if (!job.url) missingInfo.push('Application URL is required to capture locators via @playwright/cli.');
+  if (!job.testCases || job.testCases.length === 0) missingInfo.push('No test cases selected for automation.');
+
+  const groups = groupFeatures(job.testCases);
+  const lines = [
+    `# Implementation Plan — ${job.skill} (${job.environment})`,
+    '',
+    `Agent: ${job.agent}`,
+    `Target URL: ${job.url || '(missing)'}`,
+    `Total test cases: ${(job.testCases || []).length}`,
+    '',
+    '## Reuse-first analysis (from capabilities.json)',
+    '- Existing assets are reused where available; no duplicate pages/locators are created.',
+    '',
+    '## Files to create / reuse',
+  ];
+  Object.entries(groups).forEach(([feature, cases]) => {
+    const F = toFeatureName(feature);
+    lines.push(`- **${feature}** (${cases.length} case${cases.length > 1 ? 's' : ''}) → src/pages/${F}Page.ts, src/modules/${F}Module.ts, src/tests/${F.toLowerCase()}.spec.ts`);
+  });
+  lines.push('', '## Evidence-based locators', '- Locators captured live via @playwright/cli snapshot before any code is written.');
+
+  return {
+    plan: lines.join('\n'),
+    missingInfo,
+    reusedFiles: ['src/utils/constants.ts', 'src/config/index.ts'],
+  };
+}
+
+function simulateGenerate(job) {
+  const groups = groupFeatures(job.testCases);
+  const generatedFiles = [];
+  Object.keys(groups).forEach((feature) => {
+    const F = toFeatureName(feature);
+    generatedFiles.push({ path: `src/pages/${F}Page.ts`, layer: 'page', reused: false });
+    generatedFiles.push({ path: `src/modules/${F}Module.ts`, layer: 'module', reused: false });
+    generatedFiles.push({ path: `src/tests/${F.toLowerCase()}.spec.ts`, layer: 'spec', reused: false });
+  });
+  const runs = job.executionMode !== 'GenerateOnly';
+  return {
+    generatedFiles,
+    reusedFiles: ['src/utils/constants.ts', 'src/config/index.ts'],
+    executionStatus: runs ? 'PASSED' : '',
+    reportUrl: runs ? 'playwright-report/index.html' : '',
+    logs: [
+      '[SIMULATION] AI_SERVICE_URL not configured — using local simulation.',
+      `Planned ${generatedFiles.length} files across ${Object.keys(groups).length} feature(s).`,
+      runs ? 'Simulated Playwright run: PASSED.' : 'Generate-only mode: execution skipped.',
+    ],
+  };
+}
+
+module.exports = {
+  provider,
+  requestPlan,
+  requestGenerate,
+  requestProgress,
+  requestPushToGate,
+  isSimulated: () => provider() === 'simulation',
+};
