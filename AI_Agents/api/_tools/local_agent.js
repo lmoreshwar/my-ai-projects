@@ -195,6 +195,20 @@ function idInText(text, tc) {
   return normalizeText(text).includes(title);
 }
 
+/**
+ * Coverage check scoped to an ALREADY-RESOLVED domain spec. Unlike global domain
+ * discovery (title-only, to avoid cross-feature id collisions), here the domain is
+ * fixed, so also matching the case id (e.g. "TC_001") is safe and reliable — the
+ * spec embeds it (`test('TC_001 Valid Login' …)`). This stops a re-submitted case
+ * from being regenerated when its B.L.A.S.T. title wording drifts from the spec.
+ */
+function caseCoveredInSpec(specText, tc) {
+  if (idInText(specText, tc)) return true;
+  const id = normalizeText(tc && tc.id);
+  if (id.length < 4) return false;
+  return new RegExp(`(?:^| )${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?= |$)`).test(normalizeText(specText));
+}
+
 /** List every spec file under src/tests with its basename + content. */
 function listSpecs(fw) {
   const dir = path.join(fw, 'src', 'tests');
@@ -781,8 +795,8 @@ async function generateAndRun(job, onLog) {
   const domSpec = existing.find((e) => e.layer === 'spec');
   const specText = domSpec ? domSpec.content : '';
   const selected = job.testCases || [];
-  const dupCases = selected.filter((tc) => idInText(specText, tc));
-  const newCases = selected.filter((tc) => !idInText(specText, tc));
+  const dupCases = selected.filter((tc) => caseCoveredInSpec(specText, tc));
+  const newCases = selected.filter((tc) => !caseCoveredInSpec(specText, tc));
   dupCases.forEach((tc) => log(`[local] ⏭ Duplicate detected: ${tc.id} "${tc.title || ''}" already present in ${domSpec ? domSpec.rel : 'spec'} → reusing existing test, will NOT rewrite it.`));
 
   // If every selected case already exists, do NOT generate — reuse and just re-run.
