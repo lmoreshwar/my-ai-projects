@@ -367,6 +367,7 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                   { value: 'openai', label: 'OpenAI' },
                   { value: 'groq', label: 'Groq' },
                   { value: 'grok', label: 'Grok (xAI)' },
+                  { value: 'nvidia', label: 'NVIDIA NIM' },
                   { value: 'ollama', label: 'Ollama (Local)' },
                 ]}
                 placeholder="Select LLM Provider"
@@ -383,34 +384,32 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                 options={
                   connections.llm.platform === 'gemini'
                     ? [
-                        { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-                        { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-                        { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
-                        { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash' },
-                        { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
+                        { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (free, fast)' },
+                        { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (free, fast)' },
+                        { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (best quality)' },
                       ]
                     : connections.llm.platform === 'openai'
                     ? [
+                        { value: 'gpt-4o-mini', label: 'GPT-4o Mini (fast)' },
                         { value: 'gpt-4o', label: 'GPT-4o' },
-                        { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
-                        { value: 'gpt-4-turbo', label: 'GPT-4 Turbo' },
-                        { value: 'gpt-4', label: 'GPT-4' },
-                        { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo' },
-                        { value: 'o1', label: 'o1' },
-                        { value: 'o1-mini', label: 'o1 Mini' },
-                        { value: 'o3-mini', label: 'o3 Mini' },
+                        { value: 'o3-mini', label: 'o3 Mini (reasoning)' },
                       ]
                     : connections.llm.platform === 'groq'
                     ? [
-                        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B' },
-                        { value: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B Instant' },
-                        { value: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B' },
-                        { value: 'gemma2-9b-it', label: 'Gemma 2 9B' },
+                        { value: 'openai/gpt-oss-120b', label: 'GPT-OSS 120B (best free)' },
+                        { value: 'openai/gpt-oss-20b', label: 'GPT-OSS 20B (fastest)' },
+                        { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (reliable)' },
                       ]
                     : connections.llm.platform === 'grok'
                     ? [
                         { value: 'grok-2', label: 'Grok 2' },
                         { value: 'grok-beta', label: 'Grok Beta' },
+                      ]
+                    : connections.llm.platform === 'nvidia'
+                    ? [
+                        { value: 'nvidia/nemotron-3-super-120b-a12b', label: 'Nemotron 3 Super 120B (best)' },
+                        { value: 'nvidia/llama-3.3-nemotron-super-49b-v1.5', label: 'Nemotron Super 49B (faster)' },
+                        { value: 'nvidia/nvidia-nemotron-nano-9b-v2', label: 'Nemotron Nano 9B (fastest)' },
                       ]
                     : [
                         { value: 'llama3', label: 'Llama 3 (Local)' },

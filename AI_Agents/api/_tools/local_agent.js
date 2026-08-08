@@ -26,10 +26,11 @@ const FILE_RE = /===FILE:([^|=]+)\|(page|module|spec|fixture|config|other)===\s*
 
 // Sensible default model per platform when none is configured for that platform.
 const DEFAULT_MODEL = {
-  groq: 'llama-3.3-70b-versatile',
+  groq: 'openai/gpt-oss-120b',
   gemini: 'gemini-2.5-flash',
   grok: 'grok-2',
   openai: 'gpt-4o',
+  nvidia: 'nvidia/nemotron-3-super-120b-a12b',
   ollama: 'llama3',
 };
 
@@ -40,8 +41,9 @@ function modelMatchesPlatform(model, platform) {
   if (!m) return false;
   switch (platform) {
     case 'gemini': return m.startsWith('gemini');
-    case 'groq': return /(llama|mixtral|gemma|qwen|deepseek)/.test(m);
+    case 'groq': return /(llama|mixtral|gemma|qwen|deepseek|gpt-oss)/.test(m);
     case 'grok': return m.startsWith('grok');
+    case 'nvidia': return m.startsWith('nvidia/') || /nemotron/.test(m);
     case 'openai': return /^(gpt|o1|o3|chatgpt)/.test(m);
     case 'ollama': return true;
     default: return false;
@@ -57,6 +59,7 @@ function config() {
     groq: process.env.GROQ_API_KEY,
     gemini: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY,
     grok: process.env.GROK_API_KEY || process.env.XAI_API_KEY,
+    nvidia: process.env.NVIDIA_API_KEY || process.env.NVIDIA_NIM_API_KEY,
     openai: process.env.OPENAI_API_KEY,
   };
   const apiKey = keyByPlatform[platform] || process.env.LLM_API_KEY || '';
@@ -67,6 +70,7 @@ function config() {
     groq: process.env.GROQ_MODEL,
     gemini: process.env.GEMINI_MODEL,
     grok: process.env.GROK_MODEL,
+    nvidia: process.env.NVIDIA_MODEL,
     openai: process.env.OPENAI_MODEL,
   };
   let model = modelByPlatform[platform] || '';

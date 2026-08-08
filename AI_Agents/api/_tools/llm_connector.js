@@ -1,39 +1,72 @@
 const OpenAI = require('openai');
 
+// Corporate laptops usually route the internet through an HTTP(S) proxy.
+// Node.js does NOT honor the system proxy automatically, so outbound calls to
+// providers like NVIDIA fail with a generic "Connection error". If HTTPS_PROXY
+// (or HTTP_PROXY) is set, route the OpenAI SDK through it.
+function buildProxyAgent() {
+    const proxyUrl = process.env.HTTPS_PROXY || process.env.https_proxy
+        || process.env.HTTP_PROXY || process.env.http_proxy;
+    if (!proxyUrl) return null;
+    try {
+        const { HttpsProxyAgent } = require('https-proxy-agent');
+        return new HttpsProxyAgent(proxyUrl);
+    } catch (_) {
+        console.warn('[LLM] HTTPS_PROXY is set but "https-proxy-agent" is not installed. Run: npm i https-proxy-agent');
+        return null;
+    }
+}
+
 class LLMConnector {
     constructor(platform, apiKey = null, endpoint = null) {
         this.platform = (platform || 'ollama').toLowerCase();
         this.apiKey = apiKey;
         this.endpoint = endpoint || 'http://localhost:11434/v1';
+        const proxyAgent = buildProxyAgent();
+        const extra = proxyAgent ? { httpAgent: proxyAgent } : {};
 
         switch (this.platform) {
             case 'groq':
                 this.client = new OpenAI({
                     baseURL: 'https://api.groq.com/openai/v1',
-                    apiKey: this.apiKey
+                    apiKey: this.apiKey,
+                    ...extra
                 });
                 break;
             case 'ollama':
                 this.client = new OpenAI({
                     baseURL: this.endpoint,
-                    apiKey: 'ollama' // Placeholder for Ollama API
+                    apiKey: 'ollama', // Placeholder for Ollama API
+                    ...extra
                 });
                 break;
             case 'gemini':
                 this.client = new OpenAI({
                     baseURL: 'https://generativelanguage.googleapis.com/v1beta/openai/',
-                    apiKey: this.apiKey
+                    apiKey: this.apiKey,
+                    ...extra
                 });
                 break;
             case 'grok':
                 this.client = new OpenAI({
                     baseURL: 'https://api.x.ai/v1',
-                    apiKey: this.apiKey
+                    apiKey: this.apiKey,
+                    ...extra
+                });
+                break;
+            case 'nvidia':
+                this.client = new OpenAI({
+                    // Only honor a custom endpoint if it actually points at NVIDIA;
+                    // otherwise ignore the Ollama localhost default and use the NIM URL.
+                    baseURL: /nvidia|integrate\.api/i.test(this.endpoint || '') ? this.endpoint : 'https://integrate.api.nvidia.com/v1',
+                    apiKey: this.apiKey,
+                    ...extra
                 });
                 break;
             case 'openai':
                 this.client = new OpenAI({
-                    apiKey: this.apiKey
+                    apiKey: this.apiKey,
+                    ...extra
                 });
                 break;
             default:
@@ -58,10 +91,11 @@ class LLMConnector {
        ───────────────────────────────────────────── */
     async generateContent(prompt, systemPrompt = "You are an expert QA Engineer.", model = null, continuation = null) {
         if (!model) {
-            if (this.platform === 'groq') model = 'llama-3.3-70b-versatile';
+            if (this.platform === 'groq') model = 'openai/gpt-oss-120b';
             else if (this.platform === 'ollama') model = 'llama3';
             else if (this.platform === 'gemini') model = 'gemini-2.5-flash';
             else if (this.platform === 'grok') model = 'grok-2';
+            else if (this.platform === 'nvidia') model = 'nvidia/nemotron-3-super-120b-a12b';
             else if (this.platform === 'openai') model = 'gpt-4o';
         }
 
@@ -84,6 +118,7 @@ class LLMConnector {
             gemini: { max_tokens: 32768, tpm: 1000000, delay_ms: 1000 }, // Gemini 2.5 Flash supports up to 65K output
             grok:   { max_tokens: 16384, tpm: 999999, delay_ms: 500 },
             openai: { max_tokens: 16384, tpm: 999999, delay_ms: 500 },  // OpenAI GPT-4o / o1
+            nvidia: { max_tokens: 16384, tpm: 999999, delay_ms: 500 },  // NVIDIA NIM (Nemotron etc.)
             ollama: { max_tokens: 8192, tpm: 999999, delay_ms: 0 },    // local, no limits
         };
         const platformCfg = PLATFORM_LIMITS[this.platform] || { max_tokens: 8192, tpm: 999999, delay_ms: 500 };
@@ -170,16 +205,26 @@ class LLMConnector {
                 max_tokens: MAX_TOKENS
             };
             // Only add seed/top_p for platforms that support them
-            if (this.platform !== 'gemini' && this.platform !== 'openai') {
+            if (this.platform !== 'gemini' && this.platform !== 'openai' && this.platform !== 'nvidia') {
                 callParams.seed = 42;
                 callParams.top_p = 1;
+            }
+            // NVIDIA Nemotron are reasoning models: with thinking ON they burn the
+            // entire token budget on hidden reasoning before emitting output (looks
+            // like it hangs). Turn thinking OFF for fast, direct generation.
+            // Schema requires temperature > 0, so 0 is invalid here.
+            if (this.platform === 'nvidia') {
+                callParams.temperature = 0.2;
+                callParams.top_p = 0.95;
+                callParams.reasoning_effort = 'none';
+                callParams.chat_template_kwargs = { enable_thinking: false };
             }
 
             let lastError;
             for (let attempt = 1; attempt <= retries; attempt++) {
                 try {
                     console.log(`[LLM] Calling ${useModel} (attempt ${attempt}/${retries})...`);
-                    const resp = await this.client.chat.completions.create(callParams);
+                    const resp = await this.client.chat.completions.create(callParams, { timeout: 120000 });
                     return (() => { // extract result from resp
                         const c = resp.choices[0];
                         const u = resp.usage || {};
@@ -197,6 +242,20 @@ class LLMConnector {
                     if ((status === 429 || status === 503 || status === 502) && attempt < retries) {
                         const wait = status === 429 ? attempt * 5000 : attempt * 3000;
                         console.warn(`[LLM] ${status === 429 ? 'Rate limited' : 'Service unavailable'} (${status}) for ${useModel}. Retrying in ${wait / 1000}s (attempt ${attempt}/${retries})...`);
+                        await new Promise(r => setTimeout(r, wait));
+                        continue;
+                    }
+                    // Retry transient connection resets (common on corporate networks that
+                    // drop repeated long-lived HTTPS calls during continuation rounds).
+                    const cause = err.cause || err;
+                    const code = (cause?.code || cause?.errno || '').toString();
+                    const isConnReset = status === 0 && (
+                        /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|EPIPE/i.test(code) ||
+                        /Connection error|socket hang up|network|fetch failed/i.test(err.message || '')
+                    );
+                    if (isConnReset && attempt < retries) {
+                        const wait = attempt * 3000;
+                        console.warn(`[LLM] Connection reset (${code || err.message}) for ${useModel}. Retrying in ${wait / 1000}s (attempt ${attempt}/${retries})...`);
                         await new Promise(r => setTimeout(r, wait));
                         continue;
                     }
@@ -480,6 +539,22 @@ Output ONLY the additional numbered scenarios (no header, no title, no explanati
             console.error(`LLM Error [${this.platform}/${model}]:`, error.message, error.status || '');
             const msg = error.message || '';
             const status = error.status || error.statusCode || 0;
+            // Surface the real network cause the OpenAI SDK hides behind "Connection error".
+            const cause = error.cause || error;
+            const code = cause?.code || cause?.errno || '';
+            if (msg.includes('Connection error') || /ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ECONNRESET|CERT|self[- ]signed|unable to (get|verify)/i.test(`${code} ${cause?.message || ''}`)) {
+                const detail = `${code || ''} ${cause?.message || ''}`.trim();
+                const proxySet = !!(process.env.HTTPS_PROXY || process.env.https_proxy || process.env.HTTP_PROXY || process.env.http_proxy);
+                let hint;
+                if (/CERT|self[- ]signed|unable to (get|verify)/i.test(detail)) {
+                    hint = 'Your corporate proxy is inspecting TLS with a private root CA that Node does not trust. Set NODE_EXTRA_CA_CERTS to your company CA .pem file and restart the server.';
+                } else if (!proxySet) {
+                    hint = 'Node is not using your office proxy. Set HTTPS_PROXY to your corporate proxy URL (and run `npm i https-proxy-agent`), then restart the server. Other providers may work only because their domains are allow-listed.';
+                } else {
+                    hint = `The endpoint is unreachable from this machine (${detail || 'network blocked'}). It may be blocked by the corporate firewall — ask IT to allow-list integrate.api.nvidia.com.`;
+                }
+                throw new Error(`Connection error reaching ${this.platform}: ${detail || 'network unreachable'}. ${hint}`);
+            }
             if (msg.includes('maximum context length') || msg.includes('max_tokens') || msg.includes('token')) {
                 throw new Error(`Token limit exceeded: ${msg}. Try a different model with higher token capacity or reduce the input size.`);
             }
