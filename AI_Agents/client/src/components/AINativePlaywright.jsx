@@ -43,10 +43,17 @@ const COMPLEXITY_STYLE = {
   High: 'text-red-600 dark:text-red-400',
 };
 
+// Human-friendly badge text (backend status values stay unchanged).
+const STATUS_LABEL = {
+  WaitingForApproval: 'Waiting for approval',
+  HandedToCopilot: 'Handed to Copilot',
+  PushedToGate: 'Pull Request raised',
+};
+
 function StatusBadge({ status }) {
   return (
     <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${STATUS_STYLE[status] || STATUS_STYLE.Pending}`}>
-      {status || '—'}
+      {STATUS_LABEL[status] || status || '—'}
     </span>
   );
 }
@@ -78,7 +85,7 @@ const ENVIRONMENTS = ['QA', 'UAT', 'Production'];
 const EXECUTION_MODES = [
   { value: 'GenerateOnly', label: 'Generate Only' },
   { value: 'GenerateAndExecute', label: 'Generate and Execute' },
-  { value: 'GenerateExecutePushToGate', label: 'Generate, Execute & Push to Gate' },
+  { value: 'GenerateExecutePushToGate', label: 'Generate, Execute & Raise Pull Request' },
 ];
 
 /* ── Run Logs console: large, readable, auto-scrolling, colour-coded ── */
@@ -792,9 +799,9 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
                 </a>
               )}
               {activeJob.status === 'Passed' && (
-                <button onClick={pushToGate} disabled={busy === 'gate'} className="px-4 py-2 rounded-sm bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1">
-                  <span className="material-symbols-outlined text-lg">rocket_launch</span>
-                  {busy === 'gate' ? 'Pushing…' : 'Push to Gate'}
+                <button onClick={pushToGate} disabled={busy === 'gate'} title="Push the passing tests to a branch and open a Pull Request for review" className="px-4 py-2 rounded-sm bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-lg">{busy === 'gate' ? 'progress_activity' : 'merge'}</span>
+                  <span className={busy === 'gate' ? 'animate-pulse' : ''}>{busy === 'gate' ? 'Raising Pull Request…' : 'Raise Pull Request'}</span>
                 </button>
               )}
               {activeJob.prUrl && (
