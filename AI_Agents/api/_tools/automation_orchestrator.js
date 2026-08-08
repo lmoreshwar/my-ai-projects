@@ -10,6 +10,9 @@
  * AI_SERVICE_URL in .env — no route/UI changes required.
  */
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
 const githubAgent = require('./github_agent');
 const localAgent = require('./local_agent');
 
@@ -68,6 +71,45 @@ function groupFeatures(testCases) {
 }
 
 /**
+ * Give buildPlan a REAL framework to read for the cloud/runner path. Prefer a local
+ * FRAMEWORK_PATH; otherwise mirror the essential framework files from the GitHub repo
+ * (the same source the cloud runner checks out) into a temp dir so the plan reflects
+ * what will actually run. Returns a framework path, or '' if neither is available.
+ */
+async function ensureFrameworkMirror() {
+  const localFw = (localAgent.config().frameworkPath || '').trim();
+  if (localFw && fs.existsSync(localFw)) return localFw;
+  if (!githubAgent.isConfigured()) return '';
+
+  const dir = path.join(os.tmpdir(), 'blast-fw-mirror');
+  const write = (rel, content) => {
+    if (content == null) return;
+    const abs = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content, 'utf8');
+  };
+  try {
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* stale mirror */ }
+    fs.mkdirSync(dir, { recursive: true });
+    write('.ai-memory/capabilities.json', await githubAgent.getFileContent('.ai-memory/capabilities.json'));
+    for (const sub of ['src/tests', 'src/pages', 'src/modules']) {
+      const entries = await githubAgent.listDir(sub);
+      for (const e of entries) {
+        if (e.type === 'file' && e.name.endsWith('.ts')) {
+          write(`${sub}/${e.name}`, await githubAgent.getFileContent(e.path));
+        }
+      }
+    }
+    for (const shared of ['src/config/index.ts', 'src/utils/constants.ts']) {
+      write(shared, await githubAgent.getFileContent(shared));
+    }
+    return dir;
+  } catch {
+    return ''; // any fetch error → caller falls back to the simulated plan
+  }
+}
+
+/**
  * Ask the AI Service for an implementation plan (reuse-first, evidence-based).
  * Returns { plan, missingInfo, reusedFiles }.
  */
@@ -86,6 +128,14 @@ async function requestPlan(job) {
       missingInfo: data.missingInfo || [],
       reusedFiles: data.reusedFiles || [],
     };
+  }
+  // Cloud/runner: build a REAL reuse-first plan against the framework (local path or a
+  // GitHub mirror of the repo the cloud runner checks out) instead of a generic template.
+  if (provider() === 'github-actions' || provider() === 'runner') {
+    try {
+      const fw = await ensureFrameworkMirror();
+      if (fw) return localAgent.buildPlan(job, fw);
+    } catch { /* fall back to the simulated plan below */ }
   }
   return simulatePlan(job);
 }

@@ -355,6 +355,41 @@ async function dispatchWorkflow(job) {
   }
 }
 
+/** Read a single file's UTF-8 content from the framework repo. Returns null if missing. */
+async function getFileContent(filePath, ref) {
+  const { owner, repo, branch } = repoConfig();
+  const r = ref || branch || 'main';
+  try {
+    const { data } = await axios.get(
+      `${API}/repos/${owner}/${repo}/contents/${filePath}?ref=${encodeURIComponent(r)}`,
+      { headers: headers() },
+    );
+    if (data && data.content && data.encoding === 'base64') {
+      return Buffer.from(data.content, 'base64').toString('utf8');
+    }
+    return null;
+  } catch (err) {
+    if (err.response && err.response.status === 404) return null;
+    throw friendlyError(err, `read ${filePath}`);
+  }
+}
+
+/** List a directory in the framework repo. Returns [{ name, path, type }]; [] if missing. */
+async function listDir(dirPath, ref) {
+  const { owner, repo, branch } = repoConfig();
+  const r = ref || branch || 'main';
+  try {
+    const { data } = await axios.get(
+      `${API}/repos/${owner}/${repo}/contents/${dirPath}?ref=${encodeURIComponent(r)}`,
+      { headers: headers() },
+    );
+    return Array.isArray(data) ? data.map((e) => ({ name: e.name, path: e.path, type: e.type })) : [];
+  } catch (err) {
+    if (err.response && err.response.status === 404) return [];
+    throw friendlyError(err, `list ${dirPath}`);
+  }
+}
+
 module.exports = {
   isConfigured,
   findCopilotActor,
@@ -362,4 +397,6 @@ module.exports = {
   getProgress,
   repoConfig,
   dispatchWorkflow,
+  getFileContent,
+  listDir,
 };

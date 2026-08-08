@@ -609,8 +609,9 @@ async function llmGenerate(prompt, system) {
  * and approve before anything runs locally.
  * Returns { plan, missingInfo, reusedFiles }.
  */
-function buildPlan(job) {
-  const { frameworkPath: fw, platform, model } = config();
+function buildPlan(job, fwOverride) {
+  const { frameworkPath, platform, model } = config();
+  const fw = fwOverride || frameworkPath;
   const logs = [];
   const log = (m) => logs.push(m);
   const missingInfo = [];
@@ -639,7 +640,7 @@ function buildPlan(job) {
     : `[plan] No existing "${F}" domain files — this will be a fresh page/module/spec.`);
   if (specContent) log(`[plan] Existing spec "${specRel}" already contains ${specTestCount} test(s).`);
 
-  const cases = (job.testCases || []).map((tc) => ({ ...tc, exists: idInText(specContent, tc) }));
+  const cases = (job.testCases || []).map((tc) => ({ ...tc, exists: caseCoveredInSpec(specContent, tc) }));
   const already = cases.filter((c) => c.exists);
   const toAdd = cases.filter((c) => !c.exists);
   log(`[plan] Reuse analysis: ${cases.length} selected → ${already.length} already automated (reuse), ${toAdd.length} new (generate).`);
