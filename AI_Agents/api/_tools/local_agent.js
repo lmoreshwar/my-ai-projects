@@ -130,22 +130,30 @@ function resolveSkill(job) {
   return SKILL_MAP[(job && job.skill) || 'New Automation'] || SKILL_MAP['New Automation'];
 }
 
+// Groq free tier caps ~8K tokens/minute; a rich prompt + re-sent existing files
+// blows that budget, so low-TPM providers get a lean grounding.
+const LOW_TPM_PLATFORMS = new Set(['groq']);
+
 /** Read framework grounding: rules, persona, skills, reuse index, and real exemplars. */
 function readGrounding(fw, job) {
   const active = resolveSkill(job);
+  const lean = LOW_TPM_PLATFORMS.has(config().platform);
+  const b = lean
+    ? { agent: 2200, persona: 1200, skill: 1700, heal: 0, caps: 2500, ex: 1400, spec: 1600, data: 900, fix: 1100, smart: 0 }
+    : { agent: 6000, persona: 2500, skill: 4500, heal: 2000, caps: 4000, ex: 3000, spec: 3500, data: 2500, fix: 3000, smart: 1400 };
   return {
-    agent: safeRead(path.join(fw, 'AGENT.md'), 6000),
-    persona: safeRead(firstMatchingFile(path.join(fw, '.github', 'agents'), '.agent.md'), 2500),
+    agent: safeRead(path.join(fw, 'AGENT.md'), b.agent),
+    persona: safeRead(firstMatchingFile(path.join(fw, '.github', 'agents'), '.agent.md'), b.persona),
     activeSkill: active,
-    skillActive: safeRead(path.join(fw, '.github', 'skills', active.dir, 'SKILL.md'), 4500),
-    skillHeal: safeRead(path.join(fw, '.github', 'skills', 'pw-self-healing', 'SKILL.md'), 2000),
-    capabilities: safeRead(path.join(fw, '.ai-memory', 'capabilities.json'), 4000),
-    pageEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'pages'), 'Page.ts'), 3000),
-    moduleEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'modules'), 'Module.ts'), 3000),
-    specEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'tests'), '.spec.ts'), 3500),
-    testData: safeRead(path.join(fw, 'src', 'testdata', 'testData.json'), 2500),
-    fixtures: safeRead(path.join(fw, 'src', 'fixtures', 'index.ts'), 3000),
-    smartLocator: safeRead(path.join(fw, 'src', 'utils', 'SmartLocator.ts'), 1400),
+    skillActive: safeRead(path.join(fw, '.github', 'skills', active.dir, 'SKILL.md'), b.skill),
+    skillHeal: b.heal ? safeRead(path.join(fw, '.github', 'skills', 'pw-self-healing', 'SKILL.md'), b.heal) : '',
+    capabilities: safeRead(path.join(fw, '.ai-memory', 'capabilities.json'), b.caps),
+    pageEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'pages'), 'Page.ts'), b.ex),
+    moduleEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'modules'), 'Module.ts'), b.ex),
+    specEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'tests'), '.spec.ts'), b.spec),
+    testData: safeRead(path.join(fw, 'src', 'testdata', 'testData.json'), b.data),
+    fixtures: safeRead(path.join(fw, 'src', 'fixtures', 'index.ts'), b.fix),
+    smartLocator: b.smart ? safeRead(path.join(fw, 'src', 'utils', 'SmartLocator.ts'), b.smart) : '',
   };
 }
 

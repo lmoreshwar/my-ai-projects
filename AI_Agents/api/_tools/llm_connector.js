@@ -114,7 +114,7 @@ class LLMConnector {
 
         // Platform-aware token limits — safe for both free-tier and licensed
         const PLATFORM_LIMITS = {
-            groq:   { max_tokens: 4096, tpm: 12000, delay_ms: 2000 },  // Groq free-tier: 12K TPM
+            groq:   { max_tokens: 3000, tpm: 8000, delay_ms: 2000 },  // Groq free-tier: 8K TPM (gpt-oss-120b)
             gemini: { max_tokens: 32768, tpm: 1000000, delay_ms: 1000 }, // Gemini 2.5 Flash supports up to 65K output
             grok:   { max_tokens: 16384, tpm: 999999, delay_ms: 500 },
             openai: { max_tokens: 16384, tpm: 999999, delay_ms: 500 },  // OpenAI GPT-4o / o1
