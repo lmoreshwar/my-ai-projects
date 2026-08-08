@@ -8,9 +8,6 @@ import TestPlanGenerator from './components/TestPlanGenerator';
 import TestCaseGenerator from './components/TestCaseGenerator';
 import ReviewTestCases from './components/ReviewTestCases';
 import ZephyrDashboard from './components/ZephyrDashboard';
-import SeleniumBDD from './components/SeleniumBDD';
-import PlaywrightJS from './components/PlaywrightJS';
-import PlaywrightPOM from './components/PlaywrightPOM';
 import AINativePlaywright from './components/AINativePlaywright';
 import GitHubIntegration from './components/GitHubIntegration';
 import GitHubCICD from './components/GitHubCICD';
@@ -231,15 +228,6 @@ function App() {
         <div style={{ display: activePage === 'zephyr-dashboard' ? undefined : 'none' }}>
           {visitedPages.has('zephyr-dashboard') && <ZephyrDashboard connections={connections} />}
         </div>
-        <div style={{ display: activePage === 'selenium-bdd' ? undefined : 'none' }}>
-          {visitedPages.has('selenium-bdd') && <SeleniumBDD connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} seleniumOutput={seleniumOutput} setSeleniumOutput={setSeleniumOutput} selectedGroups={seleniumSelectedGroups} setSelectedGroups={setSeleniumSelectedGroups} onClearTestCases={handleClearTestCases} />}
-        </div>
-        <div style={{ display: activePage === 'playwright-js' ? undefined : 'none' }}>
-          {visitedPages.has('playwright-js') && <PlaywrightJS connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={bddFiles} setGeneratedFiles={setBddFiles} activeFileIdx={bddActiveIdx} setActiveFileIdx={setBddActiveIdx} selectedGroups={bddSelectedGroups} setSelectedGroups={setBddSelectedGroups} onClearTestCases={handleClearTestCases} />}
-        </div>
-        <div style={{ display: activePage === 'playwright-pom' ? undefined : 'none' }}>
-          {visitedPages.has('playwright-pom') && <PlaywrightPOM connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} generatedFiles={pomFiles} setGeneratedFiles={setPomFiles} activeFileIdx={pomActiveIdx} setActiveFileIdx={setPomActiveIdx} selectedGroups={pomSelectedGroups} setSelectedGroups={setPomSelectedGroups} langFilter={pomLangFilter} setLangFilter={setPomLangFilter} onNavigate={setActivePage} onPushFiles={setPendingPushFiles} onClearTestCases={handleClearTestCases} />}
-        </div>
         <div style={{ display: activePage === 'ai-native-playwright' ? undefined : 'none' }}>
           {visitedPages.has('ai-native-playwright') && <AINativePlaywright connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} />}
         </div>
@@ -262,9 +250,6 @@ function App() {
             { id: 'test-plan', icon: 'assignment', label: 'Plan' },
             { id: 'test-cases', icon: 'edit_note', label: 'Cases' },
             { id: 'review-cases', icon: 'fact_check', label: 'Review' },
-            { id: 'selenium-bdd', icon: 'terminal', label: 'Selenium' },
-            { id: 'playwright-js', icon: 'code', label: 'PW·BDD' },
-            { id: 'playwright-pom', icon: 'account_tree', label: 'PW·POM' },
             { id: 'ai-native-playwright', icon: 'smart_toy', label: 'AI·PW' },
             { id: 'github', icon: 'cloud_upload', label: 'GitHub' },
             { id: 'github-cicd', icon: 'rocket_launch', label: 'CI/CD' },

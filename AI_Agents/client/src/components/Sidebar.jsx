@@ -8,13 +8,6 @@ const navItems = [
   { id: 'review-cases', icon: 'fact_check', label: 'Review Test Cases' },
 ];
 
-const automationChildren = [
-  { id: 'selenium-bdd', icon: 'terminal', label: 'Selenium · Cucumber' },
-  { id: 'playwright-js', icon: 'code', label: 'Playwright · BDD' },
-  { id: 'playwright-pom', icon: 'account_tree', label: 'Playwright · Page Objects' },
-  { id: 'ai-native-playwright', icon: 'smart_toy', label: 'AI Native Playwright' },
-];
-
 const bottomItems = [
   { id: 'saved-history', icon: 'inventory_2', label: 'Test Artifacts', filled: true },
   { id: 'zephyr-dashboard', icon: 'dashboard', label: 'Zephyr Dashboard', filled: true },
@@ -22,8 +15,6 @@ const bottomItems = [
 
 export default function Sidebar({ activePage, onNavigate, onToggleDark, collapsed, onToggleCollapse }) {
   const [mobileOpen, setMobileOpen] = useState(false);
-  const automationActive = automationChildren.some((c) => c.id === activePage);
-  const [autoOpen, setAutoOpen] = useState(automationActive);
   const navigate = useNavigate();
 
   const handleNav = (id) => {
@@ -114,59 +105,21 @@ export default function Sidebar({ activePage, onNavigate, onToggleDark, collapse
               </button>
             ))}
 
-            {/* ── Automation (collapsible) ── */}
-            <div>
-              <button
-                onClick={() => collapsed ? handleNav(automationChildren[0]?.id || 'selenium-bdd') : setAutoOpen((o) => !o)}
-                title={collapsed ? 'Automation' : ''}
-                className={`flex items-center ${collapsed ? 'justify-center px-0' : 'justify-between px-4'} w-full py-3 transition-all rounded-sm ${
-                  automationActive
-                    ? 'nav-item-active'
-                    : 'text-on-surface-variant dark:text-slate-400 font-medium hover:bg-surface-container-high dark:hover:bg-slate-800'
-                }`}
-              >
-                <div className={`flex items-center ${collapsed ? '' : 'gap-4'}`}>
-                  <span className={`material-symbols-outlined ${automationActive ? '' : 'text-app-dark-red dark:text-app-red'}`}>
-                    settings_suggest
-                  </span>
-                  {!collapsed && <span className="text-sm">Automation</span>}
-                </div>
-                {!collapsed && (
-                  <span
-                    className="material-symbols-outlined text-sm transition-transform duration-300"
-                    style={{ transform: autoOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
-                  >
-                    expand_more
-                  </span>
-                )}
-              </button>
-
-              {!collapsed && (
-                <div
-                  className="overflow-hidden transition-all duration-300 ease-in-out"
-                  style={{ maxHeight: autoOpen ? '320px' : '0px' }}
-                >
-                  <div className="bg-black/[0.03] dark:bg-white/[0.04] rounded-b-sm">
-                    {automationChildren.map((child) => (
-                      <button
-                        key={child.id}
-                        onClick={() => handleNav(child.id)}
-                        className={`flex items-center gap-3 pl-12 pr-4 py-3 w-full text-left transition-all ${
-                          activePage === child.id
-                            ? 'text-app-red dark:text-app-red font-bold bg-app-red/5'
-                            : 'text-on-surface-variant dark:text-slate-400 font-normal hover:bg-surface-container-high dark:hover:bg-slate-800'
-                        }`}
-                      >
-                        <span className={`material-symbols-outlined text-sm ${activePage === child.id ? 'text-app-red' : ''}`}>
-                          {child.icon}
-                        </span>
-                        <span className="text-sm">{child.label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
+            {/* ── AI Native Playwright ── */}
+            <button
+              onClick={() => handleNav('ai-native-playwright')}
+              title={collapsed ? 'AI Native Playwright' : ''}
+              className={`flex items-center ${collapsed ? 'justify-center px-0' : 'gap-4 px-4'} py-3 w-full text-left transition-all rounded-sm ${
+                activePage === 'ai-native-playwright'
+                  ? 'nav-item-active'
+                  : 'text-on-surface-variant dark:text-slate-400 font-medium hover:bg-surface-container-high dark:hover:bg-slate-800'
+              }`}
+            >
+              <span className={`material-symbols-outlined ${activePage === 'ai-native-playwright' ? '' : 'text-app-dark-red dark:text-app-red'}`}>
+                smart_toy
+              </span>
+              {!collapsed && <span className="text-sm">AI Native Playwright</span>}
+            </button>
 
             {/* ── GitHub ── */}
             <button
