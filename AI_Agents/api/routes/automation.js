@@ -217,11 +217,13 @@ router.post('/jobs/:jobId/approve', auth, async (req, res) => {
         job.status = 'Generating';
         job.provider = 'github-actions';
         job.reportUrl = dispatch.runsUrl || '';
+        job.dispatchedAt = new Date().toISOString();
         job.logs = [
           ...(job.logs || []),
           `[cloud] Dispatched GitHub Actions workflow ${dispatch.workflow} on ${dispatch.ref}.`,
           `[cloud] Track the run + Pull Request here: ${dispatch.runsUrl}`,
         ];
+        job.dispatchLogs = [...job.logs]; // preserved header; live steps are appended each poll
         const savedCloud = await persist(job);
         return res.json(savedCloud);
       } catch (dispatchErr) {
@@ -306,6 +308,20 @@ router.get('/jobs/:jobId/progress', auth, async (req, res) => {
   try {
     const job = await findJob(req.params.jobId);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
+
+    // Cloud (GitHub Actions) path: stream live run steps into the job's logs.
+    if (job.provider === 'github-actions') {
+      const progress = await orchestrator.requestProgress(job);
+      if (progress.status) job.status = progress.status;
+      if (progress.prUrl) job.prUrl = progress.prUrl;
+      if (progress.checksStatus !== undefined) job.checksStatus = progress.checksStatus;
+      if (progress.executionStatus !== undefined) job.executionStatus = progress.executionStatus;
+      if (progress.runId) job.runId = progress.runId;
+      if (progress.runHtmlUrl) job.reportUrl = progress.runHtmlUrl;
+      if (Array.isArray(progress.snapshotLogs)) job.logs = progress.snapshotLogs; // full replace — no dup
+      const savedCloud = await persist(job);
+      return res.json(savedCloud);
+    }
 
     if (job.provider !== 'github') {
       return res.json(job); // background worker owns the state — don't clobber it

@@ -355,6 +355,85 @@ async function dispatchWorkflow(job) {
   }
 }
 
+/**
+ * Live progress for the cloud (GitHub Actions) path: resolve the dispatched run,
+ * read its jobs/steps, and return a FULL log snapshot the caller replaces each poll
+ * (so steps never duplicate). Returns { status, checksStatus, executionStatus,
+ * prUrl, runId, runHtmlUrl, snapshotLogs }.
+ */
+async function getWorkflowRunProgress(job) {
+  const { owner, repo, branch } = repoConfig();
+  const workflow = process.env.BLAST_WORKFLOW_FILE || 'blast-runner.yml';
+  const header = Array.isArray(job.dispatchLogs) && job.dispatchLogs.length
+    ? job.dispatchLogs
+    : (job.logs || []);
+  const snap = (lines) => [...header, ...(lines.length ? ['', '── GitHub Actions run ──', ...lines] : [])];
+
+  try {
+    // 1) Resolve the run id (cache it on the job after the first poll).
+    let runId = job.runId;
+    let runHtmlUrl = job.reportUrl || '';
+    if (!runId) {
+      const { data } = await axios.get(
+        `${API}/repos/${owner}/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(branch || 'main')}&per_page=10`,
+        { headers: headers() },
+      );
+      const floor = job.dispatchedAt ? new Date(job.dispatchedAt).getTime() - 60000 : 0;
+      const run = (data.workflow_runs || [])
+        .filter((r) => new Date(r.created_at).getTime() >= floor)
+        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+      if (!run) {
+        return { status: 'Generating', snapshotLogs: snap(['⟳ Waiting for the workflow run to start…']) };
+      }
+      runId = run.id;
+      runHtmlUrl = run.html_url;
+    }
+
+    // 2) Read the run + its jobs/steps.
+    const [runRes, jobsRes] = await Promise.all([
+      axios.get(`${API}/repos/${owner}/${repo}/actions/runs/${runId}`, { headers: headers() }),
+      axios.get(`${API}/repos/${owner}/${repo}/actions/runs/${runId}/jobs`, { headers: headers() }),
+    ]);
+    const runData = runRes.data;
+    runHtmlUrl = runData.html_url || runHtmlUrl;
+
+    const lines = [];
+    for (const j of runData_jobs(jobsRes.data)) {
+      lines.push(`▸ ${j.name} — ${j.status}${j.conclusion ? ` (${j.conclusion})` : ''}`);
+      for (const s of (j.steps || [])) {
+        const icon = s.conclusion === 'success' ? '✓'
+          : s.conclusion === 'failure' ? '✗'
+          : s.conclusion === 'skipped' ? '⊘'
+          : s.status === 'in_progress' ? '⟳' : '•';
+        lines.push(`   ${icon} ${s.name}`);
+      }
+    }
+
+    const st = runData.status;         // queued | in_progress | completed
+    const conc = runData.conclusion;   // success | failure | cancelled | null
+    const status = st !== 'completed' ? 'Executing' : conc === 'success' ? 'Passed' : 'Failed';
+    if (st === 'completed') {
+      lines.push('', conc === 'success' ? '✓ Run completed successfully.' : `✗ Run ${conc || 'failed'}.`);
+    }
+
+    return {
+      status,
+      prUrl: job.prUrl || '',
+      checksStatus: conc || (st === 'completed' ? '' : 'pending'),
+      executionStatus: conc === 'success' ? 'PASSED' : conc === 'failure' ? 'FAILED' : '',
+      runId,
+      runHtmlUrl,
+      snapshotLogs: snap(lines),
+    };
+  } catch (err) {
+    return { status: job.status, snapshotLogs: snap([`⚠ Could not read run status: ${friendlyError(err, 'run progress').message}`]) };
+  }
+}
+
+function runData_jobs(data) {
+  return Array.isArray(data && data.jobs) ? data.jobs : [];
+}
+
 /** Read a single file's UTF-8 content from the framework repo. Returns null if missing. */
 async function getFileContent(filePath, ref) {
   const { owner, repo, branch } = repoConfig();
@@ -397,6 +476,7 @@ module.exports = {
   getProgress,
   repoConfig,
   dispatchWorkflow,
+  getWorkflowRunProgress,
   getFileContent,
   listDir,
 };

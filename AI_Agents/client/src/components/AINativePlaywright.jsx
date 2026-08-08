@@ -81,6 +81,88 @@ const EXECUTION_MODES = [
   { value: 'GenerateExecutePushToGate', label: 'Generate, Execute & Push to Gate' },
 ];
 
+/* ── Run Logs console: large, readable, auto-scrolling, colour-coded ── */
+const LOG_TONE = [
+  { re: /\[error\]|error|failed|✗|❌/i, cls: 'text-red-400' },
+  { re: /\[cloud\]|\[runner\]|dispatched|queued/i, cls: 'text-sky-300' },
+  { re: /passed|success|✓|✅|done|reuse/i, cls: 'text-emerald-300' },
+  { re: /\[warn\]|warning|skipped|⚠/i, cls: 'text-amber-300' },
+];
+function toneFor(line) {
+  const hit = LOG_TONE.find((t) => t.re.test(line));
+  return hit ? hit.cls : 'text-slate-300';
+}
+
+function RunLogsConsole({ logs, live, trackUrl }) {
+  const bodyRef = useRef(null);
+  const [copied, setCopied] = useState(false);
+  const [stuck, setStuck] = useState(true); // auto-follow newest line while pinned to bottom
+
+  useEffect(() => {
+    if (stuck && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [logs, stuck]);
+
+  const onScroll = () => {
+    const el = bodyRef.current;
+    if (!el) return;
+    setStuck(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
+  };
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(logs.join('\n'));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard blocked — ignore */ }
+  };
+
+  return (
+    <div className="rounded-md border border-slate-700 overflow-hidden shadow-sm">
+      {/* header bar */}
+      <div className="flex items-center gap-2 px-3 py-2 bg-slate-800 border-b border-slate-700">
+        <span className="material-symbols-outlined text-base text-emerald-400">terminal</span>
+        <span className="text-xs font-semibold text-slate-100">Run Logs</span>
+        {live && (
+          <span className="inline-flex items-center gap-1 text-[11px] text-emerald-300">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" /> live
+          </span>
+        )}
+        <span className="text-[11px] text-slate-400">{logs.length} line{logs.length === 1 ? '' : 's'}</span>
+        <div className="ml-auto flex items-center gap-2">
+          {trackUrl && (
+            <a href={trackUrl} target="_blank" rel="noreferrer"
+               className="text-[11px] text-sky-300 hover:text-sky-200 underline flex items-center gap-0.5">
+              <span className="material-symbols-outlined text-sm">open_in_new</span> GitHub Actions
+            </a>
+          )}
+          <button onClick={copy}
+                  className="text-[11px] text-slate-300 hover:text-white flex items-center gap-0.5">
+            <span className="material-symbols-outlined text-sm">{copied ? 'check' : 'content_copy'}</span>
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      </div>
+      {/* scrollable body — resizable, monospace, roomy line height */}
+      <div ref={bodyRef} onScroll={onScroll}
+           className="bg-slate-900 text-[13px] font-mono leading-relaxed p-4 overflow-y-auto resize-y"
+           style={{ height: '22rem', minHeight: '12rem' }}>
+        {logs.map((line, i) => (
+          <div key={i} className="flex gap-3 hover:bg-white/5 -mx-4 px-4">
+            <span className="select-none text-slate-600 w-8 text-right shrink-0 tabular-nums">{i + 1}</span>
+            <span className={`whitespace-pre-wrap break-words ${toneFor(line)}`}>{line}</span>
+          </div>
+        ))}
+        {live && (
+          <div className="flex gap-3 -mx-4 px-4">
+            <span className="w-8 shrink-0" />
+            <span className="text-slate-500 animate-pulse">▋ waiting for more output…</span>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function AINativePlaywright({ apiBase, generatedTestCases, onNavigate }) {
   const cases = useMemo(() => automationFeasibleCases(generatedTestCases), [generatedTestCases]);
 
@@ -694,12 +776,11 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
 
           {/* Run logs — only for the LLM path; the Copilot path has its own live console above. */}
           {!activeJob.copilotHandoff && activeJob.logs && activeJob.logs.length > 0 && (
-            <div>
-              <p className="text-sm font-semibold mb-1">Run Logs</p>
-              <pre className="text-[11px] whitespace-pre-wrap bg-slate-900 text-slate-200 rounded-sm p-3 max-h-56 overflow-y-auto">
-                {activeJob.logs.join('\n')}
-              </pre>
-            </div>
+            <RunLogsConsole
+              logs={activeJob.logs}
+              live={activeStatus === 'Generating' || activeStatus === 'Executing'}
+              trackUrl={activeJob.provider === 'github-actions' ? activeJob.reportUrl : ''}
+            />
           )}
 
           {/* Report + Push to Gate */}

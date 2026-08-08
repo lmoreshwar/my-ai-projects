@@ -191,6 +191,9 @@ async function requestProgress(job) {
   if (provider() === 'github') {
     return githubAgent.getProgress(job);
   }
+  if (provider() === 'github-actions') {
+    return githubAgent.getWorkflowRunProgress(job);
+  }
   return { status: job.status, prUrl: job.prUrl || '', checksStatus: job.checksStatus || '', executionStatus: job.executionStatus || '', logs: [] };
 }
 
