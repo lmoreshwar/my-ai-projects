@@ -291,11 +291,12 @@ function App() {
 
   return (
     <Routes>
-      <Route path="/" element={<DevHome />} />
+      {/* DevHome auto-sets a dev token; keep it for localhost only, force login in production. */}
+      <Route path="/" element={isLocal ? <DevHome /> : <Navigate to="/login" replace />} />
       <Route path="/login" element={<Login onLogin={handleLogin} />} />
       <Route path="/signup" element={<SignUp />} />
-      <Route path="/app" element={dashboardContent} />
-      <Route path="/dashboard" element={dashboardContent} />
+      <Route path="/app" element={isLocal || isLoggedIn ? dashboardContent : <Navigate to="/login" replace />} />
+      <Route path="/dashboard" element={isLocal || isLoggedIn ? dashboardContent : <Navigate to="/login" replace />} />
     </Routes>
   );
 }
