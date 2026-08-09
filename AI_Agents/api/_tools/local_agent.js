@@ -281,10 +281,17 @@ function groundingIndex(fw, job, budget) {
   };
   let text = '### Reuse manifest (all domains — READ FIRST, reuse before creating)\n'
     + JSON.stringify(overview, null, 2);
-  const key = String(resolveDomain(fw, job).base || '').toLowerCase();
-  const shard = key ? safeRead(path.join(fw, '.ai-memory', 'domains', `${key}.json`), Math.max(2000, budget)) : '';
+  // Find the shard that owns the resolved spec/page/module (shards are grouped by domain,
+  // so a spec may live in a shard named after its Page/Module, not its own basename).
+  const dom = resolveDomain(fw, job);
+  const owns = (man.domains || []).find((d) =>
+    (d.specs || []).includes(dom.specRel) ||
+    (d.pages || []).includes(dom.pageRel) ||
+    (d.modules || []).includes(dom.moduleRel));
+  const shardRel = owns ? owns.shard : `.ai-memory/domains/${String(dom.base || '').toLowerCase()}.json`;
+  const shard = shardRel ? safeRead(path.join(fw, shardRel), Math.max(2000, budget)) : '';
   if (shard) {
-    text += `\n\n### Domain shard "${key}" (existing locators/methods/tests to REUSE or EXTEND — do NOT recreate)\n` + shard;
+    text += `\n\n### Domain shard "${owns ? owns.domain : dom.base}" (existing locators/methods/tests to REUSE or EXTEND — do NOT recreate)\n` + shard;
   }
   return text;
 }
@@ -300,16 +307,27 @@ function caseCoveredAnywhere(fw, tc) {
   if (!fw || !fs.existsSync(fw)) return '';
   const man = readManifest(fw);
   if (man && man.testIndex) {
+    // testIndex values are ARRAYS ({domain,spec,title}[]) because TC ids are not globally
+    // unique. Match title-first (across every entry), then fall back to id + title overlap.
     const want = normalizeText(tc && tc.title);
     if (want.length >= 6) {
-      for (const e of Object.values(man.testIndex)) {
-        const have = normalizeText(e.title);
-        if (have.includes(want) || want.includes(have)) return e.spec;
+      for (const arr of Object.values(man.testIndex)) {
+        for (const e of (Array.isArray(arr) ? arr : [arr])) {
+          const have = normalizeText(e.title);
+          if (have.includes(want) || want.includes(have)) return e.spec;
+        }
       }
     }
     const rid = normId(tc && tc.id);
-    const hit = rid ? man.testIndex[rid] : null;
-    if (hit && titleOverlap(tc && tc.title, hit.title) >= 0.6) return hit.spec;
+    const arr = rid ? man.testIndex[rid] : null;
+    const list = arr ? (Array.isArray(arr) ? arr : [arr]) : [];
+    let best = null;
+    let bestScore = 0;
+    for (const e of list) {
+      const sc = titleOverlap(tc && tc.title, e.title);
+      if (sc > bestScore) { bestScore = sc; best = e; }
+    }
+    if (best && bestScore >= 0.6) return best.spec;
     return '';
   }
   for (const s of listSpecs(fw)) {
