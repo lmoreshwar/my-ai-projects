@@ -409,6 +409,7 @@ function buildGeneratePrompt(job, g, snapshot, existing) {
     '- Reuse existing pages/modules/locators/fixtures from the index and exemplars before adding anything new.',
     '- Group ALL cases into ONE domain spec (one test() per case). If an existing domain spec is shown above, ADD the new cases to it — do NOT create a parallel spec.',
     '- NEVER emit two test() blocks with the same test-case id. Each TC id appears exactly once. If a case id already exists in the shown spec, keep that one test as-is — do not add a second test for the same id, even with a different title.',
+    '- APPEND-ONLY: NEVER renumber, reorder, or change the id or title of any EXISTING test. Add the new case using EXACTLY the TC id given in the task, appended AFTER the existing tests. Every existing test keeps its exact id and title verbatim.',
     '- Locators: ONE semantic strategy per element by default (getByRole/getByLabel/getByPlaceholder; data-test only when no role/label). A SmartLocator fallback chain is allowed ONLY for a fragile element and MUST carry a `// reason:` note (max 3 strategies). No stacked speculative locators.',
     '- Data: use credentials(\'app\') for valid login and src/testdata/testData.json for other data. If new data is needed, emit an EXTENDED testData.json (config layer) preserving all existing keys.',
     '- NEVER truncate, abbreviate, or elide any file. Do not emit placeholders like `/* …trimmed… */`, `// ...`, or `…`. Every emitted file (especially JSON) MUST be its COMPLETE, valid content. JSON must parse (no comments) and keep every existing top-level key.',
@@ -472,6 +473,47 @@ function duplicateSpecIds(content) {
     if (seen.has(id)) dups.add(id); else seen.add(id);
   }
   return [...dups];
+}
+
+/** Next unused TC id given a set of existing ids. Keeps 3-digit zero-padding (TC_016). */
+function nextFreeTcId(existingIds) {
+  let max = 0;
+  for (const id of existingIds) {
+    const m = /(\d+)/.exec(id);
+    if (m) max = Math.max(max, parseInt(m[1], 10));
+  }
+  let n = max + 1;
+  let candidate = `TC_${String(n).padStart(3, '0')}`;
+  while (existingIds.has(candidate)) { n += 1; candidate = `TC_${String(n).padStart(3, '0')}`; }
+  return candidate;
+}
+
+/** Map each test's TC id → its normalized title, so we can detect renames/renumbers. */
+function specIdTitleMap(content) {
+  const map = new Map();
+  const re = /\btest\s*(?:\.\w+)?\s*\(\s*[`'"]\s*(TC[_-]?\d+[A-Za-z_]*)\s+([^`'"]*)/g;
+  let m;
+  while ((m = re.exec(content || '')) !== null) {
+    map.set(m[1].toUpperCase().replace(/-/g, '_'), normalizeText(m[2]));
+  }
+  return map;
+}
+
+/**
+ * Append-only integrity check: every test present in `oldSpec` must still exist in
+ * `newSpec` under the SAME id and (strongly overlapping) title. Returns a list of
+ * violations — a non-empty result means the LLM renumbered/renamed existing tests,
+ * which must be rejected (the spec is append-only).
+ */
+function renumberedTests(oldSpec, newSpec) {
+  const before = specIdTitleMap(oldSpec);
+  const after = specIdTitleMap(newSpec);
+  const problems = [];
+  for (const [id, title] of before) {
+    if (!after.has(id)) { problems.push(`${id} removed/renumbered`); continue; }
+    if (title && titleOverlap(title, after.get(id)) < 0.5) problems.push(`${id} retitled`);
+  }
+  return problems;
 }
 
 /**
@@ -908,6 +950,14 @@ async function generateAndRun(job, onLog) {
   log(`[local] Provider active — framework at ${fw}.`);
   const activeSkill = resolveSkill(job);
   log(`[local] Skill selected: ${job.skill || 'New Automation'} → grounding on ${activeSkill.tag} (mode: ${activeSkill.key}).`);
+  // READ-BEFORE contract: rebuild the reuse index from src/ BEFORE grounding. In a fresh
+  // CI checkout .ai-memory/ is gitignored (absent), so without this the index reads empty
+  // and reuse degrades (the agent re-creates Pages/Modules that already exist).
+  log('[local] Building reuse index from src/ (npm run index) before grounding…');
+  const preIdx = await refreshIndex(fw);
+  log(preIdx.ok
+    ? '[local] Reuse index built ✓ — capabilities.json is current for grounding.'
+    : '[local] Reuse index build failed (non-fatal) — grounding will fall back to persona/skills.');
   log('[local] Reading framework memory: AGENT.md + agent persona + active skill + pw-self-healing + capabilities index…');
   const grounding = readGrounding(fw, job);
   log(grounding.capabilities
@@ -952,8 +1002,10 @@ async function generateAndRun(job, onLog) {
       logs,
     };
   }
-  // Generate only the genuinely new cases (existing tests are preserved).
-  const requestedIds = newCases.map((c) => String(c.id || '').toUpperCase().replace(/-/g, '_')).filter(Boolean);
+  // Generate only the genuinely new cases (existing tests are preserved). requestedIds is
+  // filled with the ACTUAL id used per case — a colliding id is reassigned below, so this
+  // must reflect the real (post-reassignment) id for the completion check to be accurate.
+  const requestedIds = [];
   if (newCases.length) log(`[local] ${newCases.length} new case(s) to add: ${newCases.map((c) => c.id).join(', ')} (existing tests are preserved).`);
 
   // 1) Generate — ONE case per LLM call so each response stays small enough to
@@ -976,8 +1028,22 @@ async function generateAndRun(job, onLog) {
     log(`[local]   ${tag} ${w.path}${w.reason ? ` — ${w.reason}` : ''}`);
   };
   for (let i = 0; i < newCases.length; i++) {
-    const tc = newCases[i];
+    const tc = { ...newCases[i] };
     const existNow = findDomainFiles(fw, job); // reflects writes from earlier cases this run
+    const specNow = (existNow.find((e) => e.layer === 'spec') || {}).content || '';
+    const existingIds = new Set(specTestIds(specNow));
+    // COLLISION GUARD (root cause of renumbering): if the requested id already labels a
+    // DIFFERENT existing test, the LLM would be forced to renumber existing tests to keep
+    // ids unique. Deterministically reassign this new case to the next free id instead.
+    const wantId = String(tc.id || '').toUpperCase().replace(/-/g, '_');
+    if (wantId && existingIds.has(wantId)) {
+      const freeId = nextFreeTcId(existingIds);
+      log(`[local] ⚠ Requested id ${wantId} already exists as a different test — reassigning the new case to ${freeId} (existing tests are NEVER renumbered).`);
+      tc.id = freeId;
+    } else if (wantId) {
+      tc.id = wantId;
+    }
+    if (tc.id) requestedIds.push(String(tc.id).toUpperCase().replace(/-/g, '_'));
     log(`[local] Generating ${tc.id} "${tc.title || ''}" (${i + 1}/${newCases.length})…`);
     const genText = await llmGenerate(buildGeneratePrompt({ ...job, testCases: [tc] }, grounding, snapshot, existNow), buildSystemPrompt());
     let batch = sanitizeFiles(parseFiles(genText));
@@ -986,6 +1052,9 @@ async function generateAndRun(job, onLog) {
       if (f.layer !== 'spec') return true;
       const dups = duplicateSpecIds(f.content);
       if (dups.length) { log(`[local] ⚠ ${tc.id}: rejected spec ${f.rel} — duplicate id(s) ${dups.join(', ')}.`); return false; }
+      // APPEND-ONLY GUARD: reject a spec that renumbered/renamed any pre-existing test.
+      const renamed = renumberedTests(specNow, f.content);
+      if (renamed.length) { log(`[local] ⚠ ${tc.id}: rejected spec ${f.rel} — it altered existing test(s): ${renamed.join('; ')}. Existing tests must be preserved verbatim.`); return false; }
       return true;
     });
     if (batch.length === 0) continue;
