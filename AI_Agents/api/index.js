@@ -10,6 +10,7 @@ connectDB();
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { v4: uuidv4 } = require('uuid');
 
 const JiraTool = require('./_tools/jira_tool');
@@ -21,6 +22,12 @@ const app = express();
 
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
 app.use(express.json({ limit: '10mb' }));
+
+// Serve extracted CI report artifacts (Allure / Playwright HTML) statically so their
+// internal links and relative data fetches resolve correctly (they break in an iframe srcDoc).
+const REPORT_CACHE_DIR = path.join(os.tmpdir(), 'blast-report-cache');
+try { fs.mkdirSync(REPORT_CACHE_DIR, { recursive: true }); } catch { /* best effort */ }
+app.use('/report-cache', express.static(REPORT_CACHE_DIR));
 
 // Import and use Auth Routes
 const authRoutes = require('./routes/auth');
@@ -951,8 +958,34 @@ app.post('/github-parse-test-results', async (req, res) => {
         if (passed === 0 && testLinesPassed > 0) passed = testLinesPassed;
         if (failed === 0 && testLinesFailed > 0) failed = testLinesFailed;
 
-        console.log(`Test results parsed — Passed: ${passed}, Failed: ${failed}, Skipped: ${skipped}`);
-        return res.json({ status: 'success', passed, failed, skipped, total: passed + failed + skipped });
+        // Extract individual test names + status from Playwright list reporter lines (non-TTY).
+        // e.g. "  ✓  1 [desktop-chrome] › login.spec.ts:12:5 › TC_001 valid login (1.2s)"
+        //      "  ✘  2 [desktop-chrome] › login.spec.ts:20:5 › TC_002 invalid (856ms)"
+        //      "  -  3 [desktop-chrome] › cart.spec.ts:5:1 › TC_003 skipped"
+        const testMap = new Map();
+        const lineRe = /^\s*(✓|✔|✘|✗|×|✕|-)\s+(\d+)\s+(.+?)\s*$/;
+        for (const rawLine of allText.split('\n')) {
+            // GitHub log lines are prefixed with an ISO timestamp: "2024-...Z <content>"
+            const line = rawLine.replace(/^\S*Z\s/, '');
+            const m = line.match(lineRe);
+            if (!m) continue;
+            const symbol = m[1];
+            let rest = m[3];
+            let duration = '';
+            const durM = rest.match(/\s\((\d+(?:\.\d+)?(?:ms|s|m))\)\s*$/);
+            if (durM) { duration = durM[1]; rest = rest.slice(0, durM.index).trim(); }
+            const segments = rest.split('›').map(x => x.trim()).filter(Boolean);
+            const name = segments.length ? segments[segments.length - 1] : rest;
+            const file = segments.length > 1 ? segments[1].replace(/:\d+:\d+$/, '') : '';
+            const status = (symbol === '✓' || symbol === '✔') ? 'passed'
+                : (symbol === '-') ? 'skipped' : 'failed';
+            // Last occurrence wins (handles retries); keyed by full title
+            testMap.set(rest, { name, fullTitle: rest, file, status, duration });
+        }
+        const tests = [...testMap.values()];
+
+        console.log(`Test results parsed — Passed: ${passed}, Failed: ${failed}, Skipped: ${skipped}, Named: ${tests.length}`);
+        return res.json({ status: 'success', passed, failed, skipped, total: passed + failed + skipped, tests });
     } catch (error) {
         console.error('Log parse error:', error.response?.status, error.message);
         const msg = error.response ? `GitHub API ${error.response.status}: ${error.response.data?.message || 'Error'}` : error.message;
@@ -1010,7 +1043,62 @@ app.post('/github-download-artifact', async (req, res) => {
     }
 });
 
-// Extract report from artifact zip — prioritizes report.json, falls back to HTML
+// Extract a report artifact (Allure / Playwright HTML) to a temp dir and serve it
+// statically so its links + relative data fetches work in a new tab or an iframe.
+app.post('/github-serve-report', async (req, res) => {
+    try {
+        const { token, apiUrl, repo, artifactId } = req.body;
+        const axios = require('axios');
+        const PizZip = require('pizzip');
+        const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
+        const authHeader = `Bearer ${token}`;
+
+        const outDir = path.join(REPORT_CACHE_DIR, String(artifactId));
+        const publicUrl = `/report-cache/${artifactId}/index.html`;
+
+        // Reuse an already-extracted report
+        if (fs.existsSync(path.join(outDir, 'index.html'))) {
+            return res.json({ status: 'success', url: publicUrl, cached: true });
+        }
+
+        console.log(`Serving report artifact ${artifactId}...`);
+        const dlRes = await axios.get(`${baseUrl}/repos/${repo}/actions/artifacts/${artifactId}/zip`, {
+            headers: { 'Authorization': authHeader, 'Accept': 'application/vnd.github+json' },
+            timeout: 120000, responseType: 'arraybuffer', maxRedirects: 5,
+        });
+
+        const zip = new PizZip(dlRes.data);
+        const entries = Object.keys(zip.files);
+
+        // Locate index.html and strip its parent prefix so it lands at outDir root
+        const indexEntry = entries.find(f => !zip.files[f].dir && f.toLowerCase().endsWith('index.html'));
+        if (!indexEntry) {
+            return res.status(404).json({ status: 'error', message: 'No index.html found in this artifact.' });
+        }
+        const rootPrefix = indexEntry.slice(0, indexEntry.toLowerCase().lastIndexOf('index.html'));
+
+        fs.mkdirSync(outDir, { recursive: true });
+        const outDirNorm = path.normalize(outDir + path.sep);
+        for (const entry of entries) {
+            const file = zip.files[entry];
+            if (file.dir) continue;
+            const rel = entry.startsWith(rootPrefix) ? entry.slice(rootPrefix.length) : entry;
+            if (!rel) continue;
+            const dest = path.normalize(path.join(outDir, rel));
+            if (!dest.startsWith(outDirNorm)) continue; // zip-slip guard
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.writeFileSync(dest, file.asNodeBuffer());
+        }
+
+        if (!fs.existsSync(path.join(outDir, 'index.html'))) {
+            return res.status(404).json({ status: 'error', message: 'index.html missing after extraction.' });
+        }
+        return res.json({ status: 'success', url: publicUrl, cached: false });
+    } catch (error) {
+        const msg = error.response ? `GitHub API ${error.response.status}: ${error.response.data?.message || 'Error'}` : error.message;
+        return res.status(400).json({ status: 'error', message: msg });
+    }
+});
 app.post('/github-extract-html-report', async (req, res) => {
     try {
         const { token, apiUrl, repo, artifactId } = req.body;
