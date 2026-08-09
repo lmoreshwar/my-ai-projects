@@ -954,6 +954,7 @@ async function generateAndRun(job, onLog) {
   }
   // Only ask the LLM for the genuinely new cases so it can't re-add existing ones.
   const genJob = newCases.length ? { ...job, testCases: newCases } : job;
+  const requestedIds = newCases.map((c) => String(c.id || '').toUpperCase().replace(/-/g, '_')).filter(Boolean);
   if (newCases.length) log(`[local] ${newCases.length} new case(s) to add: ${newCases.map((c) => c.id).join(', ')} (existing tests are preserved).`);
 
   // 1) Generate
@@ -961,8 +962,8 @@ async function generateAndRun(job, onLog) {
   const genText = await llmGenerate(buildGeneratePrompt(genJob, grounding, snapshot, existing), buildSystemPrompt());
   let files = sanitizeFiles(parseFiles(genText));
   if (files.length === 0) {
-    log('[local] LLM returned no parseable files. Aborting.');
-    return { generatedFiles: [], reusedFiles: [], executionStatus: 'FAILED', reportUrl: '', logs };
+    log('[local] LLM returned no parseable files. Aborting — no PR (requested cases not automated).');
+    return { generatedFiles: [], reusedFiles: [], executionStatus: 'FAILED', reportUrl: '', requestedCases: requestedIds, missingCases: requestedIds, verified: false, logs };
   }
   // Safety net: never write a spec that contains duplicate test-case ids.
   files = files.filter((f) => {
@@ -1009,8 +1010,8 @@ async function generateAndRun(job, onLog) {
 
   const specPaths = () => written.filter((w) => w.layer === 'spec').map((w) => w.path);
   if (specPaths().length === 0) {
-    log('[local] No spec file generated.');
-    return { generatedFiles: written, reusedFiles: [], executionStatus: 'FAILED', reportUrl: '', logs };
+    log('[local] No spec file generated (LLM output likely truncated) — requested case(s) NOT automated. Verification FAILED; no PR will be opened.');
+    return { generatedFiles: written, reusedFiles: [], executionStatus: 'FAILED', reportUrl: '', requestedCases: requestedIds, missingCases: requestedIds, verified: false, logs };
   }
 
   // 2) Run
@@ -1048,7 +1049,6 @@ async function generateAndRun(job, onLog) {
   // 5) Completion check — every requested new case MUST be present in the final
   // spec on disk. If the LLM dropped a case (or the write was protected), report
   // it so the caller can refuse to open a PR for cases that were never automated.
-  const requestedIds = newCases.map((c) => String(c.id || '').toUpperCase().replace(/-/g, '_')).filter(Boolean);
   const finalSpecText = specPaths().map((p) => safeRead(path.join(fw, p), 40000)).join('\n');
   const presentIds = new Set(specTestIds(finalSpecText));
   const missingCases = requestedIds.filter((id) => !presentIds.has(id));
