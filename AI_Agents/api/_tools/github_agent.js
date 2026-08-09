@@ -425,12 +425,20 @@ async function getWorkflowRunProgress(job) {
     const substantive = allSteps.filter((s) => !isTeardown(s.name));
     const substantiveDone = substantive.length > 0 && substantive.every((s) => s.status === 'completed');
     const substantiveFailed = substantive.some((s) => ['failure', 'timed_out', 'cancelled'].includes(s.conclusion));
-    const done = st === 'completed' || substantiveDone;
+    let done = st === 'completed' || substantiveDone;
     const effConc = st === 'completed' ? conc : (substantiveFailed ? 'failure' : 'success');
 
-    const status = !done ? 'Executing' : effConc === 'success' ? 'Passed' : 'Failed';
+    // The BLAST gate is the Pull Request. As soon as it exists, the job is functionally
+    // done from the app's perspective — surface it and the Merge action without waiting
+    // for GitHub's teardown steps (which is what made the UI look "stuck").
+    const pr = await findBlastPr(job);
+    if (pr) done = true;
+
+    let status = !done ? 'Executing' : effConc === 'success' ? 'Passed' : 'Failed';
+    if (pr && !pr.merged) status = 'PushedToGate';
     if (done) {
       lines.push('', effConc === 'success' ? '✓ Run completed successfully.' : `✗ Run ${effConc || 'failed'}.`);
+      if (pr) lines.push(pr.merged ? `✓ Pull Request #${pr.number} merged.` : `⏸ Pull Request #${pr.number} opened — waiting for you to merge.`);
     }
 
     // Pull the parsed report summary once the run is functionally done (only if not cached).
@@ -441,7 +449,10 @@ async function getWorkflowRunProgress(job) {
 
     return {
       status,
-      prUrl: job.prUrl || '',
+      prUrl: (pr && pr.url) || job.prUrl || '',
+      prNumber: pr ? pr.number : (job.prNumber || null),
+      branch: pr ? pr.branch : (job.branch || ''),
+      prMerged: pr ? pr.merged : false,
       checksStatus: effConc || (done ? '' : 'pending'),
       executionStatus: effConc === 'success' ? 'PASSED' : effConc === 'failure' ? 'FAILED' : '',
       runId,
@@ -456,6 +467,41 @@ async function getWorkflowRunProgress(job) {
 
 function runData_jobs(data) {
   return Array.isArray(data && data.jobs) ? data.jobs : [];
+}
+
+/** Find the open BLAST pull request for a job's auto branch. Returns { url, number, branch } | null. */
+async function findBlastPr(job) {
+  const { owner, repo } = repoConfig();
+  const branch = `blast/auto-${job.jobId}`;
+  try {
+    const { data } = await axios.get(
+      `${API}/repos/${owner}/${repo}/pulls?head=${encodeURIComponent(`${owner}:${branch}`)}&state=all&per_page=5`,
+      { headers: headers(), timeout: 12000 },
+    );
+    const pr = (data || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+    if (!pr) return null;
+    return { url: pr.html_url, number: pr.number, branch, state: pr.state, merged: !!pr.merged_at };
+  } catch {
+    return null;
+  }
+}
+
+/** Merge the BLAST pull request for a job. Returns { merged, message, prUrl }. */
+async function mergePr(job) {
+  const { owner, repo } = repoConfig();
+  const pr = await findBlastPr(job);
+  if (!pr) return { merged: false, message: 'No pull request found for this job yet.' };
+  if (pr.merged) return { merged: true, message: 'Pull request already merged.', prUrl: pr.url };
+  try {
+    await axios.put(
+      `${API}/repos/${owner}/${repo}/pulls/${pr.number}/merge`,
+      { merge_method: 'squash', commit_title: `[BLAST] merge ${job.jobId} automated tests (#${pr.number})` },
+      { headers: headers(), timeout: 15000 },
+    );
+    return { merged: true, message: 'Pull request merged.', prUrl: pr.url };
+  } catch (err) {
+    return { merged: false, message: friendlyError(err, 'merge PR').message, prUrl: pr.url };
+  }
 }
 
 /** Read a single file's UTF-8 content from the framework repo. Returns null if missing. */
@@ -534,6 +580,8 @@ module.exports = {
   dispatchWorkflow,
   getWorkflowRunProgress,
   getRunReportSummary,
+  findBlastPr,
+  mergePr,
   getFileContent,
   listDir,
 };

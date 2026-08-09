@@ -99,9 +99,10 @@ export default function CustomSelect({
                 key={opt.value ?? i}
                 role="option"
                 aria-selected={isActive}
-                onClick={() => {
-                  onChange(opt.value);
+                onClick={(e) => {
+                  e.stopPropagation();
                   setOpen(false);
+                  onChange(opt.value);
                 }}
                 className={`
                   px-4 py-2.5 cursor-pointer transition-colors text-sm

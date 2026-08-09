@@ -319,6 +319,9 @@ router.get('/jobs/:jobId/progress', auth, async (req, res) => {
       const progress = await orchestrator.requestProgress(job);
       if (progress.status) job.status = progress.status;
       if (progress.prUrl) job.prUrl = progress.prUrl;
+      if (progress.prNumber) job.prNumber = progress.prNumber;
+      if (progress.branch) job.branch = progress.branch;
+      if (progress.prMerged !== undefined) job.prMerged = progress.prMerged;
       if (progress.checksStatus !== undefined) job.checksStatus = progress.checksStatus;
       if (progress.executionStatus !== undefined) job.executionStatus = progress.executionStatus;
       if (progress.runId) job.runId = progress.runId;
@@ -372,10 +375,34 @@ router.post('/jobs/:jobId/push-gate', auth, async (req, res) => {
   }
 });
 
+// @route   POST /api/automation/jobs/:jobId/merge-pr
+// @desc    Merge the BLAST pull request for a cloud (GitHub Actions) job
+router.post('/jobs/:jobId/merge-pr', auth, async (req, res) => {
+  try {
+    const job = await findJob(req.params.jobId);
+    if (!job) return res.status(404).json({ msg: 'Job not found' });
+    if (job.provider !== 'github-actions') {
+      return res.status(400).json({ msg: 'Merge is only available for cloud (GitHub Actions) jobs.' });
+    }
+    const result = await githubAgent.mergePr(job);
+    if (result.prUrl) job.prUrl = result.prUrl;
+    if (result.merged) {
+      job.prMerged = true;
+      job.status = 'Merged';
+    }
+    job.logs = [...(job.logs || []), `[merge] ${result.message}`];
+    const saved = await persist(job);
+    if (!result.merged) return res.status(400).json({ ...saved, msg: result.message });
+    res.json(saved);
+  } catch (err) {
+    console.error('merge-pr error:', err.message);
+    res.status(500).json({ msg: err.message || 'Server Error' });
+  }
+});
+
 // @route   POST /api/automation/jobs/:jobId/run-copilot
 // @desc    Hand the job to the LOCAL VS Code Copilot agent via a generated .bat
-router.post('/jobs/:jobId/run-copilot', auth, async (req, res) => {
-  try {
+router.post('/jobs/:jobId/run-copilot', auth, async (req, res) => {  try {
     const job = await findJob(req.params.jobId);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
 

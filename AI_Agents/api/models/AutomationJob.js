@@ -11,6 +11,7 @@ const JOB_STATUSES = [
   'Passed',
   'Failed',
   'PushedToGate',
+  'Merged',
   'Completed',
 ];
 
@@ -91,6 +92,8 @@ const AutomationJobSchema = new mongoose.Schema({
   reportSummary: { type: mongoose.Schema.Types.Mixed, default: null },  // parsed Playwright results for the in-app report
   prUrl: { type: String, default: '' },
   branch: { type: String, default: '' },            // git branch created on push-to-gate
+  prNumber: { type: Number, default: null },        // BLAST pull request number (cloud gate)
+  prMerged: { type: Boolean, default: false },
   logs: [{ type: String }],
   error: { type: String, default: '' },
 

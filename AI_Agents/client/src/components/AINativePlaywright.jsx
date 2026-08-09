@@ -34,6 +34,7 @@ const STATUS_STYLE = {
   Passed: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
   Failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
   PushedToGate: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
+  Merged: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
   Completed: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
 };
 
@@ -48,6 +49,7 @@ const STATUS_LABEL = {
   WaitingForApproval: 'Waiting for approval',
   HandedToCopilot: 'Handed to Copilot',
   PushedToGate: 'Pull Request raised',
+  Merged: 'Merged to main',
 };
 
 function StatusBadge({ status }) {
@@ -206,9 +208,6 @@ function ReportModal({ job, onClose }) {
 
 const SKILLS = ['New Automation', 'Modify Automation', 'Debug', 'Self Healing', 'Visual Testing'];
 const ENVIRONMENTS = ['QA', 'UAT', 'Production'];
-const BROWSERS = ['Chrome', 'Edge', 'Firefox', 'Safari', 'All'];
-const TEST_SCOPES = ['Generated only', 'Smoke'];
-const PARALLEL_MODES = ['Auto', 'Serial'];
 const EXECUTION_MODES = [
   { value: 'GenerateOnly', label: 'Generate Only' },
   { value: 'GenerateAndExecute', label: 'Generate and Execute' },
@@ -328,9 +327,6 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
     agent: 'AI Native Playwright Engineer',
     skill: 'New Automation',
     executionMode: 'GenerateAndExecute',
-    browser: 'Chrome',
-    testScope: 'Generated only',
-    parallel: 'Auto',
     comments: '',
   });
 
@@ -608,6 +604,18 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
     setBusy('progress');
     try {
       const job = await api(apiBase, `/jobs/${activeJob.jobId}/progress`);
+      setActiveJob(job);
+      await loadJobs();
+    } catch (e) { setError(e.message); }
+    setBusy('');
+  };
+
+  const mergePr = async () => {
+    if (!activeJob) return;
+    if (!window.confirm(`Merge the BLAST pull request${activeJob.prNumber ? ` #${activeJob.prNumber}` : ''} into main?`)) return;
+    setBusy('merge');
+    try {
+      const job = await api(apiBase, `/jobs/${activeJob.jobId}/merge-pr`, { method: 'POST' });
       setActiveJob(job);
       await loadJobs();
     } catch (e) { setError(e.message); }
@@ -934,15 +942,16 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
             </div>
           )}
 
-          {/* Report + Push to Gate */}
-          {(activeJob.status === 'Passed' || activeJob.status === 'PushedToGate') && (
+          {/* Report + Push to Gate / Merge */}
+          {(activeJob.status === 'Passed' || activeJob.status === 'PushedToGate' || activeJob.status === 'Merged') && (
             <div className="flex flex-wrap items-center gap-2 pt-1">
               {activeJob.reportUrl && (
                 <a href={reportHref(activeJob.reportUrl)} target="_blank" rel="noreferrer" className="text-sm text-app-red underline flex items-center gap-1">
                   <span className="material-symbols-outlined text-base">description</span> View HTML Report ↗
                 </a>
               )}
-              {activeJob.status === 'Passed' && (
+              {/* Local/github path: raise the PR from the app. */}
+              {activeJob.status === 'Passed' && activeJob.provider !== 'github-actions' && (
                 <button onClick={pushToGate} disabled={busy === 'gate'} title="Push the passing tests to a branch and open a Pull Request for review" className="px-4 py-2 rounded-sm bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1.5">
                   <span className="material-symbols-outlined text-lg">{busy === 'gate' ? 'progress_activity' : 'merge'}</span>
                   <span className={busy === 'gate' ? 'animate-pulse' : ''}>{busy === 'gate' ? 'Raising Pull Request…' : 'Raise Pull Request'}</span>
@@ -952,6 +961,18 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
                 <a href={activeJob.prUrl} target="_blank" rel="noreferrer" className="text-sm text-app-red underline">
                   Open PR (compare{activeJob.branch ? ` · ${activeJob.branch}` : ''}) →
                 </a>
+              )}
+              {/* Cloud path: the PR is the gate — merge it straight from the app. */}
+              {activeJob.prUrl && !activeJob.prMerged && activeJob.status !== 'Merged' && (
+                <button onClick={mergePr} disabled={busy === 'merge'} title="Merge the BLAST pull request into main" className="px-4 py-2 rounded-sm bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 flex items-center gap-1.5">
+                  <span className={`material-symbols-outlined text-lg ${busy === 'merge' ? 'animate-spin' : ''}`}>{busy === 'merge' ? 'progress_activity' : 'merge_type'}</span>
+                  <span className={busy === 'merge' ? 'animate-pulse' : ''}>{busy === 'merge' ? 'Merging…' : `Merge PR${activeJob.prNumber ? ` #${activeJob.prNumber}` : ''}`}</span>
+                </button>
+              )}
+              {(activeJob.prMerged || activeJob.status === 'Merged') && (
+                <span className="inline-flex items-center gap-1 text-sm font-semibold text-green-600 dark:text-green-400">
+                  <span className="material-symbols-outlined text-lg">check_circle</span> Merged into main
+                </span>
               )}
             </div>
           )}
@@ -1008,29 +1029,6 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
                 <Field label="Execution Mode">
                   <CustomSelect value={form.executionMode} onChange={(v) => setF('executionMode', v)} options={EXECUTION_MODES} />
                 </Field>
-              </div>
-
-              <div className="rounded-sm border border-outline-variant/40 dark:border-slate-700 p-3 space-y-3">
-                <p className="text-[11px] font-bold uppercase tracking-wide text-secondary dark:text-slate-400 flex items-center gap-1">
-                  <span className="material-symbols-outlined text-sm text-app-red">tune</span>Run Configuration
-                </p>
-                <div className="grid grid-cols-3 gap-3">
-                  <Field label="Browser">
-                    <CustomSelect value={form.browser} onChange={(v) => setF('browser', v)} options={BROWSERS} />
-                  </Field>
-                  <Field label="Test Scope">
-                    <CustomSelect value={form.testScope} onChange={(v) => setF('testScope', v)} options={TEST_SCOPES} />
-                  </Field>
-                  <Field label="Parallel">
-                    <CustomSelect value={form.parallel} onChange={(v) => setF('parallel', v)} options={PARALLEL_MODES} />
-                  </Field>
-                </div>
-                <p className="text-[11px] text-on-surface-variant dark:text-slate-500">
-                  {form.testScope === 'Smoke'
-                    ? 'Runs the whole @Smoke suite'
-                    : 'Runs only the newly generated spec'} on {form.browser === 'All' ? 'all browsers' : form.browser}
-                  {form.parallel === 'Serial' ? ', one test at a time.' : ', in parallel.'}
-                </p>
               </div>
 
               <Field label="Comments">
