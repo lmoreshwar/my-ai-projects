@@ -442,6 +442,15 @@ async function getWorkflowRunProgress(job) {
     const verified = !result || result.verified !== false;
     const missingCases = (result && result.missingCases) || [];
     const changedPaths = (result && result.changedPaths) || [];
+
+    // If the run has functionally finished with NO PR, the true pass/fail lives in the
+    // blast-ci-result.json artifact. If we can't read it yet AND GitHub hasn't fully
+    // finalized the run (and it didn't hard-fail), stay non-terminal so the next poll can
+    // classify correctly — this prevents a FALSE "Passed" from a not-yet-uploaded/indexed
+    // artifact, which would otherwise stop polling and freeze the run on the wrong status.
+    const awaitingResult = done && !pr && !result && st !== 'completed' && effConc !== 'failure';
+    if (awaitingResult) done = false;
+
     const gateFailed = done && !pr && (!verified || effConc === 'failure');
 
     let status = !done ? 'Executing' : (effConc === 'success' && !gateFailed) ? 'Passed' : 'Failed';
@@ -456,6 +465,8 @@ async function getWorkflowRunProgress(job) {
         if (pr) lines.push(pr.merged ? `✓ Pull Request #${pr.number} merged.` : `⏸ Pull Request #${pr.number} opened — waiting for you to merge.`);
         else if (verified && changedPaths.length === 0) lines.push('ℹ All requested case(s) already automated — nothing new to add (reuse). No Pull Request needed.');
       }
+    } else if (awaitingResult) {
+      lines.push('', '⟳ Run finished — finalizing results…');
     }
 
     // Pull the parsed report summary once the run is functionally done (only if not cached).

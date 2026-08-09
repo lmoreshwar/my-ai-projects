@@ -374,9 +374,14 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
   const activeStatus = activeJob?.status;
   useEffect(() => {
     if (!activeJobId) return undefined;
-    const fast = activeStatus === 'Generating' || activeStatus === 'Executing';
+    // Poll until the job reaches a terminal state. Anything non-terminal keeps streaming so
+    // the console never freezes mid-run. HandedToCopilot has its own SSE effect; approval /
+    // pending states wait on the user, so they don't poll.
+    const TERMINAL = ['Passed', 'Failed', 'Merged', 'Completed'];
+    const NO_POLL = ['WaitingForApproval', 'Pending', 'HandedToCopilot'];
+    const shouldPoll = activeStatus && !TERMINAL.includes(activeStatus) && !NO_POLL.includes(activeStatus);
     const slow = activeStatus === 'PushedToGate';
-    if (!fast && !slow) return undefined;
+    if (!shouldPoll) return undefined;
     let active = true;
     const tick = async () => {
       try {
@@ -386,7 +391,7 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
         setJobs((prev) => (Array.isArray(prev) ? prev.map((j) => (j.jobId === job.jobId ? job : j)) : prev));
       } catch { /* keep polling */ }
     };
-    const id = setInterval(tick, fast ? 2000 : 5000);
+    const id = setInterval(tick, slow ? 5000 : 2000);
     return () => { active = false; clearInterval(id); };
   }, [activeJobId, activeStatus, apiBase]);
 
