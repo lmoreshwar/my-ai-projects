@@ -294,7 +294,7 @@ async function runGenerationInBackground(job) {
       job.executionStatus = result.executionStatus || '';
       // Map the framework-relative report to the URL the API serves it at.
       job.reportUrl = result.reportUrl ? '/automation-report/index.html' : '';
-      if (result.reportSummary) { job.reportSummary = result.reportSummary; job.markModified('reportSummary'); }
+      if (result.reportSummary) { job.reportSummary = result.reportSummary; }
       job.status = result.executionStatus === 'PASSED' ? 'Passed' : 'Failed';
     }
   } catch (genErr) {
@@ -327,10 +327,10 @@ router.get('/jobs/:jobId/progress', auth, async (req, res) => {
       if (progress.checksStatus !== undefined) job.checksStatus = progress.checksStatus;
       if (progress.executionStatus !== undefined) job.executionStatus = progress.executionStatus;
       if (progress.gateFailed !== undefined) job.gateFailed = progress.gateFailed;
-      if (Array.isArray(progress.missingCases)) { job.missingCases = progress.missingCases; job.markModified('missingCases'); }
+      if (Array.isArray(progress.missingCases)) { job.missingCases = progress.missingCases; }
       if (progress.runId) job.runId = progress.runId;
       if (progress.runHtmlUrl) job.reportUrl = progress.runHtmlUrl;
-      if (progress.reportSummary) { job.reportSummary = progress.reportSummary; job.markModified('reportSummary'); }
+      if (progress.reportSummary) { job.reportSummary = progress.reportSummary; }
       if (Array.isArray(progress.snapshotLogs)) job.logs = progress.snapshotLogs; // full replace — no dup
       const savedCloud = await persist(job);
       return res.json(savedCloud);
