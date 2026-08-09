@@ -613,6 +613,60 @@ function renumberedTests(oldSpec, newSpec) {
 }
 
 /**
+ * Split a spec into its test blocks: [{ id, title, body }]. Braces are matched so
+ * nested object/arrow/template braces inside a test don't end the block early.
+ */
+function specTestBlocks(content) {
+  const text = content || '';
+  const blocks = [];
+  const head = /\btest\s*(?:\.\w+)?\s*\(\s*([`'"])([\s\S]*?)\1\s*,/g;
+  let m;
+  while ((m = head.exec(text)) !== null) {
+    const title = m[2];
+    // The body brace is the `{` AFTER the callback's `=>`, not the first `{` (which
+    // would be the `({ loginModule, page })` parameter-destructuring brace).
+    const arrow = text.indexOf('=>', head.lastIndex);
+    const braceStart = text.indexOf('{', arrow === -1 ? head.lastIndex : arrow);
+    if (braceStart === -1) continue;
+    let depth = 0;
+    let i = braceStart;
+    for (; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) { i++; break; }
+    }
+    const idm = title.match(/TC[_-]?\d+/i);
+    blocks.push({ id: idm ? normId(idm[0]) : '', title, body: text.slice(braceStart + 1, i - 1) });
+  }
+  return blocks;
+}
+
+/**
+ * Behavioral signature of a test body — captures WHAT the test does, independent of
+ * its id/title/wording, so two cases that drive the same workflow collapse to the
+ * same key. Primary key = the ordered workflow-layer (*Module) calls with normalized
+ * args (same method + same test-data key + same field ⇒ same signature). Pure UI-state
+ * tests have no module action, so they fall back to their sorted assertion targets to
+ * avoid colliding two unrelated page-only checks.
+ */
+function testSignature(body) {
+  const text = body || '';
+  const actions = [];
+  const aRe = /\b\w+Module\.(\w+)\s*\(([^)]*)\)/g;
+  let m;
+  while ((m = aRe.exec(text)) !== null) {
+    actions.push(`${m[1]}(${m[2].replace(/\s+/g, '').replace(/['"`]/g, '"')})`);
+  }
+  if (actions.length) return 'ACT:' + actions.join('>');
+  const asserts = new Set();
+  const eRe = /expect\(\s*([\w.]+(?:\([^)]*\))?)\s*\)\s*\.\s*(not\s*\.\s*)?(\w+)/g;
+  while ((m = eRe.exec(text)) !== null) {
+    asserts.add(`${m[1].replace(/\s+/g, '')}|${m[2] ? 'not.' : ''}${m[3]}`);
+  }
+  return 'ASRT:' + [...asserts].sort().join('&');
+}
+
+/**
  * Count the "significant members" of a file so we can tell whether an LLM
  * regeneration ADDS to an existing file (safe) or SHRINKS it (destructive —
  * the LLM dropped existing tests/locators/methods).
@@ -1207,12 +1261,57 @@ async function generateAndRun(job, onLog) {
       return true;
     });
     if (batch.length === 0) continue;
+    // SEMANTIC (behavioral) DEDUP: a new case whose id/title differ but which drives the
+    // SAME workflow actions (same module method + same test-data key + same field) as an
+    // existing test adds no coverage. Title matching alone misses these (e.g. "SQL injection
+    // ... in username field" vs "Security: SQL Injection ... on username field"). Compare
+    // behavioral signatures and drop the case if the spec already covers it — verbatim.
+    let dupHit = null;
+    for (const f of batch.filter((b) => b.layer === 'spec')) {
+      const prior = safeRead(path.join(fw, f.rel), 200000);
+      const priorBlocks = specTestBlocks(prior);
+      const priorSigs = new Map(priorBlocks.map((b) => [testSignature(b.body), b]));
+      const newBlocks = specTestBlocks(f.content);
+      const mine = newBlocks.find((b) => b.id === normId(tc.id))
+        || newBlocks.find((b) => !priorBlocks.some((p) => p.id === b.id));
+      if (!mine) continue;
+      const hit = priorSigs.get(testSignature(mine.body));
+      if (hit) { dupHit = { spec: f.rel, hit }; break; }
+    }
+    if (dupHit) {
+      log(`[local] ⏭ Semantic duplicate: ${tc.id} "${tc.title || ''}" performs the same actions as existing ${dupHit.hit.id || dupHit.hit.title} in ${dupHit.spec} — skipping (no new coverage; existing tests unchanged).`);
+      const pushed = String(tc.id).toUpperCase().replace(/-/g, '_');
+      const ri = requestedIds.lastIndexOf(pushed);
+      if (ri >= 0) requestedIds.splice(ri, 1);
+      continue;
+    }
     const wr = writeFiles(fw, batch);
     allBackups.push(...wr.backups);
     wr.written.forEach((w) => { recordWrite(w); logWrite(w); });
     files = batch;
   }
   if (written.length === 0) {
+    // All requested cases collapsed to existing coverage (semantic duplicates) — nothing
+    // new to add. Treat as reuse: re-run the existing spec, open no PR (no file changed).
+    if (requestedIds.length === 0 && domSpec) {
+      log('[local] All requested case(s) already covered by existing tests (semantic duplicates) — nothing new to generate. Reusing existing tests.');
+      log(`[local] Running (reuse-only): ${domSpec.rel}`);
+      const reuseRun = await runPlaywright(fw, [domSpec.rel], job, { applyScope: true });
+      log(reuseRun.passed ? '[local] Run PASSED.' : '[local] Run FAILED.');
+      await refreshIndex(fw);
+      return {
+        generatedFiles: existing.map((e) => ({ path: e.rel, layer: e.layer, reused: true, action: 'reused' })),
+        reusedFiles: existing.map((e) => e.rel),
+        backups: allBackups,
+        executionStatus: reuseRun.passed ? 'PASSED' : 'FAILED',
+        reportUrl: 'playwright-report/index.html',
+        reportSummary: reuseRun.summary || null,
+        requestedCases: [],
+        missingCases: [],
+        verified: true,
+        logs,
+      };
+    }
     log('[local] Nothing written after generation — requested case(s) not automated. No PR.');
     return { generatedFiles: [], reusedFiles: [], executionStatus: 'FAILED', reportUrl: '', requestedCases: requestedIds, missingCases: requestedIds, verified: false, logs };
   }
