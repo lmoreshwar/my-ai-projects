@@ -712,11 +712,6 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
                 {polling ? 'sync' : activeRun?.status === 'completed' && activeRun?.conclusion === 'success' ? 'check_circle' : activeRun?.status === 'completed' && activeRun?.conclusion === 'failure' ? 'cancel' : activeRun?.status === 'in_progress' ? 'sync' : 'pending'}
               </span>
               <h3 className="font-bold text-on-surface dark:text-white uppercase tracking-widest text-xs">Real-Time Execution</h3>
-              {polling && (
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-red-500/10 text-red-500 text-[10px] font-black rounded-full uppercase tracking-wide">
-                  <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse"></span> Live
-                </span>
-              )}
             </div>
             {activeRun && (
               <span className="px-3 py-1 bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 text-[10px] font-black rounded-full uppercase tracking-tight">
@@ -842,13 +837,10 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
             <div className="p-8 relative">
               {/* Graphical Report Dashboard */}
               {showReport && (() => {
-                // Test names/status come from the log parser (cheap, no tokens); artifact-extracted
-                // details (errors, screenshots) are used when available.
-                const testsFromReport = (reportData?.tests && reportData.tests.length) ? reportData.tests : (testResults?.tests || []);
+                // Use testResults (from log parsing) as authoritative source for counts
+                // reportData provides individual test details (errors, stack traces) from artifact
+                const testsFromReport = reportData?.tests || [];
                 const byFileFromReport = reportData?.byFile || {};
-                // The report artifact to serve/download for the "Full Report" view (Allure preferred).
-                const reportArtifact = artifacts.find(a => a.name.toLowerCase().includes('allure'))
-                  || artifacts.find(a => /report|playwright|html/.test(a.name.toLowerCase()));
                 
                 // Summary always uses testResults (log-parsed), not artifact data
                 const s = { passed: passedCount, failed: failedCount, skipped: skippedCount, flaky: 0, total: passedCount + failedCount + skippedCount, totalDuration: '', totalDurationMs: 0 };
@@ -883,8 +875,8 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
                       <button onClick={() => setReportView('dashboard')} className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide rounded-lg transition-all ${reportView === 'dashboard' ? 'bg-indigo-500 text-white shadow-md' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
                         <span className="material-symbols-outlined text-sm align-middle mr-1">bar_chart</span>Dashboard
                       </button>
-                      <button onClick={() => { setReportView('raw'); if (reportArtifact) handleViewAllure(reportArtifact.id); }} className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide rounded-lg transition-all ${reportView === 'raw' ? 'bg-indigo-500 text-white shadow-md' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
-                        <span className="material-symbols-outlined text-sm align-middle mr-1">description</span>Full Report
+                      <button onClick={() => setReportView('raw')} className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-wide rounded-lg transition-all ${reportView === 'raw' ? 'bg-indigo-500 text-white shadow-md' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+                        <span className="material-symbols-outlined text-sm align-middle mr-1">code</span>Raw HTML
                       </button>
                       {artifacts.length > 0 && (
                         <button
@@ -1178,56 +1170,67 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
                       ) : (
                         <div className="bg-white dark:bg-slate-800 rounded-2xl border border-outline-variant/20 p-8 text-center">
                           <span className="material-symbols-outlined text-4xl text-indigo-300 dark:text-indigo-700 mb-3">info</span>
-                          <p className="text-sm text-slate-500 font-medium mb-4">Individual test details aren't available yet. Open the full interactive report for the complete breakdown.</p>
-                          <button onClick={() => { setReportView('raw'); const ra = artifacts.find(a => a.name.toLowerCase().includes('allure')) || artifacts.find(a => /report|playwright|html/.test(a.name.toLowerCase())); if (ra) handleViewAllure(ra.id); }} className="px-5 py-2.5 bg-indigo-500 text-white text-xs font-bold rounded-lg hover:bg-indigo-600 transition-colors flex items-center gap-2 mx-auto">
-                            <span className="material-symbols-outlined text-sm">description</span>
-                            View Full Report
+                          <p className="text-sm text-slate-500 font-medium mb-4">Individual test details could not be extracted. View the raw HTML report for full details.</p>
+                          <button onClick={() => setReportView('raw')} className="px-5 py-2.5 bg-indigo-500 text-white text-xs font-bold rounded-lg hover:bg-indigo-600 transition-colors flex items-center gap-2 mx-auto">
+                            <span className="material-symbols-outlined text-sm">code</span>
+                            View Raw HTML Report
                           </button>
                         </div>
                       )}
                     </div>
                   ) : (
-                    /* Full Report — served statically so every tab & internal link works. */
+                    /* Raw HTML View */
                     <div className="border border-outline-variant/30 rounded-xl overflow-hidden shadow-lg bg-white dark:bg-slate-800">
-                      <div className="p-3 border-b border-outline-variant/20 flex flex-wrap items-center justify-between gap-2 bg-slate-50 dark:bg-slate-800/80">
-                        <p className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
-                          <span className="material-symbols-outlined text-sm text-indigo-500">description</span>
-                          Full interactive report — all tabs &amp; links work here.
-                        </p>
-                        <div className="flex gap-2">
-                          {reportArtifact && (
-                            <button onClick={() => handleDownloadArtifact(reportArtifact.id, reportArtifact.name)}
-                              className="px-3 py-1.5 bg-app-blue text-white text-xs font-bold rounded-lg hover:bg-app-dark-blue transition-colors flex items-center gap-1">
-                              <span className="material-symbols-outlined text-sm">download</span>Download HTML
-                            </button>
-                          )}
-                          {allureUrl && (
-                            <button onClick={() => window.open(`${apiBase}${allureUrl}`, '_blank', 'noopener')}
-                              className="px-3 py-1.5 bg-indigo-500 text-white text-xs font-bold rounded-lg hover:bg-indigo-600 transition-colors flex items-center gap-1">
-                              <span className="material-symbols-outlined text-sm">open_in_new</span>Open in New Tab
-                            </button>
-                          )}
-                        </div>
-                      </div>
-                      {allureLoading ? (
-                        <div className="p-12 text-center">
-                          <span className="material-symbols-outlined text-3xl text-indigo-400 animate-spin">progress_activity</span>
-                          <p className="text-sm text-slate-500 font-medium mt-2">Preparing the report…</p>
-                        </div>
-                      ) : allureError ? (
-                        <div className="p-12 text-center">
-                          <span className="material-symbols-outlined text-4xl text-red-300 mb-2">error</span>
-                          <p className="text-sm text-red-500 font-medium">{allureError}</p>
-                          {reportArtifact && (
-                            <button onClick={() => handleViewAllure(reportArtifact.id)} className="mt-3 px-4 py-2 bg-indigo-500 text-white text-xs font-bold rounded-lg hover:bg-indigo-600">Retry</button>
-                          )}
-                        </div>
-                      ) : allureUrl ? (
-                        <iframe src={`${apiBase}${allureUrl}`} title="Test Report" className="w-full border-0 bg-white" style={{ height: '640px' }} />
+                      {htmlReport ? (
+                        <>
+                          <div className="p-4 bg-amber-50 dark:bg-amber-900/20 border-b border-amber-200 dark:border-amber-800/30">
+                            <div className="flex items-start gap-3">
+                              <span className="material-symbols-outlined text-amber-500 text-lg mt-0.5">info</span>
+                              <div>
+                                <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+                                  Playwright HTML reports are interactive SPAs that may not render correctly in an embedded view.
+                                </p>
+                                <p className="text-xs text-amber-600 dark:text-amber-300 mt-1">
+                                  For the best experience, download the artifact and open index.html locally, or use the Dashboard view above.
+                                </p>
+                                <div className="flex gap-2 mt-3">
+                                  <button 
+                                    onClick={() => {
+                                      const blob = new Blob([htmlReport], { type: 'text/html' });
+                                      const url = URL.createObjectURL(blob);
+                                      const a = document.createElement('a');
+                                      a.href = url;
+                                      a.download = 'playwright-report.html';
+                                      a.click();
+                                      URL.revokeObjectURL(url);
+                                    }}
+                                    className="px-3 py-1.5 bg-amber-500 text-white text-xs font-bold rounded-lg hover:bg-amber-600 transition-colors flex items-center gap-1"
+                                  >
+                                    <span className="material-symbols-outlined text-sm">download</span>
+                                    Download HTML
+                                  </button>
+                                  <button 
+                                    onClick={() => {
+                                      const newWindow = window.open('', '_blank');
+                                      newWindow.document.write(htmlReport);
+                                      newWindow.document.close();
+                                    }}
+                                    className="px-3 py-1.5 bg-indigo-500 text-white text-xs font-bold rounded-lg hover:bg-indigo-600 transition-colors flex items-center gap-1"
+                                  >
+                                    <span className="material-symbols-outlined text-sm">open_in_new</span>
+                                    Open in New Tab
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          <iframe srcDoc={htmlReport} title="Playwright HTML Report" className="w-full border-0" style={{ height: '600px' }} sandbox="allow-scripts allow-same-origin"/>
+                        </>
                       ) : (
                         <div className="p-12 text-center">
-                          <span className="material-symbols-outlined text-4xl text-slate-300 dark:text-slate-600 mb-3">description</span>
-                          <p className="text-sm text-slate-500 font-medium">{reportArtifact ? 'Loading the full report…' : 'No report artifact found for this run.'}</p>
+                          <span className="material-symbols-outlined text-4xl text-slate-300 dark:text-slate-600 mb-3">description_off</span>
+                          <p className="text-sm text-slate-500 font-medium">No HTML report content available.</p>
+                          <p className="text-xs text-slate-400 mt-1">Download the artifact to view the full report locally.</p>
                         </div>
                       )}
                     </div>

@@ -481,13 +481,17 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
 
   /* ── Export Review .md ── */
   const exportReviewMd = (returnString = false) => {
-    if (!coverage) { if (!returnString) alert('Run analysis first'); return ''; }
-    let content = `# Test Case Review & Coverage Report\n\n## Overall Coverage: ${coverage.overallCoverage}%\n\n`;
-    if (coverage.coverageCalculation) {
-      content += `## Coverage Summary\n- Total Requirements Analyzed: ${coverage.coverageCalculation.totalRequirements}\n- Covered: ${coverage.coverageCalculation.fullyCovered}\n- Partially Covered: ${coverage.coverageCalculation.partiallyCovered}\n- Uncovered: ${coverage.coverageCalculation.notCovered}\n- Test Cases Analyzed: ${coverage.coverageCalculation.testCasesAnalyzed}\n\n`;
+    let content = `# Test Case Review & Coverage Report\n\n`;
+    // Review decisions summary — always included (works with or without coverage analysis).
+    content += `## Review Summary\n- Total Test Cases: ${parsedCases.length}\n- Approved: ${approvedCount}\n- Rejected: ${rejectedCount}\n- Pending: ${pendingCount}\n\n`;
+    if (coverage) {
+      content += `## Overall Coverage: ${coverage.overallCoverage}%\n\n`;
+      if (coverage.coverageCalculation) {
+        content += `## Coverage Summary\n- Total Requirements Analyzed: ${coverage.coverageCalculation.totalRequirements}\n- Covered: ${coverage.coverageCalculation.fullyCovered}\n- Partially Covered: ${coverage.coverageCalculation.partiallyCovered}\n- Uncovered: ${coverage.coverageCalculation.notCovered}\n- Test Cases Analyzed: ${coverage.coverageCalculation.testCasesAnalyzed}\n\n`;
+      }
+      content += `## Status\n- Functional Pathways: ${coverage.functionalStatus}\n- Negative Scenarios: ${coverage.negativeStatus}\n- Edge Cases: ${coverage.edgeCaseStatus}\n\n`;
     }
-    content += `## Status\n- Functional Pathways: ${coverage.functionalStatus}\n- Negative Scenarios: ${coverage.negativeStatus}\n- Edge Cases: ${coverage.edgeCaseStatus}\n\n`;
-    if (coverage.requirementTraceability && coverage.requirementTraceability.length > 0) {
+    if (coverage && coverage.requirementTraceability && coverage.requirementTraceability.length > 0) {
       content += `## Requirement Coverage\n\n| ID | Requirement | Status | Covered By | Reason |\n|----|-------------|--------|------------|--------|\n`;
       coverage.requirementTraceability.forEach(r => {
         const tcCount = (r.testCaseIds || []).length;
@@ -502,14 +506,24 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
     // Preserve non-table content (OUT OF SCOPE, SELF-VALIDATION, etc.) from original
     const tableLineIdx = testCases.split('\n').findIndex(l => l.trim().startsWith('| SRL') || l.trim().startsWith('| TC'));
     const nonTablePart = tableLineIdx > 0 ? testCases.split('\n').slice(0, tableLineIdx).join('\n').trim() : '';
-    content += `## Test Cases\n`;
+    content += `## Test Cases (Approved & Pending)\n`;
     if (nonTablePart) content += nonTablePart + '\n\n';
-    if (parsedCases.length > 0) {
-      const headers = publicTableHeaders(parsedCases[0]);
-      content += '| ' + headers.join(' | ') + ' |\n';
-      content += '|' + headers.map(() => '---').join('|') + '|\n';
-      parsedCases.forEach(tc => {
-        content += '| ' + headers.map(h => (tc[h] || '').replace(/\|/g, '\\|')).join(' | ') + ' |\n';
+    const includedCases = parsedCases.filter((tc) => reviewByRowKey[getRowKey(tc)] !== 'rejected');
+    if (includedCases.length > 0) {
+      const headers = publicTableHeaders(includedCases[0]);
+      content += '| ' + headers.join(' | ') + ' | Review Status |\n';
+      content += '|' + headers.map(() => '---').join('|') + '|---|\n';
+      includedCases.forEach(tc => {
+        const status = reviewByRowKey[getRowKey(tc)] === 'approved' ? 'Approved' : 'Pending';
+        content += '| ' + headers.map(h => (tc[h] || '').replace(/\|/g, '\\|')).join(' | ') + ` | ${status} |\n`;
+      });
+    }
+    const rejectedCases = parsedCases.filter((tc) => reviewByRowKey[getRowKey(tc)] === 'rejected');
+    if (rejectedCases.length > 0) {
+      content += `\n## Rejected Test Cases (excluded)\n`;
+      rejectedCases.forEach((tc, i) => {
+        const id = tc['SRL No.'] || `TC_${String(i + 1).padStart(3, '0')}`;
+        content += `- ${id}: ${tc['Test Case Title'] || tc['Description'] || ''}\n`;
       });
     }
     if (returnString) return content;
@@ -524,15 +538,18 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
 
   /* ── Export Trace Matrix Excel ── */
   const exportTraceMatrix = () => {
-    if (!parsedCases.length) return alert('No test case table data found');
-    const rows = parsedCases.map((tc, i) => ({
+    // Rejected cases are excluded from the finalized matrix; approved + pending remain.
+    const exportCases = parsedCases.filter((tc) => reviewByRowKey[getRowKey(tc)] !== 'rejected');
+    if (!exportCases.length) return alert('No approved or pending test cases to export');
+    const rows = exportCases.map((tc, i) => ({
       'TC ID': tc['SRL No.'] || `TC_${String(i + 1).padStart(3, '0')}`,
       'Test Case Title': tc['Test Case Title'] || '',
       'Type': tc['Test Case Type'] || '',
       'Tags': tc['Tags'] || '',
       'Execution Tags': tc['Execution Tags'] || '',
       'Requirement Source': issueData?.id || 'Manual',
-      'Coverage Status': coverage ? 'Analyzed' : 'Pending',
+      'Review Status': reviewByRowKey[getRowKey(tc)] === 'approved' ? 'Approved' : 'Pending',
+      'Coverage Status': coverage ? 'Analyzed' : 'Not analyzed',
     }));
     const ws = XLSX.utils.json_to_sheet(rows);
     ws['!cols'] = Object.keys(rows[0]).map((k) => ({ wch: Math.min(Math.max(k.length + 2, 14), 45) }));
@@ -579,9 +596,13 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
   const safePage = Math.min(currentPage, totalPages);
   const paginatedCases = filteredCases.slice((safePage - 1) * itemsPerPage, safePage * itemsPerPage);
 
-  const allFilteredKeys = filteredCases.map((tc) => getRowKey(tc)).filter(Boolean);
-  const allFilteredSelected = allFilteredKeys.length > 0 && allFilteredKeys.every((k) => selectedRowKeys.has(k));
-  const someFilteredSelected = allFilteredKeys.some((k) => selectedRowKeys.has(k));
+  // Only undecided (pending) rows are selectable — approved rows are final/locked and
+  // rejected rows are excluded until restored.
+  const selectableFilteredKeys = filteredCases
+    .map((tc) => getRowKey(tc))
+    .filter((k) => k && !reviewByRowKey[k]);
+  const allFilteredSelected = selectableFilteredKeys.length > 0 && selectableFilteredKeys.every((k) => selectedRowKeys.has(k));
+  const someFilteredSelected = selectableFilteredKeys.some((k) => selectedRowKeys.has(k));
 
   useEffect(() => {
     const el = selectAllCheckboxRef.current;
@@ -590,9 +611,12 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
 
   const approvedCount = Object.values(reviewByRowKey).filter((s) => s === 'approved').length;
   const rejectedCount = Object.values(reviewByRowKey).filter((s) => s === 'rejected').length;
+  const pendingCount = parsedCases.filter((tc) => !reviewByRowKey[getRowKey(tc)]).length;
+  // Approved + still-pending cases (rejected ones are dropped from exports/saves).
+  const nonRejectedCases = parsedCases.filter((tc) => reviewByRowKey[getRowKey(tc)] !== 'rejected');
 
   const toggleRowSelected = (rowKey) => {
-    if (!rowKey) return;
+    if (!rowKey || reviewByRowKey[rowKey]) return; // decided rows are not selectable
     setSelectedRowKeys((prev) => {
       const next = new Set(prev);
       if (next.has(rowKey)) next.delete(rowKey);
@@ -605,16 +629,26 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
     if (allFilteredSelected) {
       setSelectedRowKeys((prev) => {
         const next = new Set(prev);
-        allFilteredKeys.forEach((k) => next.delete(k));
+        selectableFilteredKeys.forEach((k) => next.delete(k));
         return next;
       });
     } else {
       setSelectedRowKeys((prev) => {
         const next = new Set(prev);
-        allFilteredKeys.forEach((k) => next.add(k));
+        selectableFilteredKeys.forEach((k) => next.add(k));
         return next;
       });
     }
+  };
+
+  // Restore a rejected case back to pending (review stays reversible until finalised).
+  const restoreDecision = (rowKey) => {
+    if (!rowKey) return;
+    setReviewByRowKey((prev) => {
+      const next = { ...prev };
+      delete next[rowKey];
+      return next;
+    });
   };
 
   const applyReviewDecision = (decision) => {
@@ -1018,6 +1052,8 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
                 <p className="text-xs text-on-surface-variant dark:text-slate-400">
                   <span className="font-bold text-on-surface dark:text-slate-200">{selectedRowKeys.size}</span> selected
                   <span className="mx-2 text-slate-300 dark:text-slate-600">·</span>
+                  <span className="text-slate-600 dark:text-slate-300 font-semibold">{pendingCount} pending</span>
+                  <span className="mx-2 text-slate-300 dark:text-slate-600">·</span>
                   <span className="text-green-700 dark:text-green-400 font-semibold">{approvedCount} approved</span>
                   <span className="mx-2 text-slate-300 dark:text-slate-600">·</span>
                   <span className="text-red-700 dark:text-red-400 font-semibold">{rejectedCount} rejected</span>
@@ -1053,9 +1089,10 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
                           type="checkbox"
                           checked={allFilteredSelected}
                           onChange={toggleSelectAllFiltered}
-                          className="h-4 w-4 rounded border-slate-300 text-app-red focus:ring-app-red"
-                          title={filterText.trim() ? 'Select all matching filter' : 'Select all test cases'}
-                          aria-label="Select all filtered test cases"
+                          disabled={selectableFilteredKeys.length === 0}
+                          className="h-4 w-4 rounded border-slate-300 text-app-red focus:ring-app-red disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={selectableFilteredKeys.length === 0 ? 'No pending test cases to select' : filterText.trim() ? 'Select all pending in filter' : 'Select all pending test cases'}
+                          aria-label="Select all pending test cases"
                         />
                       </th>
                       <th className="px-4 py-4 text-[11px] font-extrabold uppercase tracking-widest text-secondary w-24">ID</th>
@@ -1086,16 +1123,17 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
                               type="checkbox"
                               checked={rowKey ? selectedRowKeys.has(rowKey) : false}
                               onChange={() => toggleRowSelected(rowKey)}
-                              disabled={!rowKey}
-                              className="h-4 w-4 rounded border-slate-300 text-app-red focus:ring-app-red disabled:opacity-40"
+                              disabled={!rowKey || !!rowDecision}
+                              className="h-4 w-4 rounded border-slate-300 text-app-red focus:ring-app-red disabled:opacity-40 disabled:cursor-not-allowed"
+                              title={rowDecision === 'approved' ? 'Approved & locked' : rowDecision === 'rejected' ? 'Rejected — restore to edit' : ''}
                               aria-label={`Select ${tcId}`}
                             />
                           </td>
                           <td className="px-4 py-4 font-mono text-sm text-app-red font-bold">{tcId}</td>
                           <td className="px-4 py-4">
-                            <div className="text-sm font-semibold text-on-surface dark:text-white">{title}</div>
+                            <div className={`text-sm font-semibold ${rowDecision === 'rejected' ? 'line-through text-slate-400 dark:text-slate-500' : 'text-on-surface dark:text-white'}`}>{title}</div>
                             {desc && desc !== title && (
-                              <div className="text-xs text-on-surface-variant dark:text-slate-400 truncate max-w-md">{desc}</div>
+                              <div className={`text-xs truncate max-w-md ${rowDecision === 'rejected' ? 'line-through text-slate-400 dark:text-slate-600' : 'text-on-surface-variant dark:text-slate-400'}`}>{desc}</div>
                             )}
                           </td>
                           <td className="px-4 py-4">
@@ -1110,28 +1148,42 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
                             </div>
                           </td>
                           <td className="px-4 py-4 text-right">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                if (!rowKey) return;
-                                setSelectedRowKeys((prev) => {
-                                  const n = new Set(prev);
-                                  n.delete(rowKey);
-                                  return n;
-                                });
-                                setReviewByRowKey((prev) => {
-                                  const n = { ...prev };
-                                  delete n[rowKey];
-                                  return n;
-                                });
-                                setParsedCases((prev) => prev.filter((_, i) => i !== origIdx));
-                                setCoverage(null);
-                                setCurrentPage(1);
-                              }}
-                              className="text-on-surface-variant dark:text-slate-400 hover:text-red-500 transition-colors"
-                            >
-                              <span className="material-symbols-outlined text-lg">delete</span>
-                            </button>
+                            {rowDecision === 'approved' ? (
+                              <span title="Approved & locked" className="material-symbols-outlined text-lg text-green-600 dark:text-green-400 align-middle" style={{ fontVariationSettings: "'FILL' 1" }}>lock</span>
+                            ) : rowDecision === 'rejected' ? (
+                              <button
+                                type="button"
+                                onClick={() => restoreDecision(rowKey)}
+                                title="Restore to pending"
+                                className="text-slate-400 hover:text-emerald-600 transition-colors"
+                              >
+                                <span className="material-symbols-outlined text-lg">undo</span>
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (!rowKey) return;
+                                  setSelectedRowKeys((prev) => {
+                                    const n = new Set(prev);
+                                    n.delete(rowKey);
+                                    return n;
+                                  });
+                                  setReviewByRowKey((prev) => {
+                                    const n = { ...prev };
+                                    delete n[rowKey];
+                                    return n;
+                                  });
+                                  setParsedCases((prev) => prev.filter((_, i) => i !== origIdx));
+                                  setCoverage(null);
+                                  setCurrentPage(1);
+                                }}
+                                title="Delete test case"
+                                className="text-on-surface-variant dark:text-slate-400 hover:text-red-500 transition-colors"
+                              >
+                                <span className="material-symbols-outlined text-lg">delete</span>
+                              </button>
+                            )}
                           </td>
                         </tr>
                       );
@@ -1175,7 +1227,8 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
             if (confirm('Clear all data? This will reset JIRA ID, uploaded files, manual input, and all review results.')) {
               setTicketId(''); setIssueData(null); setManualReq(''); setManualExpanded(false);
               setTestCases(''); setParsedCases([]); setCoverage(null); setFilterText(''); setCurrentPage(1); setRiskExpanded(false); setRtmExpanded(false); setTestCasesExpanded(true); setTestCasesCleared(true);
-              setSelectedRowKeys(new Set()); setReviewByRowKey({});
+              setSelectedRowKeys(new Set()); setReviewByRowKey({}); setSaveStatus('');
+              onClearTestCases?.();
             }
           }}
           className="flex-1 bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
@@ -1183,8 +1236,8 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
           <span className="material-symbols-outlined">restart_alt</span> Clear All
         </button>
         <button onClick={exportTraceMatrix}
-          disabled={!coverage}
-          title={!coverage ? 'Complete the review analysis first' : ''}
+          disabled={nonRejectedCases.length === 0}
+          title={nonRejectedCases.length === 0 ? 'No approved or pending test cases to export' : (!coverage ? 'Tip: run analysis to include coverage status' : '')}
           className="flex-1 bg-app-red text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 shadow-lg shadow-app-red/20 hover:bg-red-700 active:scale-95 transition-all disabled:opacity-40 disabled:shadow-none disabled:hover:scale-100 disabled:cursor-not-allowed"
         >
           <span className="material-symbols-outlined">table_chart</span> Export trace matrix
@@ -1235,7 +1288,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
               setTimeout(() => setSaveStatus(''), 3000);
             } catch (e) { setSaveStatus('error'); alert('Save failed: ' + e.message); setTimeout(() => setSaveStatus(''), 3000); }
           }}
-          disabled={!coverage || saveStatus === 'saving'}
+          disabled={parsedCases.length === 0 || saveStatus === 'saving'}
           className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-3 shadow-lg shadow-emerald-600/20 active:scale-95 transition-all disabled:opacity-40 disabled:shadow-none disabled:cursor-not-allowed"
         >
           <span className="material-symbols-outlined">{saveStatus === 'saved' ? 'check_circle' : 'save'}</span>
