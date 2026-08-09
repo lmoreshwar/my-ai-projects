@@ -500,7 +500,7 @@ async function getRunReportSummary(job, runId) {
   try {
     const { data } = await axios.get(
       `${API}/repos/${owner}/${repo}/actions/runs/${id}/artifacts?per_page=100`,
-      { headers: headers() },
+      { headers: headers(), timeout: 12000 },
     );
     const arts = data.artifacts || [];
     const art = arts.find((a) => a.name === `blast-result-${job.jobId}`)
@@ -510,6 +510,7 @@ async function getRunReportSummary(job, runId) {
       headers: headers(),
       responseType: 'arraybuffer',
       maxRedirects: 5,
+      timeout: 20000,
     });
     const zip = new PizZip(Buffer.from(zipRes.data));
     const entry = zip.file('blast-ci-result.json');
