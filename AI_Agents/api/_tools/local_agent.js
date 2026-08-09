@@ -561,7 +561,12 @@ function envForRun(job) {
 /** Run the given spec files with Playwright. Returns { passed, output, summary }. */
 function runPlaywright(fw, specRelPaths, job) {
   return new Promise((resolve) => {
-    const args = ['playwright', 'test', ...specRelPaths, '--project=desktop-chrome', '--reporter=list,json'];
+    // Add the framework's StepsReporter when present so the in-app report can show per-test steps.
+    let reporters = 'list,json';
+    if (fs.existsSync(path.join(fw, 'src', 'utils', 'StepsReporter.ts'))) {
+      reporters += ',./src/utils/StepsReporter.ts';
+    }
+    const args = ['playwright', 'test', ...specRelPaths, '--project=desktop-chrome', `--reporter=${reporters}`];
     const env = { ...envForRun(job), PLAYWRIGHT_JSON_OUTPUT_NAME: 'test-results/results.json' };
     const child = spawn('npx', args, { cwd: fw, env, shell: true });
     let output = '';
@@ -583,6 +588,12 @@ function parseRunSummary(fw) {
     const file = path.join(fw, 'test-results', 'results.json');
     if (!fs.existsSync(file)) return null;
     const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    // StepsReporter (framework) writes per-test steps here; JSON reporter omits them.
+    let stepMap = {};
+    try {
+      const stepsFile = path.join(fw, 'test-results', 'steps.json');
+      if (fs.existsSync(stepsFile)) stepMap = JSON.parse(fs.readFileSync(stepsFile, 'utf8')) || {};
+    } catch { stepMap = {}; }
     const tests = [];
     const flatSteps = (steps) => (steps || []).flatMap((s) => [
       { title: s.title, status: s.error ? 'failed' : 'passed' },
@@ -594,13 +605,16 @@ function parseRunSummary(fw) {
         const r = (t.results || [])[0] || {};
         const errObj = (r.errors && r.errors[0]) || r.error || null;
         const errMsg = errObj ? String(errObj.message || errObj).replace(/\u001b\[[0-9;]*m/g, '').trim() : '';
+        const steps = (stepMap[spec.title] && stepMap[spec.title].length)
+          ? stepMap[spec.title].slice(0, 60)
+          : flatSteps(r.steps).slice(0, 40);
         tests.push({
           title: spec.title,
           status: spec.ok ? 'passed' : (r.status || 'failed'),
           durationMs: r.duration || 0,
           project: t.projectName || '',
           error: errMsg.split('\n').slice(0, 6).join('\n'),
-          steps: flatSteps(r.steps).slice(0, 40),
+          steps,
         });
       });
       (suite.suites || []).forEach(walk);
