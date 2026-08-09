@@ -384,8 +384,10 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                 options={
                   connections.llm.platform === 'gemini'
                     ? [
-                        { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (free, fast)' },
+                        { value: 'gemini-flash-latest', label: 'Gemini Flash (latest, recommended)' },
+                        { value: 'gemini-flash-lite-latest', label: 'Gemini Flash Lite (latest, fastest)' },
                         { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash (free, fast)' },
+                        { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash (blocked for new users)' },
                         { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro (best quality)' },
                       ]
                     : connections.llm.platform === 'openai'
@@ -407,7 +409,9 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                       ]
                     : connections.llm.platform === 'nvidia'
                     ? [
-                        { value: 'nvidia/nemotron-3-super-120b-a12b', label: 'Nemotron 3 Super 120B (best)' },
+                        { value: 'qwen/qwen3-coder-480b-a35b-instruct', label: 'Qwen3 Coder 480B (best for code)' },
+                        { value: 'qwen/qwen2.5-coder-32b-instruct', label: 'Qwen2.5 Coder 32B (fast coder)' },
+                        { value: 'nvidia/nemotron-3-super-120b-a12b', label: 'Nemotron 3 Super 120B' },
                         { value: 'nvidia/llama-3.3-nemotron-super-49b-v1.5', label: 'Nemotron Super 49B (faster)' },
                         { value: 'nvidia/nvidia-nemotron-nano-9b-v2', label: 'Nemotron Nano 9B (fastest)' },
                       ]
