@@ -73,11 +73,26 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
     setTimeout(() => setSavedMsg(''), 4000);
   };
 
+  // Recommended default model per LLM provider (first dropdown option for each).
+  const LLM_DEFAULT_MODEL = {
+    gemini: 'gemini-flash-latest',
+    openai: 'gpt-4o-mini',
+    groq: 'openai/gpt-oss-120b',
+    grok: 'grok-2',
+    nvidia: 'qwen/qwen3-coder-480b-a35b-instruct',
+    ollama: 'llama3',
+  };
+
   const updateConn = (section, field, value) => {
-    setConnections((prev) => ({
-      ...prev,
-      [section]: { ...prev[section], [field]: value },
-    }));
+    setConnections((prev) => {
+      const next = { ...prev[section], [field]: value };
+      // Switching LLM provider: reset the model to that provider's default so a
+      // stale model from the previous provider can't fail the connection test.
+      if (section === 'llm' && field === 'platform') {
+        next.model = LLM_DEFAULT_MODEL[value] || '';
+      }
+      return { ...prev, [section]: next };
+    });
   };
 
   const testJira = async () => {
