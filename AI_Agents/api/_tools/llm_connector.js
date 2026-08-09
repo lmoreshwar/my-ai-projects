@@ -222,13 +222,20 @@ class LLMConnector {
 
         /* ── Single LLM call with retry + Gemini model fallback ── */
         const callLLMSingle = async (msgs, useModel, retries = 3) => {
+            // Newer OpenAI models (GPT-5.x, o-series) require 'max_completion_tokens'
+            // instead of 'max_tokens' and only accept the default temperature.
+            const usesCompletionTokens = this.platform === 'openai' && /^(gpt-5|o1|o3|o4)/i.test(useModel || '');
             // Gemini's OpenAI-compatible API does not support 'seed' or 'top_p'
             const callParams = {
                 messages: msgs,
                 model: useModel,
-                temperature: 0,
-                max_tokens: MAX_TOKENS
             };
+            if (usesCompletionTokens) {
+                callParams.max_completion_tokens = MAX_TOKENS;
+            } else {
+                callParams.temperature = 0;
+                callParams.max_tokens = MAX_TOKENS;
+            }
             // Only add seed/top_p for platforms that support them
             if (this.platform !== 'gemini' && this.platform !== 'openai' && this.platform !== 'nvidia') {
                 callParams.seed = 42;
