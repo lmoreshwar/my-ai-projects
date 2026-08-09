@@ -115,7 +115,7 @@ async function ensureFrameworkMirror() {
  */
 async function requestPlan(job) {
   if (provider() === 'local') {
-    return localAgent.buildPlan(job);
+    return localAgent.buildPlan(job, undefined, 'local');
   }
   if (AI_SERVICE_URL) {
     const { data } = await axios.post(
@@ -134,7 +134,7 @@ async function requestPlan(job) {
   if (provider() === 'github-actions' || provider() === 'runner') {
     try {
       const fw = await ensureFrameworkMirror();
-      if (fw) return localAgent.buildPlan(job, fw);
+      if (fw) return localAgent.buildPlan(job, fw, provider());
     } catch { /* fall back to the simulated plan below */ }
   }
   return simulatePlan(job);

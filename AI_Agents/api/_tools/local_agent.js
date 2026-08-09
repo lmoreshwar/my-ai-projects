@@ -241,6 +241,19 @@ function listSpecs(fw) {
 }
 
 /**
+ * Is this case already automated in ANY spec (not just its resolved domain)? Returns
+ * the spec rel path where it lives, or '' if genuinely new. Prevents cross-file
+ * duplicate ids (e.g. adding TC_011 to InventoryAccess when it already lives in login).
+ */
+function caseCoveredAnywhere(fw, tc) {
+  if (!fw || !fs.existsSync(fw)) return '';
+  for (const s of listSpecs(fw)) {
+    if (caseCoveredInSpec(s.content, tc)) return s.rel;
+  }
+  return '';
+}
+
+/**
  * Resolve the real domain by SCANNING existing specs for the requested test-case
  * ids. This maps re-submitted cases (already automated in login.spec.ts) back to
  * the Login domain instead of a bogus new domain derived from a tag (e.g.
@@ -782,9 +795,40 @@ async function llmGenerate(prompt, system) {
  * and approve before anything runs locally.
  * Returns { plan, missingInfo, reusedFiles }.
  */
-function buildPlan(job, fwOverride) {
+/** Human wording for the plan header/run-steps based on the execution provider. */
+function planExecutionCopy(providerName) {
+  const p = (providerName || 'local').toLowerCase();
+  if (p === 'github-actions') {
+    return {
+      runLine: 'Runs on the **B.L.A.S.T. cloud runner (GitHub Actions)** via Playwright (`desktop-chrome`, headless), then opens a **Pull Request** (the review gate).',
+      providerLine: 'cloud (GitHub Actions)',
+      where: 'on a GitHub-hosted runner',
+      lastStep: 'Open a **Pull Request** with the generated tests for review (existing tests protected); the HTML/Allure report is attached as a CI artifact.',
+      reuseLastStep: 'Attach the fresh report as a CI artifact (no PR \u2014 nothing changed).',
+    };
+  }
+  if (p === 'runner') {
+    return {
+      runLine: 'Runs on a **pull-based runner** (self-hosted worker) via Playwright (`desktop-chrome`, headless).',
+      providerLine: 'runner (self-hosted worker)',
+      where: 'on the worker',
+      lastStep: 'Refresh the capabilities index and report results back to the B.L.A.S.T. UI.',
+      reuseLastStep: 'Report the fresh report back to the B.L.A.S.T. UI.',
+    };
+  }
+  return {
+    runLine: 'Runs **locally** via Playwright in the AI Native framework (`desktop-chrome`, headless).',
+    providerLine: 'local',
+    where: 'locally',
+    lastStep: 'Refresh the capabilities index (npm run index) and show the HTML report in the UI.',
+    reuseLastStep: 'Show the fresh HTML report in the UI.',
+  };
+}
+
+function buildPlan(job, fwOverride, providerName) {
   const { frameworkPath, platform, model } = config();
   const fw = fwOverride || frameworkPath;
+  const copy = planExecutionCopy(providerName);
   const logs = [];
   const log = (m) => logs.push(m);
   const missingInfo = [];
@@ -813,12 +857,15 @@ function buildPlan(job, fwOverride) {
     : `[plan] No existing "${F}" domain files — this will be a fresh page/module/spec.`);
   if (specContent) log(`[plan] Existing spec "${specRel}" already contains ${specTestCount} test(s).`);
 
-  const cases = (job.testCases || []).map((tc) => ({ ...tc, exists: caseCoveredInSpec(specContent, tc) }));
+  const cases = (job.testCases || []).map((tc) => {
+    const coveredIn = caseCoveredAnywhere(fw, tc);
+    return { ...tc, exists: !!coveredIn, coveredIn };
+  });
   const already = cases.filter((c) => c.exists);
   const toAdd = cases.filter((c) => !c.exists);
-  log(`[plan] Reuse analysis: ${cases.length} selected → ${already.length} already automated (reuse), ${toAdd.length} new (generate).`);
-  already.forEach((c) => log(`[plan]   ✅ ${c.id} already exists → reuse`));
-  toAdd.forEach((c) => log(`[plan]   🆕 ${c.id} not found → will generate`));
+  log(`[plan] Reuse analysis (all specs): ${cases.length} selected → ${already.length} already automated (reuse), ${toAdd.length} new (generate).`);
+  already.forEach((c) => log(`[plan]   ✅ ${c.id} already in ${c.coveredIn} → reuse`));
+  toAdd.forEach((c) => log(`[plan]   🆕 ${c.id} not found in any spec → will generate`));
   if (specTestCount > cases.length && !toAdd.length) {
     log(`[plan] Note: the spec file holds ${specTestCount} test(s) total (a superset of your ${cases.length} selected). Running the spec executes ALL ${specTestCount}.`);
   }
@@ -827,7 +874,7 @@ function buildPlan(job, fwOverride) {
   ['src/config/index.ts', 'src/utils/constants.ts'].forEach((p) => {
     if (fw && fs.existsSync(path.join(fw, p))) reusedFiles.push(p);
   });
-  log('[plan] Implementation plan ready — review & approve to run locally.');
+  log(`[plan] Implementation plan ready — review & approve to run ${copy.where}.`);
 
   const fileLine = (rel, layer) => {
     const ex = byLayer[layer];
@@ -839,17 +886,17 @@ function buildPlan(job, fwOverride) {
   const lines = [
     `# Implementation Plan — ${job.skill || 'New Automation'} (${job.environment || 'QA'})`,
     '',
-    `Runs **locally** via Playwright in the AI Native framework (\`desktop-chrome\`, headless).`,
-    `Provider: local · LLM: ${platform}/${model || 'default'}`,
+    copy.runLine,
+    `Provider: ${copy.providerLine} · LLM: ${platform}/${model || 'default'}`,
     `Target URL: ${job.url || '(missing)'}`,
-    `Reuse index (.ai-memory/capabilities.json): ${hasCaps ? 'found ✓' : 'not found (run npm run index)'}`,
+    `Reuse index (.ai-memory/capabilities.json): ${hasCaps ? 'found ✓' : 'built at run time'}`,
     '',
     '## Test-case reuse analysis',
   ];
 
   if (already.length) {
-    lines.push(`> 🛡 ${already.length} of ${cases.length} selected case(s) are **already automated** in \`${specRel}\` — these will be **REUSED as-is**, not regenerated:`);
-    already.forEach((c) => lines.push(`  - ✅ ${c.id} ${c.title || ''} — already exists → reuse`));
+    lines.push(`> 🛡 ${already.length} of ${cases.length} selected case(s) are **already automated** (in any spec) — these will be **REUSED as-is**, not regenerated:`);
+    already.forEach((c) => lines.push(`  - ✅ ${c.id} ${c.title || ''} — already in \`${c.coveredIn || specRel}\` → reuse`));
   }
   if (toAdd.length) {
     lines.push(`> ＋ ${toAdd.length} case(s) are **new** and will be added:`);
@@ -877,18 +924,18 @@ function buildPlan(job, fwOverride) {
       '',
       '## How it will run (on Approve)',
       '1. **No LLM call, no code generated** — every selected case already exists.',
-      `2. Re-run the existing spec locally with Playwright (\`--project=desktop-chrome\`): \`${specRel}\`.`,
+      `2. Re-run the existing spec ${copy.where} with Playwright (\`--project=desktop-chrome\`): \`${specRel}\`.`,
       '3. Verify the capabilities index (no changes expected — pure reuse).',
-      '4. Show the fresh HTML report in the UI.',
+      `4. ${copy.reuseLastStep}`,
     );
   } else {
     lines.push(
       '',
       '## How it will run (on Approve)',
       '1. Write a JSON job brief + capture a live locator snapshot of the URL (evidence-based).',
-      `2. Ask the LLM ONLY for the ${toAdd.length} new case(s) (${toAdd.map((c) => c.id).join(', ')}); existing tests/locators are preserved (non-destructive guard — a file can only grow, never be replaced by something smaller). Duplicate ids are rejected before writing.`,
-      '3. Run the spec locally with Playwright (`--project=desktop-chrome`), one self-heal round on failure.',
-      '4. Refresh the capabilities index (npm run index) and show the HTML report in the UI.',
+      `2. Ask the LLM ONLY for the ${toAdd.length} new case(s) (${toAdd.map((c) => c.id).join(', ')}); existing tests are preserved (append-only — never renumbered or shrunk). A case already present in ANY spec is reused, not re-added.`,
+      `3. Run the spec ${copy.where} with Playwright (\`--project=desktop-chrome\`), one self-heal round on failure.`,
+      `4. ${copy.lastStep}`,
     );
   }
 
@@ -974,12 +1021,14 @@ async function generateAndRun(job, onLog) {
   if (existing.length) log(`[local] Extending existing domain files: ${existing.map((e) => e.rel).join(', ')}`);
 
   // 0b) Duplicate guard — decide what is genuinely NEW before touching the LLM.
+  // Check EVERY spec (cross-file), not just the resolved domain spec, so a case that
+  // already lives in another spec (e.g. TC_011 in login.spec.ts) is reused, not re-added.
   const domSpec = existing.find((e) => e.layer === 'spec');
-  const specText = domSpec ? domSpec.content : '';
   const selected = job.testCases || [];
-  const dupCases = selected.filter((tc) => caseCoveredInSpec(specText, tc));
-  const newCases = selected.filter((tc) => !caseCoveredInSpec(specText, tc));
-  dupCases.forEach((tc) => log(`[local] ⏭ Duplicate detected: ${tc.id} "${tc.title || ''}" already present in ${domSpec ? domSpec.rel : 'spec'} → reusing existing test, will NOT rewrite it.`));
+  const coverageOf = (tc) => caseCoveredAnywhere(fw, tc);
+  const dupCases = selected.filter((tc) => coverageOf(tc));
+  const newCases = selected.filter((tc) => !coverageOf(tc));
+  dupCases.forEach((tc) => log(`[local] ⏭ Duplicate detected: ${tc.id} "${tc.title || ''}" already automated in ${coverageOf(tc)} → reusing existing test, will NOT re-add it.`));
 
   // If every selected case already exists, do NOT generate — reuse and just re-run.
   if (domSpec && newCases.length === 0) {
