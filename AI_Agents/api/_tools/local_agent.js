@@ -1159,21 +1159,34 @@ async function generateAndRun(job, onLog) {
       : '＋ created  ';
     log(`[local]   ${tag} ${w.path}${w.reason ? ` — ${w.reason}` : ''}`);
   };
+  // REPO-WIDE ID LEDGER: a NEW auto-added case must not reuse an id that already labels a
+  // DIFFERENT test in ANY spec — not just the resolved-domain spec. A cross-domain job
+  // (e.g. an InventoryAccess case reused alongside NEW Login cases) makes the LLM target a
+  // different, correct spec (login.spec.ts); a colliding id there would force it to either
+  // duplicate or renumber an existing test — both are rejected below and block the run.
+  const allSpecIds = new Set();
+  try {
+    const tdir = path.join(fw, 'src', 'tests');
+    for (const f of fs.readdirSync(tdir).filter((n) => n.endsWith('.spec.ts'))) {
+      specTestIds(safeRead(path.join(tdir, f), 200000)).forEach((id) => allSpecIds.add(id));
+    }
+  } catch { /* no specs yet — first automation in this repo */ }
   for (let i = 0; i < newCases.length; i++) {
     const tc = { ...newCases[i] };
     const existNow = findDomainFiles(fw, job); // reflects writes from earlier cases this run
-    const specNow = (existNow.find((e) => e.layer === 'spec') || {}).content || '';
-    const existingIds = new Set(specTestIds(specNow));
     // COLLISION GUARD (root cause of renumbering): if the requested id already labels a
-    // DIFFERENT existing test, the LLM would be forced to renumber existing tests to keep
-    // ids unique. Deterministically reassign this new case to the next free id instead.
+    // DIFFERENT existing test ANYWHERE in the suite, the LLM would be forced to renumber or
+    // duplicate an existing test to keep ids unique. Deterministically reassign this new
+    // case to the next repo-wide-free id instead.
     const wantId = String(tc.id || '').toUpperCase().replace(/-/g, '_');
-    if (wantId && existingIds.has(wantId)) {
-      const freeId = nextFreeTcId(existingIds);
+    if (wantId && allSpecIds.has(wantId)) {
+      const freeId = nextFreeTcId(allSpecIds);
       log(`[local] ⚠ Requested id ${wantId} already exists as a different test — reassigning the new case to ${freeId} (existing tests are NEVER renumbered).`);
       tc.id = freeId;
+      allSpecIds.add(freeId);
     } else if (wantId) {
       tc.id = wantId;
+      allSpecIds.add(wantId);
     }
     if (tc.id) requestedIds.push(String(tc.id).toUpperCase().replace(/-/g, '_'));
     log(`[local] Generating ${tc.id} "${tc.title || ''}" (${i + 1}/${newCases.length})…`);
@@ -1184,8 +1197,12 @@ async function generateAndRun(job, onLog) {
       if (f.layer !== 'spec') return true;
       const dups = duplicateSpecIds(f.content);
       if (dups.length) { log(`[local] ⚠ ${tc.id}: rejected spec ${f.rel} — duplicate id(s) ${dups.join(', ')}.`); return false; }
-      // APPEND-ONLY GUARD: reject a spec that renumbered/renamed any pre-existing test.
-      const renamed = renumberedTests(specNow, f.content);
+      // APPEND-ONLY GUARD: compare against the CURRENT content of THIS SAME spec file, not
+      // the resolved-domain spec. The LLM may legitimately target a different, correct spec
+      // (e.g. login security cases → login.spec.ts even when the job's anchor domain is
+      // InventoryAccess); comparing across files falsely flags unrelated tests as "removed".
+      const priorForFile = safeRead(path.join(fw, f.rel), 200000);
+      const renamed = renumberedTests(priorForFile, f.content);
       if (renamed.length) { log(`[local] ⚠ ${tc.id}: rejected spec ${f.rel} — it altered existing test(s): ${renamed.join('; ')}. Existing tests must be preserved verbatim.`); return false; }
       return true;
     });
