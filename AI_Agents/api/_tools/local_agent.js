@@ -563,6 +563,10 @@ function runPlaywright(fw, specRelPaths, job) {
   return new Promise((resolve) => {
     // Add the framework's StepsReporter when present so the in-app report can show per-test steps.
     let reporters = 'list,json';
+    // Emit Allure results when the framework has the reporter (uploaded as a CI artifact).
+    if (fs.existsSync(path.join(fw, 'node_modules', 'allure-playwright'))) {
+      reporters += ',allure-playwright';
+    }
     if (fs.existsSync(path.join(fw, 'src', 'utils', 'StepsReporter.ts'))) {
       reporters += ',./src/utils/StepsReporter.ts';
     }

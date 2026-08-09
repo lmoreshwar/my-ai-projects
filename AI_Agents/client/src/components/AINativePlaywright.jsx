@@ -191,6 +191,14 @@ function ReportModal({ job, onClose }) {
             </div>
           </div>
         )}
+        {job && job.reportUrl && (
+          <div className="px-5 py-2.5 border-t border-outline-variant/30 dark:border-slate-700 flex items-center justify-between text-xs">
+            <span className="text-slate-400">Full Allure report + trace are attached to the run.</span>
+            <a href={reportHref(job.reportUrl)} target="_blank" rel="noreferrer" className="text-app-red underline flex items-center gap-1">
+              <span className="material-symbols-outlined text-sm">download</span>Open Allure report (GitHub artifacts) ↗
+            </a>
+          </div>
+        )}
       </div>
     </div>
   );
