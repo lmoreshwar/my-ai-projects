@@ -762,11 +762,17 @@ function dataVarMap(fileContent, testData) {
 function testSignature(body, varMap) {
   const text = body || '';
   const resolve = (args) => args.replace(/([A-Za-z_$][\w$]*)(?=\.)/g, (id) => (varMap && varMap.get(id)) || id);
+  // Zero-arg navigation/arrival calls (goto(), navigateToLoginPage(), openHomePage()…) are
+  // page-setup plumbing, not test behavior. Strip them so an extra navigate step can't hide
+  // that two tests exercise the same action+data. Data-carrying nav (openProtectedPage('/x'))
+  // is kept — its argument makes it a meaningful, differentiating step.
+  const isNavNoop = (name, args) => args === '' && /^(goto|navigate\w*|open\w*page|visit|load|browse\w*)$/i.test(name);
   const actions = [];
   const aRe = /\b\w+Module\.(\w+)\s*\(([^)]*)\)/g;
   let m;
   while ((m = aRe.exec(text)) !== null) {
     const args = m[2].replace(/\s+/g, '').replace(/['"`]/g, '"');
+    if (isNavNoop(m[1], args)) continue;
     actions.push(`${m[1]}(${resolve(args)})`);
   }
   if (actions.length) return 'ACT:' + actions.join('>');
