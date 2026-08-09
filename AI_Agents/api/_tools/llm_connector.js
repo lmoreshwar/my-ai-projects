@@ -115,21 +115,24 @@ class LLMConnector {
         if (!model) {
             if (this.platform === 'groq') model = 'openai/gpt-oss-120b';
             else if (this.platform === 'ollama') model = 'llama3';
-            else if (this.platform === 'gemini') model = 'gemini-2.5-flash';
+            else if (this.platform === 'gemini') model = 'gemini-flash-latest';
             else if (this.platform === 'grok') model = 'grok-2';
             else if (this.platform === 'nvidia') model = 'nvidia/nemotron-3-super-120b-a12b';
             else if (this.platform === 'openai') model = 'gpt-4o';
         }
 
-        // Gemini fallback chain — if the primary model is unavailable (503),
-        // we'll try alternatives automatically
+        // Gemini fallback chain — if the primary model is unavailable (503) or
+        // blocked for new users (404), we try alternatives automatically. The
+        // `-latest` aliases stay usable for new projects; versioned 2.5 models 404.
         const GEMINI_FALLBACK_CHAIN = {
-            'gemini-3-flash-preview': ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-pro'],
-            'gemini-2.5-flash':   ['gemini-2.5-pro', 'gemini-2.0-flash', 'gemini-1.5-pro'],
-            'gemini-2.5-pro':     ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
-            'gemini-2.0-flash':   ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'],
-            'gemini-1.5-flash':   ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'],
-            'gemini-1.5-pro':     ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'],
+            'gemini-flash-latest':      ['gemini-flash-lite-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-001'],
+            'gemini-flash-lite-latest': ['gemini-flash-latest', 'gemini-2.0-flash', 'gemini-2.0-flash-001'],
+            'gemini-3-flash-preview':   ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-2.0-flash'],
+            'gemini-2.5-flash':   ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-2.0-flash'],
+            'gemini-2.5-pro':     ['gemini-flash-latest', 'gemini-2.0-flash', 'gemini-flash-lite-latest'],
+            'gemini-2.0-flash':   ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-2.0-flash-001'],
+            'gemini-1.5-flash':   ['gemini-flash-latest', 'gemini-flash-lite-latest', 'gemini-2.0-flash'],
+            'gemini-1.5-pro':     ['gemini-flash-latest', 'gemini-2.0-flash', 'gemini-flash-lite-latest'],
         };
 
         console.log(`[LLM] Using model: ${model}, Platform: ${this.platform}`);
@@ -298,8 +301,9 @@ class LLMConnector {
                 return await callLLMSingle(msgs, model, retries);
             } catch (primaryErr) {
                 const status = primaryErr.status || primaryErr.statusCode || 0;
-                // Only fallback on 503/502 (service unavailable), not on auth or other errors
-                if (this.platform === 'gemini' && (status === 503 || status === 502)) {
+                // Fallback on 503/502 (service unavailable) or 404 (model blocked for
+                // new users), not on auth or other errors
+                if (this.platform === 'gemini' && (status === 503 || status === 502 || status === 404)) {
                     const fallbacks = GEMINI_FALLBACK_CHAIN[model] || [];
                     for (const fallbackModel of fallbacks) {
                         console.warn(`[LLM] Model ${model} returned ${status}. Trying fallback: ${fallbackModel}...`);
@@ -315,7 +319,7 @@ class LLMConnector {
                             continue;
                         }
                     }
-                    throw new Error(`All Gemini models unavailable (503). Tried: ${model}, ${fallbacks.join(', ')}. Google's API may be temporarily overloaded — please try again in a few minutes.`);
+                    throw new Error(`All Gemini models unavailable (${status}). Tried: ${model}, ${fallbacks.join(', ')}. The model may be blocked for new users or Google's API may be temporarily overloaded — try 'gemini-flash-latest' or retry shortly.`);
                 }
                 throw primaryErr;
             }

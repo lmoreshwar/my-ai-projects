@@ -27,7 +27,7 @@ const FILE_RE = /===FILE:([^|=]+)\|(page|module|spec|fixture|config|other)===\s*
 // Sensible default model per platform when none is configured for that platform.
 const DEFAULT_MODEL = {
   groq: 'openai/gpt-oss-120b',
-  gemini: 'gemini-2.5-flash',
+  gemini: 'gemini-flash-latest',
   grok: 'grok-2',
   openai: 'gpt-4o',
   nvidia: 'nvidia/nemotron-3-super-120b-a12b',
