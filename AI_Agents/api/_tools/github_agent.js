@@ -399,9 +399,11 @@ async function getWorkflowRunProgress(job) {
     runHtmlUrl = runData.html_url || runHtmlUrl;
 
     const lines = [];
+    const allSteps = [];
     for (const j of runData_jobs(jobsRes.data)) {
       lines.push(`▸ ${j.name} — ${j.status}${j.conclusion ? ` (${j.conclusion})` : ''}`);
       for (const s of (j.steps || [])) {
+        allSteps.push(s);
         const icon = s.conclusion === 'success' ? '✓'
           : s.conclusion === 'failure' ? '✗'
           : s.conclusion === 'skipped' ? '⊘'
@@ -412,22 +414,33 @@ async function getWorkflowRunProgress(job) {
 
     const st = runData.status;         // queued | in_progress | completed
     const conc = runData.conclusion;   // success | failure | cancelled | null
-    const status = st !== 'completed' ? 'Executing' : conc === 'success' ? 'Passed' : 'Failed';
-    if (st === 'completed') {
-      lines.push('', conc === 'success' ? '✓ Run completed successfully.' : `✗ Run ${conc || 'failed'}.`);
+
+    // Effective completion: don't hang on GitHub's teardown. Once every substantive step
+    // (everything except the auto "Post *" / "Complete job" steps) has finished, the run is
+    // functionally done — surface Passed/Failed and the report immediately.
+    const isTeardown = (name) => /^Post\b/i.test(name || '') || /^Complete job$/i.test(name || '');
+    const substantive = allSteps.filter((s) => !isTeardown(s.name));
+    const substantiveDone = substantive.length > 0 && substantive.every((s) => s.status === 'completed');
+    const substantiveFailed = substantive.some((s) => ['failure', 'timed_out', 'cancelled'].includes(s.conclusion));
+    const done = st === 'completed' || substantiveDone;
+    const effConc = st === 'completed' ? conc : (substantiveFailed ? 'failure' : 'success');
+
+    const status = !done ? 'Executing' : effConc === 'success' ? 'Passed' : 'Failed';
+    if (done) {
+      lines.push('', effConc === 'success' ? '✓ Run completed successfully.' : `✗ Run ${effConc || 'failed'}.`);
     }
 
-    // Pull the parsed report summary once the run has finished (only if not cached).
+    // Pull the parsed report summary once the run is functionally done (only if not cached).
     let reportSummary;
-    if (st === 'completed' && !job.reportSummary) {
+    if (done && !job.reportSummary) {
       reportSummary = await getRunReportSummary(job, runId);
     }
 
     return {
       status,
       prUrl: job.prUrl || '',
-      checksStatus: conc || (st === 'completed' ? '' : 'pending'),
-      executionStatus: conc === 'success' ? 'PASSED' : conc === 'failure' ? 'FAILED' : '',
+      checksStatus: effConc || (done ? '' : 'pending'),
+      executionStatus: effConc === 'success' ? 'PASSED' : effConc === 'failure' ? 'FAILED' : '',
       runId,
       runHtmlUrl,
       reportSummary,
