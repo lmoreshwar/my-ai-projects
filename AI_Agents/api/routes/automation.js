@@ -93,7 +93,8 @@ router.get('/jobs/:jobId', auth, async (req, res) => {
 // @desc    Create a job and request a plan from the AI Service
 router.post('/generate', auth, async (req, res) => {
   try {
-    const { project, environment, url, agent, skill, executionMode, comments, testCases } = req.body;
+    const { project, environment, url, agent, skill, executionMode, comments, testCases,
+      browser, testScope, parallel } = req.body;
     if (!Array.isArray(testCases) || testCases.length === 0) {
       return res.status(400).json({ msg: 'Select at least one automation-feasible test case.' });
     }
@@ -112,6 +113,9 @@ router.post('/generate', auth, async (req, res) => {
       skill: skill || 'New Automation',
       executionMode: executionMode || 'GenerateAndExecute',
       comments: comments || '',
+      browser: browser || 'Chrome',
+      testScope: testScope || 'Generated only',
+      parallel: parallel || 'Auto',
       testCases: testCases.map((tc) => ({
         id: tc.id,
         title: tc.title || '',

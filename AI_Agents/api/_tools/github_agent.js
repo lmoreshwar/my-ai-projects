@@ -325,6 +325,9 @@ async function dispatchWorkflow(job) {
     skill: job.skill || 'New Automation',
     executionMode: job.executionMode || 'GenerateAndExecute',
     comments: job.comments || '',
+    browser: job.browser || 'Chrome',
+    testScope: job.testScope || 'Generated only',
+    parallel: job.parallel || 'Auto',
     testCases: (job.testCases || []).map((tc) => ({
       id: tc.id,
       title: tc.title || '',
@@ -342,7 +345,7 @@ async function dispatchWorkflow(job) {
   try {
     await axios.post(
       `${API}/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`,
-      { ref, inputs: { job_id: String(job.jobId), job_payload: JSON.stringify(payload) } },
+      { ref, inputs: { job_id: String(job.jobId), job_payload: JSON.stringify(payload), browser: job.browser || 'Chrome' } },
       { headers: headers() },
     );
     return {

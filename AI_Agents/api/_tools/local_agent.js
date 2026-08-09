@@ -558,8 +558,15 @@ function envForRun(job) {
   return { ...process.env, TEST_ENV: map[job.environment] || 'qa' };
 }
 
+/** Map the job's browser choice to a Playwright project name (null = all projects). */
+function browserProject(job) {
+  const map = { Chrome: 'desktop-chrome', Edge: 'desktop-edge', Firefox: 'desktop-firefox', Safari: 'desktop-safari' };
+  if (job && job.browser === 'All') return null;
+  return (job && map[job.browser]) || 'desktop-chrome';
+}
+
 /** Run the given spec files with Playwright. Returns { passed, output, summary }. */
-function runPlaywright(fw, specRelPaths, job) {
+function runPlaywright(fw, specRelPaths, job, opts = {}) {
   return new Promise((resolve) => {
     // Add the framework's StepsReporter when present so the in-app report can show per-test steps.
     let reporters = 'list,json';
@@ -570,7 +577,15 @@ function runPlaywright(fw, specRelPaths, job) {
     if (fs.existsSync(path.join(fw, 'src', 'utils', 'StepsReporter.ts'))) {
       reporters += ',./src/utils/StepsReporter.ts';
     }
-    const args = ['playwright', 'test', ...specRelPaths, '--project=desktop-chrome', `--reporter=${reporters}`];
+    // Smoke scope (only on the final validation run) runs the whole @Smoke suite instead of the new spec.
+    const smoke = opts.applyScope && job && job.testScope === 'Smoke';
+    const targets = smoke ? [] : specRelPaths;
+    const args = ['playwright', 'test', ...targets];
+    const proj = browserProject(job);
+    if (proj) args.push(`--project=${proj}`);
+    if (smoke) args.push('--grep=@Smoke');
+    if (job && job.parallel === 'Serial') args.push('--workers=1');
+    args.push(`--reporter=${reporters}`);
     const env = { ...envForRun(job), PLAYWRIGHT_JSON_OUTPUT_NAME: 'test-results/results.json' };
     const child = spawn('npx', args, { cwd: fw, env, shell: true });
     let output = '';
@@ -950,7 +965,7 @@ async function generateAndRun(job, onLog) {
 
   // 2) Run
   log(`[local] Running: ${specPaths().join(', ')}`);
-  let run = await runPlaywright(fw, specPaths(), job);
+  let run = await runPlaywright(fw, specPaths(), job, { applyScope: true });
   log(run.passed ? '[local] Run PASSED.' : '[local] Run FAILED — attempting one self-heal round.');
 
   // 3) Self-heal once
@@ -964,7 +979,7 @@ async function generateAndRun(job, onLog) {
       written = writeRes.written;
       allBackups.push(...writeRes.backups);
       log(`[local] Applied heal to ${written.length} file(s). Re-running…`);
-      run = await runPlaywright(fw, specPaths(), job);
+      run = await runPlaywright(fw, specPaths(), job, { applyScope: true });
       log(run.passed ? '[local] Re-run PASSED after heal.' : '[local] Re-run still FAILED.');
     } else {
       log('[local] Heal produced no parseable files.');

@@ -63,6 +63,11 @@ const AutomationJobSchema = new mongoose.Schema({
   comments: { type: String, default: '' },
   testCases: [TestCaseRefSchema],
 
+  // Run configuration (drives Playwright CLI flags at execution time)
+  browser: { type: String, enum: ['Chrome', 'Edge', 'Firefox', 'Safari', 'All'], default: 'Chrome' },
+  testScope: { type: String, enum: ['Generated only', 'Smoke'], default: 'Generated only' },
+  parallel: { type: String, enum: ['Auto', 'Serial'], default: 'Auto' },
+
   // Orchestration state
   status: { type: String, enum: JOB_STATUSES, default: 'Pending' },
   plan: { type: String, default: '' },              // implementation plan returned by the AI service

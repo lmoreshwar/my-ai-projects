@@ -206,6 +206,9 @@ function ReportModal({ job, onClose }) {
 
 const SKILLS = ['New Automation', 'Modify Automation', 'Debug', 'Self Healing', 'Visual Testing'];
 const ENVIRONMENTS = ['QA', 'UAT', 'Production'];
+const BROWSERS = ['Chrome', 'Edge', 'Firefox', 'Safari', 'All'];
+const TEST_SCOPES = ['Generated only', 'Smoke'];
+const PARALLEL_MODES = ['Auto', 'Serial'];
 const EXECUTION_MODES = [
   { value: 'GenerateOnly', label: 'Generate Only' },
   { value: 'GenerateAndExecute', label: 'Generate and Execute' },
@@ -325,6 +328,9 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
     agent: 'AI Native Playwright Engineer',
     skill: 'New Automation',
     executionMode: 'GenerateAndExecute',
+    browser: 'Chrome',
+    testScope: 'Generated only',
+    parallel: 'Auto',
     comments: '',
   });
 
@@ -1002,6 +1008,29 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
                 <Field label="Execution Mode">
                   <CustomSelect value={form.executionMode} onChange={(v) => setF('executionMode', v)} options={EXECUTION_MODES} />
                 </Field>
+              </div>
+
+              <div className="rounded-sm border border-outline-variant/40 dark:border-slate-700 p-3 space-y-3">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-secondary dark:text-slate-400 flex items-center gap-1">
+                  <span className="material-symbols-outlined text-sm text-app-red">tune</span>Run Configuration
+                </p>
+                <div className="grid grid-cols-3 gap-3">
+                  <Field label="Browser">
+                    <CustomSelect value={form.browser} onChange={(v) => setF('browser', v)} options={BROWSERS} />
+                  </Field>
+                  <Field label="Test Scope">
+                    <CustomSelect value={form.testScope} onChange={(v) => setF('testScope', v)} options={TEST_SCOPES} />
+                  </Field>
+                  <Field label="Parallel">
+                    <CustomSelect value={form.parallel} onChange={(v) => setF('parallel', v)} options={PARALLEL_MODES} />
+                  </Field>
+                </div>
+                <p className="text-[11px] text-on-surface-variant dark:text-slate-500">
+                  {form.testScope === 'Smoke'
+                    ? 'Runs the whole @Smoke suite'
+                    : 'Runs only the newly generated spec'} on {form.browser === 'All' ? 'all browsers' : form.browser}
+                  {form.parallel === 'Serial' ? ', one test at a time.' : ', in parallel.'}
+                </p>
               </div>
 
               <Field label="Comments">
