@@ -184,14 +184,19 @@ async function requestGenerate(job, onLog) {
 
 /**
  * Poll the active provider for job progress. Only meaningful for async
- * providers (github); sync providers return the job state unchanged.
+ * providers (github, github-actions); sync providers return the job state unchanged.
+ * Keys off the JOB's provider (set at dispatch time) rather than the global
+ * AUTOMATION_PROVIDER — a job dispatched to the cloud runner must keep being polled as
+ * github-actions even when the server's default provider is local, otherwise progress
+ * returns an empty no-op and the run console freezes on the dispatch header.
  * Returns { status, prUrl, checksStatus, executionStatus, logs }.
  */
 async function requestProgress(job) {
-  if (provider() === 'github') {
+  const prov = (job && job.provider) || provider();
+  if (prov === 'github') {
     return githubAgent.getProgress(job);
   }
-  if (provider() === 'github-actions') {
+  if (prov === 'github-actions') {
     return githubAgent.getWorkflowRunProgress(job);
   }
   return { status: job.status, prUrl: job.prUrl || '', checksStatus: job.checksStatus || '', executionStatus: job.executionStatus || '', logs: [] };

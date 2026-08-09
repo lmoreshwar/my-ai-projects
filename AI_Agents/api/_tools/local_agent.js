@@ -705,26 +705,75 @@ function mergeNewTestsIntoSpec(prior, llmContent, wantId) {
 }
 
 /**
+ * Canonicalize a data-source expression to a stable key so two variables that point at
+ * the SAME underlying record collapse to one identity. This is what lets a locked-user
+ * case written as `testData.invalidLogins.find(l => l.username === 'locked_out_user')`
+ * and another written as `.find(l => l.description === 'Locked out user')` be recognized
+ * as the same data (both resolve to invalidLogins[0]). Returns '' when unresolvable.
+ */
+function canonicalDataKey(expr, testData) {
+  const e = String(expr || '').trim();
+  let m = e.match(/credentials\s*\(\s*['"`]([^'"`]+)['"`]\s*\)/);
+  if (m) return `CRED#${m[1]}`;
+  // testData.<coll>.find((x) => x.<field> === '<literal>') → resolve to the array index
+  m = e.match(/testData\.(\w+)\s*\.\s*find\s*\(\s*\(?[\w$]+\)?\s*=>\s*[\w$]+\.(\w+)\s*===\s*['"`]([^'"`]+)['"`]/);
+  if (m && testData) {
+    const [, coll, field, lit] = m;
+    const arr = testData[coll];
+    if (Array.isArray(arr)) {
+      const idx = arr.findIndex((r) => r && String(r[field]) === lit);
+      if (idx >= 0) return `${coll}#${idx}`;
+    }
+  }
+  m = e.match(/testData\.(\w+)\s*\[\s*(\d+)\s*\]/);       // testData.<coll>[<i>]
+  if (m) return `${m[1]}#${m[2]}`;
+  m = e.match(/testData\.([\w.]+)/);                      // testData.<path> (scalar)
+  if (m) return `DATA#${m[1]}`;
+  return '';
+}
+
+/**
+ * Map every `const/let X = <data-expr>` declaration in a spec (describe-scope AND
+ * inside test bodies) to its canonical data key, so behavioral signatures compare by
+ * WHICH data a test drives, not by the local variable name a given generation happened
+ * to pick.
+ */
+function dataVarMap(fileContent, testData) {
+  const map = new Map();
+  const re = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;]+?)!?\s*;/g;
+  let m;
+  while ((m = re.exec(fileContent || '')) !== null) {
+    const key = canonicalDataKey(m[2], testData);
+    if (key) map.set(m[1], key);
+  }
+  return map;
+}
+
+/**
  * Behavioral signature of a test body — captures WHAT the test does, independent of
  * its id/title/wording, so two cases that drive the same workflow collapse to the
  * same key. Primary key = the ordered workflow-layer (*Module) calls with normalized
- * args (same method + same test-data key + same field ⇒ same signature). Pure UI-state
- * tests have no module action, so they fall back to their sorted assertion targets to
- * avoid colliding two unrelated page-only checks.
+ * args (same method + same RESOLVED test-data record + same field ⇒ same signature).
+ * `varMap` (from dataVarMap) resolves argument variables to their underlying data so a
+ * case doesn't dodge the dedup just by renaming its data variable. Pure UI-state tests
+ * have no module action, so they fall back to their sorted assertion targets to avoid
+ * colliding two unrelated page-only checks.
  */
-function testSignature(body) {
+function testSignature(body, varMap) {
   const text = body || '';
+  const resolve = (args) => args.replace(/([A-Za-z_$][\w$]*)(?=\.)/g, (id) => (varMap && varMap.get(id)) || id);
   const actions = [];
   const aRe = /\b\w+Module\.(\w+)\s*\(([^)]*)\)/g;
   let m;
   while ((m = aRe.exec(text)) !== null) {
-    actions.push(`${m[1]}(${m[2].replace(/\s+/g, '').replace(/['"`]/g, '"')})`);
+    const args = m[2].replace(/\s+/g, '').replace(/['"`]/g, '"');
+    actions.push(`${m[1]}(${resolve(args)})`);
   }
   if (actions.length) return 'ACT:' + actions.join('>');
   const asserts = new Set();
   const eRe = /expect\(\s*([\w.]+(?:\([^)]*\))?)\s*\)\s*\.\s*(not\s*\.\s*)?(\w+)/g;
   while ((m = eRe.exec(text)) !== null) {
-    asserts.add(`${m[1].replace(/\s+/g, '')}|${m[2] ? 'not.' : ''}${m[3]}`);
+    asserts.add(`${resolve(m[1].replace(/\s+/g, ''))}|${m[2] ? 'not.' : ''}${m[3]}`);
   }
   return 'ASRT:' + [...asserts].sort().join('&');
 }
@@ -1336,20 +1385,26 @@ async function generateAndRun(job, onLog) {
     });
     if (batch.length === 0) continue;
     // SEMANTIC (behavioral) DEDUP: a new case whose id/title differ but which drives the
-    // SAME workflow actions (same module method + same test-data key + same field) as an
-    // existing test adds no coverage. Title matching alone misses these (e.g. "SQL injection
-    // ... in username field" vs "Security: SQL Injection ... on username field"). Compare
-    // behavioral signatures and drop the case if the spec already covers it — verbatim.
+    // SAME workflow actions (same module method + same test-data record + same field) as an
+    // existing test adds no coverage. Title matching alone misses these (e.g. "Prevent
+    // locked user login" vs "Locked User Login Attempt"), and so does a raw signature when
+    // the two generations pick different variable names for the same data — so args are
+    // resolved to their underlying testData record before comparing. Drop the case if the
+    // spec already covers it — verbatim.
+    let testData = null;
+    try { testData = JSON.parse(safeRead(path.join(fw, 'src', 'testdata', 'testData.json'), 200000) || '{}'); } catch { testData = null; }
     let dupHit = null;
     for (const f of batch.filter((b) => b.layer === 'spec')) {
       const prior = safeRead(path.join(fw, f.rel), 200000);
+      const priorMap = dataVarMap(prior, testData);
+      const newMap = dataVarMap(f.content, testData);
       const priorBlocks = specTestBlocks(prior);
-      const priorSigs = new Map(priorBlocks.map((b) => [testSignature(b.body), b]));
+      const priorSigs = new Map(priorBlocks.map((b) => [testSignature(b.body, priorMap), b]));
       const newBlocks = specTestBlocks(f.content);
       const mine = newBlocks.find((b) => b.id === normId(tc.id))
         || newBlocks.find((b) => !priorBlocks.some((p) => p.id === b.id));
       if (!mine) continue;
-      const hit = priorSigs.get(testSignature(mine.body));
+      const hit = priorSigs.get(testSignature(mine.body, newMap));
       if (hit) { dupHit = { spec: f.rel, hit }; break; }
     }
     if (dupHit) {
