@@ -17,6 +17,28 @@ function buildProxyAgent() {
     }
 }
 
+// How long the provider asks us to wait after a 429/503, in ms. Prefers the
+// standard Retry-After header, then Groq/OpenAI's "try again in Xs" body text.
+// Returns null when the provider gives no hint (caller falls back to backoff).
+function providerRetryAfterMs(err) {
+    const h = err && err.headers;
+    const raw = h && (typeof h.get === 'function' ? h.get('retry-after') : h['retry-after']);
+    if (raw != null && raw !== '') {
+        const secs = Number(raw);
+        if (Number.isFinite(secs)) return secs * 1000;
+        const when = Date.parse(raw);
+        if (!Number.isNaN(when)) return Math.max(0, when - Date.now());
+    }
+    const msg = (err && (err.message || (err.error && err.error.message))) || '';
+    const m = /try again in\s+([\d.]+)\s*(ms|s|m)?/i.exec(msg);
+    if (m) {
+        const n = parseFloat(m[1]);
+        const unit = (m[2] || 's').toLowerCase();
+        return unit === 'ms' ? n : unit === 'm' ? n * 60000 : n * 1000;
+    }
+    return null;
+}
+
 class LLMConnector {
     constructor(platform, apiKey = null, endpoint = null) {
         this.platform = (platform || 'ollama').toLowerCase();
@@ -240,8 +262,13 @@ class LLMConnector {
                     lastError = err;
                     const status = err.status || err.statusCode || 0;
                     if ((status === 429 || status === 503 || status === 502) && attempt < retries) {
-                        const wait = status === 429 ? attempt * 5000 : attempt * 3000;
-                        console.warn(`[LLM] ${status === 429 ? 'Rate limited' : 'Service unavailable'} (${status}) for ${useModel}. Retrying in ${wait / 1000}s (attempt ${attempt}/${retries})...`);
+                        // Honor the provider's own wait hint (Retry-After / "try again in Xs");
+                        // free-tier 429s are usually a per-minute token window, so a 5s backoff
+                        // just burns another attempt. Fall back to a longer floor for 429.
+                        const hint = providerRetryAfterMs(err);
+                        const floor = status === 429 ? Math.min(60000, attempt * 15000) : attempt * 3000;
+                        const wait = Math.min(90000, hint != null ? hint + 1000 : floor);
+                        console.warn(`[LLM] ${status === 429 ? 'Rate limited' : 'Service unavailable'} (${status}) for ${useModel}. Retrying in ${Math.round(wait / 1000)}s (attempt ${attempt}/${retries})...`);
                         await new Promise(r => setTimeout(r, wait));
                         continue;
                     }
