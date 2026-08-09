@@ -637,13 +637,40 @@ app.post('/github-workflows', async (req, res) => {
         const { token, apiUrl, repo } = req.body;
         const axios = require('axios');
         const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
-        const authHeader = `Bearer ${token}`;
+        const ghHeaders = { 'Authorization': `Bearer ${token}`, 'Accept': 'application/vnd.github+json' };
 
         const wfRes = await axios.get(`${baseUrl}/repos/${repo}/actions/workflows`, {
-            headers: { 'Authorization': authHeader, 'Accept': 'application/vnd.github+json' },
+            headers: ghHeaders,
             timeout: 10000,
         });
-        const workflows = wfRes.data.workflows.map(w => ({ id: w.id, name: w.name, path: w.path, state: w.state }));
+        const all = (wfRes.data.workflows || []).map(w => ({ id: w.id, name: w.name, path: w.path, state: w.state }));
+
+        // The CI/CD page runs the EXISTING suite, so it must only offer workflows a human can
+        // trigger to RUN tests. Exclude internal generation/agent pipelines: they require a
+        // `job_payload`/`job_id` that only the BLAST app supplies, so a manual trigger runs the
+        // LLM agent with nothing to generate and fails. Detect them from their YAML inputs
+        // (authoritative), with a name/path fallback when the file can't be read.
+        const isGeneratorByName = (w) => /blast-runner\.ya?ml$/i.test(w.path || '') || /blast\s*runner/i.test(w.name || '');
+        const runnable = [];
+        for (const w of all) {
+            if (w.state && w.state !== 'active') continue; // skip disabled workflows
+            let yaml = '';
+            try {
+                const cRes = await axios.get(`${baseUrl}/repos/${repo}/contents/${encodeURI(w.path)}`, { headers: ghHeaders, timeout: 10000 });
+                if (cRes.data && cRes.data.content) yaml = Buffer.from(cRes.data.content, 'base64').toString('utf8');
+            } catch { /* fall back to name/path heuristic */ }
+            if (yaml) {
+                if (!/workflow_dispatch:/.test(yaml)) continue; // not manually triggerable
+                const inputs = parseWorkflowDispatchInputs(yaml);
+                if ('job_payload' in inputs || 'job_id' in inputs) continue; // generation agent
+            } else if (isGeneratorByName(w)) {
+                continue;
+            }
+            runnable.push(w);
+        }
+        // Safety net: never return an empty list purely due to content-read failures — fall
+        // back to hiding only the known generation pipeline by name.
+        const workflows = runnable.length ? runnable : all.filter(w => !isGeneratorByName(w));
         return res.json({ status: 'success', workflows });
     } catch (error) {
         const msg = error.response ? `GitHub API ${error.response.status}: ${error.response.data?.message || 'Error'}` : error.message;

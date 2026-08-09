@@ -453,6 +453,8 @@ async function getWorkflowRunProgress(job) {
       prNumber: pr ? pr.number : (job.prNumber || null),
       branch: pr ? pr.branch : (job.branch || ''),
       prMerged: pr ? pr.merged : false,
+      prMergeable: pr ? pr.mergeable : null,
+      prMergeableState: pr ? pr.mergeableState : '',
       checksStatus: effConc || (done ? '' : 'pending'),
       executionStatus: effConc === 'success' ? 'PASSED' : effConc === 'failure' ? 'FAILED' : '',
       runId,
@@ -469,7 +471,12 @@ function runData_jobs(data) {
   return Array.isArray(data && data.jobs) ? data.jobs : [];
 }
 
-/** Find the open BLAST pull request for a job's auto branch. Returns { url, number, branch } | null. */
+/**
+ * Find the open BLAST pull request for a job's auto branch.
+ * Returns { url, number, branch, state, merged, mergeable, mergeableState } | null.
+ * `mergeable`/`mergeableState` come from a follow-up single-PR GET (GitHub computes them
+ * asynchronously, so they may be null on the first read and settle on a later poll).
+ */
 async function findBlastPr(job) {
   const { owner, repo } = repoConfig();
   const branch = `blast/auto-${job.jobId}`;
@@ -480,7 +487,17 @@ async function findBlastPr(job) {
     );
     const pr = (data || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
     if (!pr) return null;
-    return { url: pr.html_url, number: pr.number, branch, state: pr.state, merged: !!pr.merged_at };
+    const base = { url: pr.html_url, number: pr.number, branch, state: pr.state, merged: !!pr.merged_at };
+    if (base.merged) return { ...base, mergeable: true, mergeableState: 'merged' };
+    try {
+      const { data: full } = await axios.get(
+        `${API}/repos/${owner}/${repo}/pulls/${pr.number}`,
+        { headers: headers(), timeout: 12000 },
+      );
+      return { ...base, mergeable: full.mergeable, mergeableState: full.mergeable_state || 'unknown' };
+    } catch {
+      return { ...base, mergeable: null, mergeableState: 'unknown' };
+    }
   } catch {
     return null;
   }
@@ -492,6 +509,16 @@ async function mergePr(job) {
   const pr = await findBlastPr(job);
   if (!pr) return { merged: false, message: 'No pull request found for this job yet.' };
   if (pr.merged) return { merged: true, message: 'Pull request already merged.', prUrl: pr.url };
+  // Block early on a known-dirty PR so the user gets a clear conflict message + resolve link.
+  if (pr.mergeable === false || pr.mergeableState === 'dirty') {
+    return {
+      merged: false,
+      hasConflicts: true,
+      mergeableState: pr.mergeableState,
+      message: `Pull request #${pr.number} has merge conflicts. Resolve them on GitHub, then merge.`,
+      prUrl: pr.url,
+    };
+  }
   try {
     await axios.put(
       `${API}/repos/${owner}/${repo}/pulls/${pr.number}/merge`,
@@ -500,6 +527,17 @@ async function mergePr(job) {
     );
     return { merged: true, message: 'Pull request merged.', prUrl: pr.url };
   } catch (err) {
+    // 405 = not mergeable (conflicts / required checks). Surface it as a conflict hint.
+    const status = err.response && err.response.status;
+    if (status === 405 || status === 409) {
+      return {
+        merged: false,
+        hasConflicts: true,
+        mergeableState: pr.mergeableState || 'dirty',
+        message: `Pull request #${pr.number} could not be merged automatically (conflicts or required checks). Resolve on GitHub, then merge.`,
+        prUrl: pr.url,
+      };
+    }
     return { merged: false, message: friendlyError(err, 'merge PR').message, prUrl: pr.url };
   }
 }

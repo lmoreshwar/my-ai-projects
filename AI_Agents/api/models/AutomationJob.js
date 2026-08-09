@@ -94,6 +94,8 @@ const AutomationJobSchema = new mongoose.Schema({
   branch: { type: String, default: '' },            // git branch created on push-to-gate
   prNumber: { type: Number, default: null },        // BLAST pull request number (cloud gate)
   prMerged: { type: Boolean, default: false },
+  prMergeable: { type: Boolean, default: null },    // GitHub mergeable flag (null until computed)
+  prMergeableState: { type: String, default: '' },  // clean | dirty | blocked | behind | unknown
   logs: [{ type: String }],
   error: { type: String, default: '' },
 

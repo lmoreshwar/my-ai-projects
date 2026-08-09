@@ -367,12 +367,16 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
     return () => { active = false; };
   }, [apiBase]);
 
-  // Live progress: while a job is generating/executing, poll every 2s for fresh logs & status.
+  // Live progress: poll for fresh logs & status. Fast (2s) while generating/executing;
+  // slow (5s) while a PR is open (PushedToGate) so a merge/conflict-resolution done on
+  // GitHub is reflected here automatically instead of leaving the run looking "stuck".
   const activeJobId = activeJob?.jobId;
   const activeStatus = activeJob?.status;
   useEffect(() => {
     if (!activeJobId) return undefined;
-    if (activeStatus !== 'Generating' && activeStatus !== 'Executing') return undefined;
+    const fast = activeStatus === 'Generating' || activeStatus === 'Executing';
+    const slow = activeStatus === 'PushedToGate';
+    if (!fast && !slow) return undefined;
     let active = true;
     const tick = async () => {
       try {
@@ -382,7 +386,7 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
         setJobs((prev) => (Array.isArray(prev) ? prev.map((j) => (j.jobId === job.jobId ? job : j)) : prev));
       } catch { /* keep polling */ }
     };
-    const id = setInterval(tick, 2000);
+    const id = setInterval(tick, fast ? 2000 : 5000);
     return () => { active = false; clearInterval(id); };
   }, [activeJobId, activeStatus, apiBase]);
 
@@ -602,11 +606,17 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
     if (!activeJob) return;
     if (!window.confirm(`Merge the BLAST pull request${activeJob.prNumber ? ` #${activeJob.prNumber}` : ''} into main?`)) return;
     setBusy('merge');
+    setError('');
     try {
       const job = await api(apiBase, `/jobs/${activeJob.jobId}/merge-pr`, { method: 'POST' });
       setActiveJob(job);
       await loadJobs();
-    } catch (e) { setError(e.message); }
+    } catch (e) {
+      setError(e.message);
+      // Merge was rejected (usually conflicts) — refresh so the card reflects the state
+      // the backend just persisted (prMergeable/prMergeableState) and shows the resolve link.
+      try { const job = await api(apiBase, `/jobs/${activeJob.jobId}/progress`); setActiveJob(job); } catch { /* ignore */ }
+    }
     setBusy('');
   };
 
@@ -634,6 +644,14 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
   };
   // Case ids from the active job, for the "Run these cases" shortcut.
   const jobCaseIds = (activeJob?.testCases || []).map((t) => t.id).filter(Boolean).join(', ');
+
+  // Derived PR merge state for the "Merge to main" card.
+  const prMerged = !!(activeJob && (activeJob.prMerged || activeJob.status === 'Merged'));
+  const prState = activeJob?.prMergeableState || '';
+  const prHasConflicts = !prMerged && (activeJob?.prMergeable === false || prState === 'dirty');
+  const prReady = !prMerged && !prHasConflicts && (activeJob?.prMergeable === true || prState === 'clean');
+  const prChecking = !prMerged && !prHasConflicts && !prReady; // GitHub still computing mergeability
+  const conflictsUrl = activeJob?.prUrl ? `${activeJob.prUrl}/conflicts` : '';
 
   /* ── Empty state ── */
   if (cases.length === 0) {
@@ -944,59 +962,135 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
             <InlineReport summary={activeJob.reportSummary} reportUrl={activeJob.reportUrl} reportHref={reportHref} />
           )}
 
-          {/* Next step — run the suite in CI/CD (no manual PR/merge gate) */}
+          {/* Post-run actions: merge the PR into main, then run the suite in CI/CD. */}
           {(activeJob.status === 'Passed' || activeJob.status === 'PushedToGate' || activeJob.status === 'Merged') && (
-            <div className="rounded-lg border border-outline-variant/30 dark:border-slate-700 bg-surface-container-low dark:bg-slate-800/40 p-4 space-y-3">
-              <div className="flex items-center gap-2">
-                <span className="material-symbols-outlined text-app-red">rocket_launch</span>
-                <p className="text-sm font-bold">Next step — run it in CI/CD</p>
-              </div>
-              <p className="text-xs text-on-surface-variant dark:text-slate-400">
-                Automation is generated and green locally. Trigger it on GitHub Actions right from here — pick a
-                suite and you&apos;ll land on the CI/CD page with everything pre-filled. No PR or merge needed to run.
-              </p>
-              <div className="flex flex-wrap items-center gap-2">
-                <button onClick={() => runInCICD({ scope: '@Smoke', note: 'Smoke suite pre-selected from AI Native Playwright. Review and trigger.' })}
-                  className="px-4 py-2 rounded-sm bg-app-red text-white text-sm font-medium hover:bg-app-dark-red flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-lg">bolt</span> Run Smoke Suite
-                </button>
-                <button onClick={() => runInCICD({ scope: '@Regression', note: 'Regression suite pre-selected from AI Native Playwright. Review and trigger.' })}
-                  className="px-4 py-2 rounded-sm bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-lg">science</span> Run Regression Suite
-                </button>
-                {jobCaseIds && (
-                  <button onClick={() => runInCICD({ cases: jobCaseIds, note: `Running only ${jobCaseIds} — pre-filled from AI Native Playwright. Review and trigger.` })}
-                    className="px-4 py-2 rounded-sm border border-app-red text-app-red text-sm font-medium hover:bg-app-red/5 flex items-center gap-1.5">
-                    <span className="material-symbols-outlined text-lg">checklist</span> Run These Cases ({(activeJob.testCases || []).length})
+            <div className="space-y-3">
+
+              {/* ── Card 1: Review & merge the PR into main ── */}
+              {activeJob.prUrl && (
+                <div className={`rounded-lg border p-4 space-y-3 ${prHasConflicts
+                  ? 'border-red-300 dark:border-red-800 bg-red-50/60 dark:bg-red-950/20'
+                  : prMerged
+                    ? 'border-green-300 dark:border-green-800 bg-green-50/60 dark:bg-green-950/20'
+                    : 'border-outline-variant/30 dark:border-slate-700 bg-surface-container-low dark:bg-slate-800/40'}`}>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className={`material-symbols-outlined ${prMerged ? 'text-green-600' : prHasConflicts ? 'text-red-500' : 'text-app-red'}`}>
+                        {prMerged ? 'merge' : prHasConflicts ? 'error' : 'call_merge'}
+                      </span>
+                      <p className="text-sm font-bold">
+                        {prMerged ? 'Merged into main' : 'Review & merge into main'}
+                      </p>
+                    </div>
+                    {/* Mergeability badge */}
+                    {!prMerged && (
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-semibold ${prHasConflicts
+                        ? 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300'
+                        : prReady
+                          ? 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'
+                          : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300'}`}>
+                        <span className="material-symbols-outlined text-[13px]">
+                          {prHasConflicts ? 'warning' : prReady ? 'check_circle' : 'hourglass_top'}
+                        </span>
+                        {prHasConflicts ? 'Conflicts' : prReady ? 'No conflicts' : 'Checking…'}
+                      </span>
+                    )}
+                  </div>
+
+                  {/* PR meta */}
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-on-surface-variant dark:text-slate-400">
+                    {activeJob.prNumber && <span className="font-mono">PR #{activeJob.prNumber}</span>}
+                    {activeJob.branch && <span className="font-mono">{activeJob.branch} → main</span>}
+                    <a href={activeJob.prUrl} target="_blank" rel="noreferrer" className="text-app-red underline inline-flex items-center gap-1">
+                      <span className="material-symbols-outlined text-sm">open_in_new</span> Review PR on GitHub
+                    </a>
+                  </div>
+
+                  {/* Conflict guidance */}
+                  {prHasConflicts && (
+                    <p className="text-xs text-red-700 dark:text-red-300 leading-snug">
+                      This branch conflicts with <span className="font-mono">main</span>. Resolve the conflicts on GitHub,
+                      then come back and merge — the status here updates automatically once it&apos;s mergeable.
+                    </p>
+                  )}
+
+                  {/* Actions */}
+                  {!prMerged && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      {prHasConflicts ? (
+                        <>
+                          <a href={conflictsUrl} target="_blank" rel="noreferrer"
+                            className="px-4 py-2 rounded-sm bg-red-600 text-white text-sm font-medium hover:bg-red-700 flex items-center gap-1.5">
+                            <span className="material-symbols-outlined text-lg">merge_type</span> Resolve conflicts on GitHub
+                          </a>
+                          <button onClick={refreshProgress} disabled={busy === 'progress'}
+                            className="px-4 py-2 rounded-sm border border-outline-variant/50 dark:border-slate-600 text-sm font-medium hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-50 flex items-center gap-1.5">
+                            <span className="material-symbols-outlined text-lg">refresh</span>
+                            {busy === 'progress' ? 'Checking…' : 'Re-check'}
+                          </button>
+                        </>
+                      ) : (
+                        <button onClick={mergePr} disabled={busy === 'merge' || prChecking}
+                          className="px-4 py-2 rounded-sm bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 flex items-center gap-1.5">
+                          <span className="material-symbols-outlined text-lg">merge</span>
+                          {busy === 'merge' ? 'Merging…' : prChecking ? 'Checking mergeability…' : `Merge PR${activeJob.prNumber ? ` #${activeJob.prNumber}` : ''} into main`}
+                        </button>
+                      )}
+                    </div>
+                  )}
+                  {prMerged && (
+                    <p className="text-xs text-green-700 dark:text-green-400 font-medium inline-flex items-center gap-1">
+                      <span className="material-symbols-outlined text-sm">check_circle</span>
+                      Tests are now on <span className="font-mono">main</span>.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Advanced: local jobs can raise a PR to reach the merge gate. */}
+              {activeJob.status === 'Passed' && activeJob.provider !== 'github-actions' && !activeJob.prUrl && (
+                <div className="rounded-lg border border-outline-variant/30 dark:border-slate-700 bg-surface-container-low dark:bg-slate-800/40 p-4">
+                  <button onClick={pushToGate} disabled={busy === 'gate'}
+                    className="px-4 py-2 rounded-sm bg-app-red text-white text-sm font-medium hover:bg-app-dark-red disabled:opacity-50 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-lg">upload</span>
+                    {busy === 'gate' ? 'Raising PR…' : 'Raise a PR to merge into main'}
                   </button>
-                )}
-              </div>
-              {/* Secondary links: report + de-emphasized advanced PR actions */}
-              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1 text-xs">
+                </div>
+              )}
+
+              {/* ── Card 2: Run the suite in CI/CD ── */}
+              <div className="rounded-lg border border-outline-variant/30 dark:border-slate-700 bg-surface-container-low dark:bg-slate-800/40 p-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <span className="material-symbols-outlined text-app-red">rocket_launch</span>
+                  <p className="text-sm font-bold">Run it in CI/CD</p>
+                </div>
+                <p className="text-xs text-on-surface-variant dark:text-slate-400">
+                  Trigger the suite on GitHub Actions. You&apos;ll land on the CI/CD page with the run pre-filled — just review and hit Trigger.
+                </p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button onClick={() => runInCICD({ scope: '@Smoke', note: 'Smoke suite pre-selected from AI Native Playwright. Review and trigger.' })}
+                    className="px-4 py-2 rounded-sm bg-app-red text-white text-sm font-medium hover:bg-app-dark-red flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-lg">bolt</span> Go to GitHub CI/CD · Smoke
+                  </button>
+                  <button onClick={() => runInCICD({ scope: '@Regression', note: 'Regression suite pre-selected from AI Native Playwright. Review and trigger.' })}
+                    className="px-4 py-2 rounded-sm bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-lg">science</span> Regression
+                  </button>
+                  {jobCaseIds && (
+                    <button onClick={() => runInCICD({ cases: jobCaseIds, note: `Running only ${jobCaseIds} — pre-filled from AI Native Playwright. Review and trigger.` })}
+                      className="px-4 py-2 rounded-sm border border-app-red text-app-red text-sm font-medium hover:bg-app-red/5 flex items-center gap-1.5">
+                      <span className="material-symbols-outlined text-lg">checklist</span> These Cases ({(activeJob.testCases || []).length})
+                    </button>
+                  )}
+                  <button onClick={() => onNavigate && onNavigate('github-cicd')}
+                    className="px-4 py-2 rounded-sm border border-outline-variant/50 dark:border-slate-600 text-sm font-medium hover:bg-black/5 dark:hover:bg-white/5 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-lg">open_in_new</span> Open CI/CD
+                  </button>
+                </div>
                 {activeJob.reportUrl && (
-                  <a href={reportHref(activeJob.reportUrl)} target="_blank" rel="noreferrer" className="text-app-red underline inline-flex items-center gap-1">
+                  <a href={reportHref(activeJob.reportUrl)} target="_blank" rel="noreferrer" className="text-app-red underline inline-flex items-center gap-1 text-xs">
                     <span className="material-symbols-outlined text-sm">description</span> HTML report ↗
                   </a>
-                )}
-                {activeJob.prUrl && (
-                  <a href={activeJob.prUrl} target="_blank" rel="noreferrer" className="text-slate-500 dark:text-slate-400 underline">
-                    Open PR{activeJob.branch ? ` · ${activeJob.branch}` : ''} →
-                  </a>
-                )}
-                {activeJob.status === 'Passed' && activeJob.provider !== 'github-actions' && !activeJob.prUrl && (
-                  <button onClick={pushToGate} disabled={busy === 'gate'} className="text-slate-500 dark:text-slate-400 underline disabled:opacity-50">
-                    {busy === 'gate' ? 'Raising PR…' : 'Advanced: raise a PR to merge into main'}
-                  </button>
-                )}
-                {activeJob.prUrl && !activeJob.prMerged && activeJob.status !== 'Merged' && (
-                  <button onClick={mergePr} disabled={busy === 'merge'} className="text-slate-500 dark:text-slate-400 underline disabled:opacity-50">
-                    {busy === 'merge' ? 'Merging…' : `Merge PR${activeJob.prNumber ? ` #${activeJob.prNumber}` : ''}`}
-                  </button>
-                )}
-                {(activeJob.prMerged || activeJob.status === 'Merged') && (
-                  <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400 font-semibold">
-                    <span className="material-symbols-outlined text-sm">check_circle</span> Merged into main
-                  </span>
                 )}
               </div>
             </div>

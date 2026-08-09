@@ -122,7 +122,15 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
         const data = await res.json();
         if (data.workflows) {
           setWorkflows(data.workflows);
-          if (data.workflows.length === 1) setSelectedWorkflow(data.workflows[0].id);
+          const ids = data.workflows.map(w => w.id);
+          // Reset a stale/hidden selection (e.g. a previously-picked generation workflow that
+          // is no longer offered), then auto-pick the Playwright runner or the sole option.
+          setSelectedWorkflow(prev => {
+            if (prev && ids.includes(prev)) return prev;
+            const pw = data.workflows.find(w => /playwright/i.test(`${w.name} ${w.path}`));
+            if (pw) return pw.id;
+            return data.workflows.length === 1 ? data.workflows[0].id : '';
+          });
         }
       } catch { /* silent */ }
     })();

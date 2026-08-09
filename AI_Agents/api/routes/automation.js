@@ -322,6 +322,8 @@ router.get('/jobs/:jobId/progress', auth, async (req, res) => {
       if (progress.prNumber) job.prNumber = progress.prNumber;
       if (progress.branch) job.branch = progress.branch;
       if (progress.prMerged !== undefined) job.prMerged = progress.prMerged;
+      if (progress.prMergeable !== undefined) job.prMergeable = progress.prMergeable;
+      if (progress.prMergeableState !== undefined) job.prMergeableState = progress.prMergeableState;
       if (progress.checksStatus !== undefined) job.checksStatus = progress.checksStatus;
       if (progress.executionStatus !== undefined) job.executionStatus = progress.executionStatus;
       if (progress.runId) job.runId = progress.runId;
@@ -389,10 +391,15 @@ router.post('/jobs/:jobId/merge-pr', auth, async (req, res) => {
     if (result.merged) {
       job.prMerged = true;
       job.status = 'Merged';
+    } else if (result.hasConflicts) {
+      job.prMergeable = false;
+      job.prMergeableState = result.mergeableState || 'dirty';
     }
     job.logs = [...(job.logs || []), `[merge] ${result.message}`];
     const saved = await persist(job);
-    if (!result.merged) return res.status(400).json({ ...saved, msg: result.message });
+    if (!result.merged) {
+      return res.status(400).json({ ...saved.toObject?.() ?? saved, msg: result.message, hasConflicts: !!result.hasConflicts });
+    }
     res.json(saved);
   } catch (err) {
     console.error('merge-pr error:', err.message);
