@@ -654,7 +654,7 @@ app.post('/github-workflows', async (req, res) => {
 // Trigger a workflow_dispatch
 app.post('/github-trigger-workflow', async (req, res) => {
     try {
-        const { token, apiUrl, repo, workflowId, branch } = req.body;
+        const { token, apiUrl, repo, workflowId, branch, inputs } = req.body;
         const axios = require('axios');
         const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
         const authHeader = `Bearer ${token}`;
@@ -668,13 +668,21 @@ app.post('/github-trigger-workflow', async (req, res) => {
             previousRunId = preRes.data.workflow_runs?.[0]?.id || null;
         } catch { /* ignore */ }
 
-        // Dispatch the workflow
-        await axios.post(`${baseUrl}/repos/${repo}/actions/workflows/${workflowId}/dispatches`, {
-            ref: branch || 'main',
-        }, {
-            headers: ghHeaders,
-            timeout: 15000,
-        });
+        // Only forward non-empty inputs; GitHub rejects unknown keys, so on a 422
+        // ("Unexpected inputs") we retry without them so any workflow can still trigger.
+        const cleanInputs = Object.fromEntries(
+            Object.entries(inputs || {}).filter(([, v]) => v !== undefined && v !== null && v !== ''),
+        );
+        const dispatchUrl = `${baseUrl}/repos/${repo}/actions/workflows/${workflowId}/dispatches`;
+        const dispatchBody = { ref: branch || 'main' };
+        if (Object.keys(cleanInputs).length) dispatchBody.inputs = cleanInputs;
+        try {
+            await axios.post(dispatchUrl, dispatchBody, { headers: ghHeaders, timeout: 15000 });
+        } catch (err) {
+            const unexpected = err.response?.status === 422 && dispatchBody.inputs;
+            if (!unexpected) throw err;
+            await axios.post(dispatchUrl, { ref: branch || 'main' }, { headers: ghHeaders, timeout: 15000 });
+        }
 
         // Wait briefly then fetch the latest run for this workflow
         await new Promise(r => setTimeout(r, 2000));

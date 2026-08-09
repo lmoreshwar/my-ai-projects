@@ -99,7 +99,10 @@ export default function CustomSelect({
                 key={opt.value ?? i}
                 role="option"
                 aria-selected={isActive}
-                onClick={(e) => {
+                onMouseDown={(e) => {
+                  // Handle on mousedown (before the document outside-click listener) so the
+                  // menu always closes on select, regardless of event timing.
+                  e.preventDefault();
                   e.stopPropagation();
                   setOpen(false);
                   onChange(opt.value);

@@ -1,6 +1,32 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import CustomSelect from './CustomSelect';
 
+// Run-configuration options for the workflow trigger (mapped to playwright.yml inputs).
+const ENVIRONMENTS = [
+  { value: 'qa', label: 'QA' },
+  { value: 'uat', label: 'UAT' },
+  { value: 'dev', label: 'Dev' },
+];
+const BROWSERS = [
+  { value: 'desktop-chrome', label: 'Chrome' },
+  { value: 'desktop-firefox', label: 'Firefox' },
+  { value: 'desktop-safari', label: 'Safari (WebKit)' },
+  { value: 'desktop-edge', label: 'Edge' },
+  { value: 'mobile-chrome', label: 'Mobile Chrome' },
+  { value: 'all', label: 'All browsers' },
+];
+// UI label → Playwright --grep tag ('' = whole suite).
+const TEST_SCOPES = [
+  { value: '', label: 'All tests' },
+  { value: '@Smoke', label: 'Smoke (@Smoke)' },
+  { value: '@Regression', label: 'Regression (@Regression)' },
+  { value: '@P0', label: 'Critical (@P0)' },
+];
+const PARALLEL_MODES = [
+  { value: '', label: 'Auto (config default)' },
+  { value: '1', label: 'Serial (1 worker)' },
+];
+
 export default function GitHubCICD({ connections, apiBase, cicdState, setCicdState }) {
   /* ── Lifted state from App.jsx for persistence ── */
   const workflows = cicdState.workflows;
@@ -39,6 +65,13 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [loadingReport, setLoadingReport] = useState(false);
+
+  /* ── Run configuration (mapped to playwright.yml inputs on trigger) ── */
+  const [cfgEnv, setCfgEnv] = useState('qa');
+  const [cfgBrowser, setCfgBrowser] = useState('desktop-chrome');
+  const [cfgScope, setCfgScope] = useState('');
+  const [cfgParallel, setCfgParallel] = useState('');
+  const [cfgAllure, setCfgAllure] = useState(true);
   const pollingRef = useRef(null);
   const logContainerRef = useRef(null);
 
@@ -251,6 +284,13 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
           repo: selectedRepo,
           workflowId: selectedWorkflow,
           branch: selectedBranch || 'main',
+          inputs: {
+            environment: cfgEnv,
+            browser: cfgBrowser,
+            test_grep: cfgScope,
+            workers: cfgParallel,
+            generate_allure: cfgAllure ? 'true' : 'false',
+          },
         }),
       });
       const data = await res.json();
@@ -343,7 +383,7 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
       {/* Header */}
       <div className="mb-10">
         <div className="flex items-center justify-between">
-          <h1 className="text-4xl font-black tracking-tight text-app-red mb-2">GitHub CICD Dashboard</h1>
+          <h1 className="text-4xl font-black tracking-tight text-app-red mb-2">GitHub CI/CD</h1>
           {(cicdState.activeRun || cicdState.jobs.length > 0 || cicdState.reportData || cicdState.logLines.length > 0) && (
             <button
               onClick={() => { if (confirm('Clear all CI/CD data? This will reset run results, jobs, logs, report, and artifacts.')) { setCicdState(s => ({ ...s, activeRun: null, jobs: [], artifacts: [], logLines: [], htmlReport: null, reportData: null, testResults: { passed: 0, failed: 0, skipped: 0, total: 0 }, showReport: false })); } }}
@@ -438,6 +478,53 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
                     options={workflows.map(w => ({ value: w.id, label: `${w.name} (${w.path})` }))}
                   />
               </div>
+            </div>
+
+            {/* Run configuration — mapped to the workflow's dispatch inputs. */}
+            <div className="space-y-4 pt-2 border-t border-outline-variant/20">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-app-red text-base">tune</span>
+                <h4 className="font-bold text-on-surface dark:text-white uppercase tracking-widest text-[0.7rem]">Run Configuration</h4>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[0.7rem] font-bold text-secondary dark:text-slate-400 mb-1.5 uppercase tracking-wide">Environment</label>
+                  <CustomSelect value={cfgEnv} onChange={setCfgEnv} disabled={!isConnected} options={ENVIRONMENTS} />
+                </div>
+                <div>
+                  <label className="block text-[0.7rem] font-bold text-secondary dark:text-slate-400 mb-1.5 uppercase tracking-wide">Browser</label>
+                  <CustomSelect value={cfgBrowser} onChange={setCfgBrowser} disabled={!isConnected} options={BROWSERS} />
+                </div>
+                <div>
+                  <label className="block text-[0.7rem] font-bold text-secondary dark:text-slate-400 mb-1.5 uppercase tracking-wide">Test Scope</label>
+                  <CustomSelect value={cfgScope} onChange={setCfgScope} disabled={!isConnected} options={TEST_SCOPES} />
+                </div>
+                <div>
+                  <label className="block text-[0.7rem] font-bold text-secondary dark:text-slate-400 mb-1.5 uppercase tracking-wide">Parallel</label>
+                  <CustomSelect value={cfgParallel} onChange={setCfgParallel} disabled={!isConnected} options={PARALLEL_MODES} />
+                </div>
+              </div>
+            </div>
+
+            {/* Post-build actions. */}
+            <div className="space-y-3 pt-2 border-t border-outline-variant/20">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-app-red text-base">deployed_code</span>
+                <h4 className="font-bold text-on-surface dark:text-white uppercase tracking-widest text-[0.7rem]">Post-build Actions</h4>
+              </div>
+              <label className="flex items-center gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={cfgAllure}
+                  onChange={(e) => setCfgAllure(e.target.checked)}
+                  disabled={!isConnected}
+                  className="w-4 h-4 accent-app-red rounded"
+                />
+                <span className="text-sm text-on-surface dark:text-slate-200">Generate Allure report</span>
+              </label>
+              <p className="text-[0.7rem] text-on-surface-variant dark:text-slate-500 leading-snug">
+                Config applies only to workflows that declare matching inputs (e.g. <span className="font-mono">playwright.yml</span>); others trigger with their defaults.
+              </p>
             </div>
 
             {/* Trigger Button */}

@@ -140,7 +140,7 @@ export default function Sidebar({ activePage, onNavigate, onToggleDark, collapse
             {/* ── GitHub CICD ── */}
             <button
               onClick={() => handleNav('github-cicd')}
-              title={collapsed ? 'GitHub CICD' : ''}
+              title={collapsed ? 'GitHub CI/CD' : ''}
               className={`flex items-center ${collapsed ? 'justify-center px-0' : 'gap-4 px-4'} py-3 w-full text-left transition-all rounded-sm ${
                 activePage === 'github-cicd'
                   ? 'nav-item-active'
@@ -150,7 +150,7 @@ export default function Sidebar({ activePage, onNavigate, onToggleDark, collapse
               <span className={`material-symbols-outlined ${activePage === 'github-cicd' ? '' : 'text-app-dark-red dark:text-app-red'}`}>
                 rocket_launch
               </span>
-              {!collapsed && <span className="text-sm">GitHub CICD</span>}
+              {!collapsed && <span className="text-sm">GitHub CI/CD</span>}
             </button>
 
             {/* ── Zephyr Dashboard (last item) ── */}
