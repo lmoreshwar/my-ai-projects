@@ -434,17 +434,34 @@ async function getWorkflowRunProgress(job) {
     const pr = await findBlastPr(job);
     if (pr) done = true;
 
-    let status = !done ? 'Executing' : effConc === 'success' ? 'Passed' : 'Failed';
+    // A green GitHub run is NOT proof of success: the runner exits 0 even when the
+    // completion gate FAILS (requested cases not automated → PR suppressed). Read the
+    // BLAST result artifact to learn the true outcome.
+    let result = null;
+    if (done && !pr) result = await getRunResult(job, runId);
+    const verified = !result || result.verified !== false;
+    const missingCases = (result && result.missingCases) || [];
+    const changedPaths = (result && result.changedPaths) || [];
+    const gateFailed = done && !pr && (!verified || effConc === 'failure');
+
+    let status = !done ? 'Executing' : (effConc === 'success' && !gateFailed) ? 'Passed' : 'Failed';
     if (pr && !pr.merged) status = 'PushedToGate';
     if (done) {
-      lines.push('', effConc === 'success' ? '✓ Run completed successfully.' : `✗ Run ${effConc || 'failed'}.`);
-      if (pr) lines.push(pr.merged ? `✓ Pull Request #${pr.number} merged.` : `⏸ Pull Request #${pr.number} opened — waiting for you to merge.`);
+      if (gateFailed) {
+        lines.push('', '✗ Generation did not pass the completion gate — no Pull Request was opened.');
+        if (missingCases.length) lines.push(`   Requested case(s) not automated: ${missingCases.join(', ')}.`);
+        lines.push('   Review the run logs and re-run; the existing tests were left unchanged.');
+      } else {
+        lines.push('', effConc === 'success' ? '✓ Run completed successfully.' : `✗ Run ${effConc || 'failed'}.`);
+        if (pr) lines.push(pr.merged ? `✓ Pull Request #${pr.number} merged.` : `⏸ Pull Request #${pr.number} opened — waiting for you to merge.`);
+        else if (verified && changedPaths.length === 0) lines.push('ℹ All requested case(s) already automated — nothing new to add (reuse). No Pull Request needed.');
+      }
     }
 
     // Pull the parsed report summary once the run is functionally done (only if not cached).
     let reportSummary;
     if (done && !job.reportSummary) {
-      reportSummary = await getRunReportSummary(job, runId);
+      reportSummary = result ? (result.reportSummary || null) : await getRunReportSummary(job, runId);
     }
 
     return {
@@ -455,8 +472,11 @@ async function getWorkflowRunProgress(job) {
       prMerged: pr ? pr.merged : false,
       prMergeable: pr ? pr.mergeable : null,
       prMergeableState: pr ? pr.mergeableState : '',
-      checksStatus: effConc || (done ? '' : 'pending'),
-      executionStatus: effConc === 'success' ? 'PASSED' : effConc === 'failure' ? 'FAILED' : '',
+      checksStatus: gateFailed ? 'failed' : (effConc || (done ? '' : 'pending')),
+      executionStatus: gateFailed ? 'FAILED' : effConc === 'success' ? 'PASSED' : effConc === 'failure' ? 'FAILED' : '',
+      gateFailed,
+      verified,
+      missingCases,
       runId,
       runHtmlUrl,
       reportSummary,
@@ -577,10 +597,11 @@ async function listDir(dirPath, ref) {  const { owner, repo, branch } = repoConf
 }
 
 /**
- * Download the run's `blast-result-<jobId>` artifact and extract the parsed Playwright
- * report summary (pass/fail counts + per-test steps). Returns null when unavailable.
+ * Download the run's `blast-result-<jobId>` artifact and return the FULL parsed
+ * blast-ci-result.json (verified, missingCases, changedPaths, executionStatus,
+ * reportSummary, …). Returns null when unavailable.
  */
-async function getRunReportSummary(job, runId) {
+async function getRunResult(job, runId) {
   const { owner, repo } = repoConfig();
   const id = runId || job.runId;
   if (!id) return null;
@@ -602,11 +623,19 @@ async function getRunReportSummary(job, runId) {
     const zip = new PizZip(Buffer.from(zipRes.data));
     const entry = zip.file('blast-ci-result.json');
     if (!entry) return null;
-    const parsed = JSON.parse(entry.asText());
-    return parsed.reportSummary || null;
+    return JSON.parse(entry.asText());
   } catch {
     return null;
   }
+}
+
+/**
+ * Download the run's `blast-result-<jobId>` artifact and extract the parsed Playwright
+ * report summary (pass/fail counts + per-test steps). Returns null when unavailable.
+ */
+async function getRunReportSummary(job, runId) {
+  const result = await getRunResult(job, runId);
+  return (result && result.reportSummary) || null;
 }
 
 module.exports = {
@@ -618,6 +647,7 @@ module.exports = {
   dispatchWorkflow,
   getWorkflowRunProgress,
   getRunReportSummary,
+  getRunResult,
   findBlastPr,
   mergePr,
   getFileContent,

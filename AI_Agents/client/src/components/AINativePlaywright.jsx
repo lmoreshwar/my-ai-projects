@@ -962,6 +962,41 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
             <InlineReport summary={activeJob.reportSummary} reportUrl={activeJob.reportUrl} reportHref={reportHref} />
           )}
 
+          {/* Failure panel — the run finished but the completion gate did NOT pass.
+              No PR was opened, so the post-run merge / CI-CD actions are intentionally hidden. */}
+          {activeJob.status === 'Failed' && (
+            <div className="rounded-lg border border-red-300 dark:border-red-800 bg-red-50/60 dark:bg-red-950/20 p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-red-600 dark:text-red-400">cancel</span>
+                <p className="text-sm font-bold text-red-700 dark:text-red-300">Automation did not pass the gate</p>
+              </div>
+              <p className="text-xs text-red-700 dark:text-red-300 leading-snug">
+                {activeJob.gateFailed
+                  ? 'The run finished but the requested case(s) were not automated, so no Pull Request was opened. Your existing tests were left unchanged. Review the run logs, then re-run.'
+                  : (activeJob.error || 'The run failed. Review the logs below and re-run.')}
+              </p>
+              {Array.isArray(activeJob.missingCases) && activeJob.missingCases.length > 0 && (
+                <div className="text-xs text-red-700 dark:text-red-300">
+                  <span className="font-semibold">Not automated:</span>{' '}
+                  <span className="font-mono">{activeJob.missingCases.join(', ')}</span>
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                {activeJob.reportUrl && (
+                  <a href={activeJob.reportUrl} target="_blank" rel="noreferrer"
+                    className="px-4 py-2 rounded-sm bg-red-600 text-white text-sm font-medium hover:bg-red-700 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-lg">open_in_new</span> View run logs on GitHub
+                  </a>
+                )}
+                <button onClick={refreshProgress} disabled={busy === 'progress'}
+                  className="px-4 py-2 rounded-sm border border-red-300 dark:border-red-700 text-red-700 dark:text-red-300 text-sm font-medium hover:bg-red-100/50 dark:hover:bg-red-900/20 disabled:opacity-50 flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-lg">refresh</span>
+                  {busy === 'progress' ? 'Checking…' : 'Re-check status'}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Post-run actions: merge the PR into main, then run the suite in CI/CD. */}
           {(activeJob.status === 'Passed' || activeJob.status === 'PushedToGate' || activeJob.status === 'Merged') && (
             <div className="space-y-3">

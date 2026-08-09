@@ -96,6 +96,8 @@ const AutomationJobSchema = new mongoose.Schema({
   prMerged: { type: Boolean, default: false },
   prMergeable: { type: Boolean, default: null },    // GitHub mergeable flag (null until computed)
   prMergeableState: { type: String, default: '' },  // clean | dirty | blocked | behind | unknown
+  gateFailed: { type: Boolean, default: false },    // true when the run finished but the completion gate failed (no PR)
+  missingCases: [{ type: String }],                 // requested case ids the runner could not automate
   logs: [{ type: String }],
   error: { type: String, default: '' },
 

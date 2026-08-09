@@ -326,6 +326,8 @@ router.get('/jobs/:jobId/progress', auth, async (req, res) => {
       if (progress.prMergeableState !== undefined) job.prMergeableState = progress.prMergeableState;
       if (progress.checksStatus !== undefined) job.checksStatus = progress.checksStatus;
       if (progress.executionStatus !== undefined) job.executionStatus = progress.executionStatus;
+      if (progress.gateFailed !== undefined) job.gateFailed = progress.gateFailed;
+      if (Array.isArray(progress.missingCases)) { job.missingCases = progress.missingCases; job.markModified('missingCases'); }
       if (progress.runId) job.runId = progress.runId;
       if (progress.runHtmlUrl) job.reportUrl = progress.runHtmlUrl;
       if (progress.reportSummary) { job.reportSummary = progress.reportSummary; job.markModified('reportSummary'); }
