@@ -147,7 +147,7 @@ function readGrounding(fw, job) {
     activeSkill: active,
     skillActive: safeRead(path.join(fw, '.github', 'skills', active.dir, 'SKILL.md'), b.skill),
     skillHeal: b.heal ? safeRead(path.join(fw, '.github', 'skills', 'pw-self-healing', 'SKILL.md'), b.heal) : '',
-    capabilities: safeRead(path.join(fw, '.ai-memory', 'capabilities.json'), b.caps),
+    capabilities: groundingIndex(fw, job, b.caps),
     pageEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'pages'), 'Page.ts'), b.ex),
     moduleEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'modules'), 'Module.ts'), b.ex),
     specEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'tests'), '.spec.ts'), b.spec),
@@ -241,12 +241,77 @@ function listSpecs(fw) {
 }
 
 /**
- * Is this case already automated in ANY spec (not just its resolved domain)? Returns
- * the spec rel path where it lives, or '' if genuinely new. Prevents cross-file
- * duplicate ids (e.g. adding TC_011 to InventoryAccess when it already lives in login).
+ * Read the sharded reuse manifest (.ai-memory/capabilities.json, v2). Returns null
+ * for a missing/legacy index so callers fall back to scanning spec files.
+ */
+function readManifest(fw) {
+  try {
+    const p = path.join(fw, '.ai-memory', 'capabilities.json');
+    if (!fs.existsSync(p)) return null;
+    const m = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    return m && m.testIndex && /v2-sharded/.test(String(m.$schema || '')) ? m : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Canonicalize a TC id (TC1, tc-12, TC_007) to the manifest key form `TC_0NN`. */
+function normId(id) {
+  const m = String(id || '').match(/TC[_-]?0*(\d+)/i);
+  return m ? 'TC_' + m[1].padStart(3, '0') : '';
+}
+
+/**
+ * Grounding payload for the reuse index. With the v2 sharded manifest this injects a
+ * lightweight OVERVIEW of every domain PLUS only the shard for the domain in play
+ * (bounded tokens at thousands of tests). Falls back to the raw file for a legacy index.
+ */
+function groundingIndex(fw, job, budget) {
+  const capsPath = path.join(fw, '.ai-memory', 'capabilities.json');
+  const man = readManifest(fw);
+  if (!man) return safeRead(capsPath, budget);
+  const overview = {
+    $schema: man.$schema,
+    purpose: man.purpose,
+    counts: man.counts,
+    fixtures: man.fixtures,
+    utils: man.utils,
+    shardDir: man.shardDir,
+    domains: man.domains,
+  };
+  let text = '### Reuse manifest (all domains — READ FIRST, reuse before creating)\n'
+    + JSON.stringify(overview, null, 2);
+  const key = String(resolveDomain(fw, job).base || '').toLowerCase();
+  const shard = key ? safeRead(path.join(fw, '.ai-memory', 'domains', `${key}.json`), Math.max(2000, budget)) : '';
+  if (shard) {
+    text += `\n\n### Domain shard "${key}" (existing locators/methods/tests to REUSE or EXTEND — do NOT recreate)\n` + shard;
+  }
+  return text;
+}
+
+/**
+ * Is this case already automated in ANY domain? Returns the spec rel path where it
+ * lives, or '' if genuinely new. Uses the manifest's global testIndex (O(1), no
+ * per-spec file reads) — title-first because TC ids are NOT globally unique, so a
+ * bare id collision with a different title must NOT count. Falls back to scanning
+ * spec files when the manifest is missing/legacy.
  */
 function caseCoveredAnywhere(fw, tc) {
   if (!fw || !fs.existsSync(fw)) return '';
+  const man = readManifest(fw);
+  if (man && man.testIndex) {
+    const want = normalizeText(tc && tc.title);
+    if (want.length >= 6) {
+      for (const e of Object.values(man.testIndex)) {
+        const have = normalizeText(e.title);
+        if (have.includes(want) || want.includes(have)) return e.spec;
+      }
+    }
+    const rid = normId(tc && tc.id);
+    const hit = rid ? man.testIndex[rid] : null;
+    if (hit && titleOverlap(tc && tc.title, hit.title) >= 0.6) return hit.spec;
+    return '';
+  }
   for (const s of listSpecs(fw)) {
     if (caseCoveredInSpec(s.content, tc)) return s.rel;
   }
@@ -408,7 +473,7 @@ function buildGeneratePrompt(job, g, snapshot, existing) {
     g.skillActive ? `\n## Active skill: ${g.activeSkill ? g.activeSkill.tag : 'pw-new-automation'} (selected in the UI — follow this skill's workflow)\n` + g.skillActive : '',
     g.skillHeal && (!g.activeSkill || g.activeSkill.key !== 'heal') ? '\n## Skill: pw-self-healing (SmartLocator fallback chain — apply only to genuinely fragile locators)\n' + g.skillHeal : '',
     skillModeDirective(job),
-    '\n## Reuse index (capabilities.json)\n' + g.capabilities,
+    '\n## Reuse index — READ FIRST (sharded manifest + the relevant domain shard). Every asset listed here ALREADY EXISTS — reuse locators/methods/tests; do NOT recreate them.\n' + g.capabilities,
     snapshot ? '\n## Live page snapshot (EVIDENCE — derive real locators from these roles/names)\n' + snapshot : '',
     existingBlock
       ? '\n## Existing domain files — EXTEND these (return full content, keep every existing test/locator/method, ADD the new cases)\n' + existingBlock
