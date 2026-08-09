@@ -118,7 +118,7 @@ class LLMConnector {
             else if (this.platform === 'gemini') model = 'gemini-flash-latest';
             else if (this.platform === 'grok') model = 'grok-2';
             else if (this.platform === 'nvidia') model = 'nvidia/nemotron-3-super-120b-a12b';
-            else if (this.platform === 'openai') model = 'gpt-4o';
+            else if (this.platform === 'openai') model = 'gpt-5.6-luna';
         }
 
         // Gemini fallback chain — if the primary model is unavailable (503) or

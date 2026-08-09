@@ -76,7 +76,7 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
   // Recommended default model per LLM provider (first dropdown option for each).
   const LLM_DEFAULT_MODEL = {
     gemini: 'gemini-flash-latest',
-    openai: 'gpt-4o-mini',
+    openai: 'gpt-5.6-luna',
     groq: 'openai/gpt-oss-120b',
     grok: 'grok-2',
     nvidia: 'qwen/qwen3-coder-480b-a35b-instruct',
@@ -407,6 +407,9 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                       ]
                     : connections.llm.platform === 'openai'
                     ? [
+                        { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna (fast, cheapest)' },
+                        { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra (balanced)' },
+                        { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol (flagship)' },
                         { value: 'gpt-4o-mini', label: 'GPT-4o Mini (fast)' },
                         { value: 'gpt-4o', label: 'GPT-4o' },
                         { value: 'o3-mini', label: 'o3 Mini (reasoning)' },

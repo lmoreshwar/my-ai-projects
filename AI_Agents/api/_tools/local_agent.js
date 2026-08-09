@@ -29,7 +29,7 @@ const DEFAULT_MODEL = {
   groq: 'openai/gpt-oss-120b',
   gemini: 'gemini-flash-latest',
   grok: 'grok-2',
-  openai: 'gpt-4o',
+  openai: 'gpt-5.6-luna',
   nvidia: 'nvidia/nemotron-3-super-120b-a12b',
   ollama: 'llama3',
 };
