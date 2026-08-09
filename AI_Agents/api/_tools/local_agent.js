@@ -195,18 +195,37 @@ function idInText(text, tc) {
   return normalizeText(text).includes(title);
 }
 
+/** The title text the spec itself attaches to a given case id, e.g. `test('TC_009 UI Validation …'`. */
+function specTitleForId(specText, id) {
+  const esc = String(id || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const m = specText.match(new RegExp(`test\\s*\\(\\s*['"\`]\\s*${esc}\\b([^'"\`]*)`, 'i'));
+  return m ? m[1] : '';
+}
+
+/** Fraction of the requested title's significant tokens that appear in the spec's title for that id. */
+function titleOverlap(requested, specTitle) {
+  const want = normalizeText(requested).split(' ').filter((w) => w.length >= 3);
+  if (!want.length) return 0;
+  const have = new Set(normalizeText(specTitle).split(' ').filter((w) => w.length >= 3));
+  return want.filter((w) => have.has(w)).length / want.length;
+}
+
 /**
- * Coverage check scoped to an ALREADY-RESOLVED domain spec. Unlike global domain
- * discovery (title-only, to avoid cross-feature id collisions), here the domain is
- * fixed, so also matching the case id (e.g. "TC_001") is safe and reliable — the
- * spec embeds it (`test('TC_001 Valid Login' …)`). This stops a re-submitted case
- * from being regenerated when its B.L.A.S.T. title wording drifts from the spec.
+ * Coverage check scoped to an ALREADY-RESOLVED domain spec. A case counts as covered
+ * only when it is the SAME test — never on a bare id collision. TC ids (TC_009…) are
+ * NOT globally unique, so a shared id with a DIFFERENT title (e.g. the spec's TC_009
+ * "UI Validation" vs a requested TC_009 "SQL injection in username") must NOT be
+ * reported as already automated. Matched when the distinctive title appears verbatim,
+ * OR the id is present AND the spec's own title for that id substantially overlaps the
+ * requested title (tolerates minor wording drift on a re-submitted case).
  */
 function caseCoveredInSpec(specText, tc) {
   if (idInText(specText, tc)) return true;
   const id = normalizeText(tc && tc.id);
   if (id.length < 4) return false;
-  return new RegExp(`(?:^| )${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?= |$)`).test(normalizeText(specText));
+  const idPresent = new RegExp(`(?:^| )${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?= |$)`).test(normalizeText(specText));
+  if (!idPresent) return false;
+  return titleOverlap(tc && tc.title, specTitleForId(specText, tc && tc.id)) >= 0.6;
 }
 
 /** List every spec file under src/tests with its basename + content. */
