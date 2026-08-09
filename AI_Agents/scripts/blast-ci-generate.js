@@ -73,6 +73,15 @@ async function main() {
     .filter((f) => f && f.path && f.path.startsWith('src/') && f.action !== 'reused')
     .map((f) => f.path);
 
+  // Completion gate: if any requested case was NOT automated, do NOT open a PR —
+  // an incomplete/no-op PR is worse than none. Verified defaults true for pure-reuse.
+  const missingCases = result.missingCases || [];
+  const verified = result.verified !== false;
+  if (!verified) {
+    console.error(`[blast-ci] VERIFICATION FAILED — requested case(s) not automated: ${missingCases.join(', ')}. Suppressing PR (has_changes=false).`);
+  }
+  const openPr = verified && changed.length > 0;
+
   const summary = {
     jobId: job.jobId,
     skill: job.skill || 'New Automation',
@@ -82,14 +91,19 @@ async function main() {
     generatedFiles: result.generatedFiles || [],
     reusedFiles: result.reusedFiles || [],
     changedPaths: changed,
+    requestedCases: result.requestedCases || [],
+    missingCases,
+    verified,
   };
   fs.writeFileSync(path.join(process.cwd(), 'blast-ci-result.json'), JSON.stringify(summary, null, 2));
 
   setActionOutput('status', summary.executionStatus);
   setActionOutput('changed_count', changed.length);
-  setActionOutput('has_changes', changed.length > 0 ? 'true' : 'false');
+  setActionOutput('has_changes', openPr ? 'true' : 'false');
+  setActionOutput('verified', verified ? 'true' : 'false');
+  setActionOutput('missing_cases', missingCases.join(' '));
 
-  console.log(`[blast-ci] Done — status=${summary.executionStatus}, changed ${changed.length} file(s).`);
+  console.log(`[blast-ci] Done — status=${summary.executionStatus}, changed ${changed.length} file(s), verified=${verified}, PR=${openPr}.`);
   // Exit 0 regardless of test pass/fail: the PR review is the gate.
   process.exit(0);
 }

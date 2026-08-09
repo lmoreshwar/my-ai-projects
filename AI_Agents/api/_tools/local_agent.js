@@ -411,6 +411,7 @@ function buildGeneratePrompt(job, g, snapshot, existing) {
     '- NEVER emit two test() blocks with the same test-case id. Each TC id appears exactly once. If a case id already exists in the shown spec, keep that one test as-is — do not add a second test for the same id, even with a different title.',
     '- Locators: ONE semantic strategy per element by default (getByRole/getByLabel/getByPlaceholder; data-test only when no role/label). A SmartLocator fallback chain is allowed ONLY for a fragile element and MUST carry a `// reason:` note (max 3 strategies). No stacked speculative locators.',
     '- Data: use credentials(\'app\') for valid login and src/testdata/testData.json for other data. If new data is needed, emit an EXTENDED testData.json (config layer) preserving all existing keys.',
+    '- NEVER truncate, abbreviate, or elide any file. Do not emit placeholders like `/* …trimmed… */`, `// ...`, or `…`. Every emitted file (especially JSON) MUST be its COMPLETE, valid content. JSON must parse (no comments) and keep every existing top-level key.',
     '- If you create a NEW Page/Module, also emit an updated src/fixtures/index.ts (fixture layer) that keeps existing fixtures and registers the new ones.',
     '- Modules use Actions/WaitHelper/WorkflowActions and Logger.step(); specs hold all expect() assertions and import { test, expect } from ../fixtures.',
     snapshot ? '- Base locators on the live snapshot above; do not invent selectors it does not support.' : '',
@@ -490,6 +491,27 @@ function countMembers(content, layer) {
 }
 
 /**
+ * Structural guard for JSON data files (e.g. src/testdata/testData.json). The
+ * length-only guard is too weak here — an LLM can emit a truncated object (a
+ * "…trimmed…" placeholder) that still clears the 60% length bar. Returns a reason
+ * string when the overwrite is UNSAFE (keep the existing file), or '' when safe.
+ *   - new content must be strict, parseable JSON (rejects comments/placeholders)
+ *   - must not DROP any top-level key that already exists (never shrink data)
+ */
+function jsonOverwriteViolation(current, next) {
+  let cur;
+  try { cur = JSON.parse(current); } catch { return ''; } // current isn't strict JSON — nothing to protect
+  let nxt;
+  try { nxt = JSON.parse(next); } catch { return 'new content is not valid JSON (truncated or contains comments/placeholders)'; }
+  const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+  if (isObj(cur) && isObj(nxt)) {
+    const dropped = Object.keys(cur).filter((k) => !(k in nxt));
+    if (dropped.length) return `would drop existing top-level key(s): ${dropped.join(', ')}`;
+  }
+  return '';
+}
+
+/**
  * Would writing `next` over an existing `current` file DELETE existing coverage?
  * True when the new content drops tests/locators/methods, or shrinks by >40%.
  * Used to protect canonical files: reuse-first, never clobber working code.
@@ -541,6 +563,15 @@ function writeFiles(fw, files) {
         report.protected += 1;
         written.push({ path: relFromRoot, layer: f.layer, reused: true, action: 'protected' });
         continue;
+      }
+      if (relFromRoot.endsWith('.json')) {
+        const bad = jsonOverwriteViolation(current, next);
+        if (bad) {
+          // Data-file guard: invalid JSON or dropped keys — keep the working file.
+          report.protected += 1;
+          written.push({ path: relFromRoot, layer: f.layer, reused: true, action: 'protected', reason: bad });
+          continue;
+        }
       }
       const bak = path.join(root, '.blast-backups', `${relFromRoot}.bak-${ts}`);
       fs.mkdirSync(path.dirname(bak), { recursive: true });
@@ -972,7 +1003,7 @@ async function generateAndRun(job, onLog) {
       : w.action === 'protected' ? '🛡 kept (existing coverage preserved)'
       : w.action === 'overwritten' ? '⚠ extended '
       : '＋ created  ';
-    log(`[local]   ${tag} ${w.path}`);
+    log(`[local]   ${tag} ${w.path}${w.reason ? ` — ${w.reason}` : ''}`);
   });
   if (writeRes.backups.length) log(`[local] Backups saved: ${writeRes.backups.join(', ')}`);
 
@@ -1014,6 +1045,19 @@ async function generateAndRun(job, onLog) {
     : '[local] Index refresh skipped/failed (non-fatal).');
   run.output.split('\n').slice(-25).forEach((line) => { if (line.trim()) log(line); });
 
+  // 5) Completion check — every requested new case MUST be present in the final
+  // spec on disk. If the LLM dropped a case (or the write was protected), report
+  // it so the caller can refuse to open a PR for cases that were never automated.
+  const requestedIds = newCases.map((c) => String(c.id || '').toUpperCase().replace(/-/g, '_')).filter(Boolean);
+  const finalSpecText = specPaths().map((p) => safeRead(path.join(fw, p), 40000)).join('\n');
+  const presentIds = new Set(specTestIds(finalSpecText));
+  const missingCases = requestedIds.filter((id) => !presentIds.has(id));
+  if (requestedIds.length && missingCases.length) {
+    log(`[local] ⚠ VERIFICATION FAILED — requested case(s) NOT present after generation: ${missingCases.join(', ')}. They were not automated; no PR should be opened for them.`);
+  } else if (requestedIds.length) {
+    log(`[local] ✅ Verification passed — all ${requestedIds.length} requested case(s) present: ${requestedIds.join(', ')}.`);
+  }
+
   return {
     generatedFiles: written,
     reusedFiles: written.filter((w) => w.reused).map((w) => w.path),
@@ -1021,6 +1065,9 @@ async function generateAndRun(job, onLog) {
     executionStatus: run.passed ? 'PASSED' : 'FAILED',
     reportUrl: 'playwright-report/index.html',
     reportSummary: run.summary || null,
+    requestedCases: requestedIds,
+    missingCases,
+    verified: missingCases.length === 0,
     logs,
   };
 }
