@@ -16,6 +16,7 @@
  *   COPILOT_ASSIGNEE_LOGIN  optional override; auto-detected otherwise
  */
 const axios = require('axios');
+const PizZip = require('pizzip');
 
 const API = 'https://api.github.com';
 const GRAPHQL = 'https://api.github.com/graphql';
@@ -416,6 +417,12 @@ async function getWorkflowRunProgress(job) {
       lines.push('', conc === 'success' ? '✓ Run completed successfully.' : `✗ Run ${conc || 'failed'}.`);
     }
 
+    // Pull the parsed report summary once the run has finished (only if not cached).
+    let reportSummary;
+    if (st === 'completed' && !job.reportSummary) {
+      reportSummary = await getRunReportSummary(job, runId);
+    }
+
     return {
       status,
       prUrl: job.prUrl || '',
@@ -423,6 +430,7 @@ async function getWorkflowRunProgress(job) {
       executionStatus: conc === 'success' ? 'PASSED' : conc === 'failure' ? 'FAILED' : '',
       runId,
       runHtmlUrl,
+      reportSummary,
       snapshotLogs: snap(lines),
     };
   } catch (err) {
@@ -454,8 +462,7 @@ async function getFileContent(filePath, ref) {
 }
 
 /** List a directory in the framework repo. Returns [{ name, path, type }]; [] if missing. */
-async function listDir(dirPath, ref) {
-  const { owner, repo, branch } = repoConfig();
+async function listDir(dirPath, ref) {  const { owner, repo, branch } = repoConfig();
   const r = ref || branch || 'main';
   try {
     const { data } = await axios.get(
@@ -469,6 +476,38 @@ async function listDir(dirPath, ref) {
   }
 }
 
+/**
+ * Download the run's `blast-result-<jobId>` artifact and extract the parsed Playwright
+ * report summary (pass/fail counts + per-test steps). Returns null when unavailable.
+ */
+async function getRunReportSummary(job, runId) {
+  const { owner, repo } = repoConfig();
+  const id = runId || job.runId;
+  if (!id) return null;
+  try {
+    const { data } = await axios.get(
+      `${API}/repos/${owner}/${repo}/actions/runs/${id}/artifacts?per_page=100`,
+      { headers: headers() },
+    );
+    const arts = data.artifacts || [];
+    const art = arts.find((a) => a.name === `blast-result-${job.jobId}`)
+      || arts.find((a) => a.name.startsWith('blast-result-'));
+    if (!art || art.expired) return null;
+    const zipRes = await axios.get(art.archive_download_url, {
+      headers: headers(),
+      responseType: 'arraybuffer',
+      maxRedirects: 5,
+    });
+    const zip = new PizZip(Buffer.from(zipRes.data));
+    const entry = zip.file('blast-ci-result.json');
+    if (!entry) return null;
+    const parsed = JSON.parse(entry.asText());
+    return parsed.reportSummary || null;
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
   isConfigured,
   findCopilotActor,
@@ -477,6 +516,7 @@ module.exports = {
   repoConfig,
   dispatchWorkflow,
   getWorkflowRunProgress,
+  getRunReportSummary,
   getFileContent,
   listDir,
 };

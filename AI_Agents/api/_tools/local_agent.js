@@ -558,19 +558,67 @@ function envForRun(job) {
   return { ...process.env, TEST_ENV: map[job.environment] || 'qa' };
 }
 
-/** Run the given spec files with Playwright. Returns { passed, output }. */
+/** Run the given spec files with Playwright. Returns { passed, output, summary }. */
 function runPlaywright(fw, specRelPaths, job) {
   return new Promise((resolve) => {
-    const args = ['playwright', 'test', ...specRelPaths, '--project=desktop-chrome', '--reporter=list'];
-    const child = spawn('npx', args, { cwd: fw, env: envForRun(job), shell: true });
+    const args = ['playwright', 'test', ...specRelPaths, '--project=desktop-chrome', '--reporter=list,json'];
+    const env = { ...envForRun(job), PLAYWRIGHT_JSON_OUTPUT_NAME: 'test-results/results.json' };
+    const child = spawn('npx', args, { cwd: fw, env, shell: true });
     let output = '';
     const onData = (d) => { output += d.toString(); };
     child.stdout.on('data', onData);
     child.stderr.on('data', onData);
     const timer = setTimeout(() => { child.kill('SIGKILL'); output += '\n[local] Run timed out.'; }, RUN_TIMEOUT_MS);
-    child.on('close', (code) => { clearTimeout(timer); resolve({ passed: code === 0, output }); });
-    child.on('error', (err) => { clearTimeout(timer); resolve({ passed: false, output: output + `\n[local] spawn error: ${err.message}` }); });
+    child.on('close', (code) => { clearTimeout(timer); resolve({ passed: code === 0, output, summary: parseRunSummary(fw) }); });
+    child.on('error', (err) => { clearTimeout(timer); resolve({ passed: false, output: output + `\n[local] spawn error: ${err.message}`, summary: null }); });
   });
+}
+
+/**
+ * Parse Playwright's JSON report (test-results/results.json) into a compact, UI-friendly
+ * summary: pass/fail counts plus a per-test list with steps and error text.
+ */
+function parseRunSummary(fw) {
+  try {
+    const file = path.join(fw, 'test-results', 'results.json');
+    if (!fs.existsSync(file)) return null;
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const tests = [];
+    const flatSteps = (steps) => (steps || []).flatMap((s) => [
+      { title: s.title, status: s.error ? 'failed' : 'passed' },
+      ...flatSteps(s.steps),
+    ]);
+    const walk = (suite) => {
+      (suite.specs || []).forEach((spec) => {
+        const t = (spec.tests || [])[0] || {};
+        const r = (t.results || [])[0] || {};
+        const errObj = (r.errors && r.errors[0]) || r.error || null;
+        const errMsg = errObj ? String(errObj.message || errObj).replace(/\u001b\[[0-9;]*m/g, '').trim() : '';
+        tests.push({
+          title: spec.title,
+          status: spec.ok ? 'passed' : (r.status || 'failed'),
+          durationMs: r.duration || 0,
+          project: t.projectName || '',
+          error: errMsg.split('\n').slice(0, 6).join('\n'),
+          steps: flatSteps(r.steps).slice(0, 40),
+        });
+      });
+      (suite.suites || []).forEach(walk);
+    };
+    (data.suites || []).forEach(walk);
+    const st = data.stats || {};
+    return {
+      total: tests.length,
+      passed: tests.filter((t) => t.status === 'passed').length,
+      failed: tests.filter((t) => t.status !== 'passed' && t.status !== 'skipped').length,
+      skipped: st.skipped || tests.filter((t) => t.status === 'skipped').length,
+      flaky: st.flaky || 0,
+      durationMs: st.duration || 0,
+      tests,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function readErrorContext(fw) {
@@ -817,6 +865,7 @@ async function generateAndRun(job, onLog) {
       backups: [],
       executionStatus: reuseRun.passed ? 'PASSED' : 'FAILED',
       reportUrl: 'playwright-report/index.html',
+      reportSummary: reuseRun.summary || null,
       logs,
     };
   }
@@ -856,6 +905,7 @@ async function generateAndRun(job, onLog) {
         backups: [],
         executionStatus: reuseRun.passed ? 'PASSED' : 'FAILED',
         reportUrl: 'playwright-report/index.html',
+        reportSummary: reuseRun.summary || null,
         logs,
       };
     }
@@ -918,6 +968,7 @@ async function generateAndRun(job, onLog) {
     backups: allBackups,
     executionStatus: run.passed ? 'PASSED' : 'FAILED',
     reportUrl: 'playwright-report/index.html',
+    reportSummary: run.summary || null,
     logs,
   };
 }

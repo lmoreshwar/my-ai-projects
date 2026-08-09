@@ -83,6 +83,7 @@ const AutomationJobSchema = new mongoose.Schema({
   reusedFiles: [{ type: String }],
   executionStatus: { type: String, enum: ['', 'PASSED', 'FAILED', 'SKIPPED'], default: '' },
   reportUrl: { type: String, default: '' },
+  reportSummary: { type: mongoose.Schema.Types.Mixed, default: null },  // parsed Playwright results for the in-app report
   prUrl: { type: String, default: '' },
   branch: { type: String, default: '' },            // git branch created on push-to-gate
   logs: [{ type: String }],

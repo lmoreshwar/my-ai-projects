@@ -78,6 +78,7 @@ async function main() {
     skill: job.skill || 'New Automation',
     executionStatus: result.executionStatus || 'UNKNOWN',
     reportUrl: result.reportUrl || 'playwright-report/index.html',
+    reportSummary: result.reportSummary || null,
     generatedFiles: result.generatedFiles || [],
     reusedFiles: result.reusedFiles || [],
     changedPaths: changed,
