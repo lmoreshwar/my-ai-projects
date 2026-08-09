@@ -952,61 +952,53 @@ async function generateAndRun(job, onLog) {
       logs,
     };
   }
-  // Only ask the LLM for the genuinely new cases so it can't re-add existing ones.
-  const genJob = newCases.length ? { ...job, testCases: newCases } : job;
+  // Generate only the genuinely new cases (existing tests are preserved).
   const requestedIds = newCases.map((c) => String(c.id || '').toUpperCase().replace(/-/g, '_')).filter(Boolean);
   if (newCases.length) log(`[local] ${newCases.length} new case(s) to add: ${newCases.map((c) => c.id).join(', ')} (existing tests are preserved).`);
 
-  // 1) Generate
-  log('[local] Requesting 3-layer code from LLM…');
-  const genText = await llmGenerate(buildGeneratePrompt(genJob, grounding, snapshot, existing), buildSystemPrompt());
-  let files = sanitizeFiles(parseFiles(genText));
-  if (files.length === 0) {
-    log('[local] LLM returned no parseable files. Aborting — no PR (requested cases not automated).');
-    return { generatedFiles: [], reusedFiles: [], executionStatus: 'FAILED', reportUrl: '', requestedCases: requestedIds, missingCases: requestedIds, verified: false, logs };
-  }
-  // Safety net: never write a spec that contains duplicate test-case ids.
-  files = files.filter((f) => {
-    if (f.layer !== 'spec') return true;
-    const dups = duplicateSpecIds(f.content);
-    if (dups.length) {
-      log(`[local] ⚠ Rejected generated spec ${f.rel} — duplicate test id(s) ${dups.join(', ')}. Keeping the existing spec unchanged (no duplicates written).`);
-      return false;
-    }
-    return true;
-  });
-  if (files.length === 0) {
-    log('[local] Nothing safe to write after duplicate check — reusing existing tests.');
-    const specRel = domSpec ? domSpec.rel : '';
-    if (specRel) {
-      log(`[local] Running (reuse-only): ${specRel}`);
-      const reuseRun = await runPlaywright(fw, [specRel], job);
-      await refreshIndex(fw);
-      reuseRun.output.split('\n').slice(-25).forEach((line) => { if (line.trim()) log(line); });
-      return {
-        generatedFiles: existing.map((e) => ({ path: e.rel, layer: e.layer, reused: true, action: 'reused' })),
-        reusedFiles: existing.map((e) => e.rel),
-        backups: [],
-        executionStatus: reuseRun.passed ? 'PASSED' : 'FAILED',
-        reportUrl: 'playwright-report/index.html',
-        reportSummary: reuseRun.summary || null,
-        logs,
-      };
-    }
-    return { generatedFiles: [], reusedFiles: [], executionStatus: 'FAILED', reportUrl: '', logs };
-  }
-  let writeRes = writeFiles(fw, files);
-  let written = writeRes.written;
-  const allBackups = [...writeRes.backups];
-  log(`[local] Files — created ${writeRes.report.created}, reused ${writeRes.report.reused}, protected ${writeRes.report.protected}, overwritten ${writeRes.report.overwritten}.`);
-  written.forEach((w) => {
+  // 1) Generate — ONE case per LLM call so each response stays small enough to
+  //    complete on rate-limited free tiers (Groq 8K TPM) and can't truncate
+  //    mid-file. Each iteration re-reads the domain so it extends the spec that
+  //    the previous case just grew.
+  const written = [];
+  const allBackups = [];
+  let files = [];               // last written batch — input for the self-heal round
+  const seenPaths = new Map();  // de-dup written entries across cases (spec is rewritten each pass)
+  const recordWrite = (w) => {
+    if (seenPaths.has(w.path)) written[seenPaths.get(w.path)] = w;
+    else { seenPaths.set(w.path, written.length); written.push(w); }
+  };
+  const logWrite = (w) => {
     const tag = w.action === 'reused' ? '♻ reused   '
       : w.action === 'protected' ? '🛡 kept (existing coverage preserved)'
       : w.action === 'overwritten' ? '⚠ extended '
       : '＋ created  ';
     log(`[local]   ${tag} ${w.path}${w.reason ? ` — ${w.reason}` : ''}`);
-  });
-  if (writeRes.backups.length) log(`[local] Backups saved: ${writeRes.backups.join(', ')}`);
+  };
+  for (let i = 0; i < newCases.length; i++) {
+    const tc = newCases[i];
+    const existNow = findDomainFiles(fw, job); // reflects writes from earlier cases this run
+    log(`[local] Generating ${tc.id} "${tc.title || ''}" (${i + 1}/${newCases.length})…`);
+    const genText = await llmGenerate(buildGeneratePrompt({ ...job, testCases: [tc] }, grounding, snapshot, existNow), buildSystemPrompt());
+    let batch = sanitizeFiles(parseFiles(genText));
+    if (batch.length === 0) { log(`[local] ⚠ ${tc.id}: LLM returned no parseable files — skipped.`); continue; }
+    batch = batch.filter((f) => {
+      if (f.layer !== 'spec') return true;
+      const dups = duplicateSpecIds(f.content);
+      if (dups.length) { log(`[local] ⚠ ${tc.id}: rejected spec ${f.rel} — duplicate id(s) ${dups.join(', ')}.`); return false; }
+      return true;
+    });
+    if (batch.length === 0) continue;
+    const wr = writeFiles(fw, batch);
+    allBackups.push(...wr.backups);
+    wr.written.forEach((w) => { recordWrite(w); logWrite(w); });
+    files = batch;
+  }
+  if (written.length === 0) {
+    log('[local] Nothing written after generation — requested case(s) not automated. No PR.');
+    return { generatedFiles: [], reusedFiles: [], executionStatus: 'FAILED', reportUrl: '', requestedCases: requestedIds, missingCases: requestedIds, verified: false, logs };
+  }
+  if (allBackups.length) log(`[local] Backups saved: ${allBackups.join(', ')}`);
 
   const specPaths = () => written.filter((w) => w.layer === 'spec').map((w) => w.path);
   if (specPaths().length === 0) {
@@ -1022,14 +1014,15 @@ async function generateAndRun(job, onLog) {
   // 3) Self-heal once
   if (!run.passed) {
     const errorContext = readErrorContext(fw);
-    const healText = await llmGenerate(buildHealPrompt(job, files, run.output, errorContext), buildSystemPrompt());
+    const healInput = findDomainFiles(fw, job); // heal against the full spec on disk
+    const healText = await llmGenerate(buildHealPrompt(job, healInput.length ? healInput : files, run.output, errorContext), buildSystemPrompt());
     const healed = sanitizeFiles(parseFiles(healText));
     if (healed.length) {
+      const hr = writeFiles(fw, healed);
+      hr.written.forEach((w) => { recordWrite(w); logWrite(w); });
+      allBackups.push(...hr.backups);
       files = healed;
-      writeRes = writeFiles(fw, files);
-      written = writeRes.written;
-      allBackups.push(...writeRes.backups);
-      log(`[local] Applied heal to ${written.length} file(s). Re-running…`);
+      log(`[local] Applied heal to ${hr.written.length} file(s). Re-running…`);
       run = await runPlaywright(fw, specPaths(), job, { applyScope: true });
       log(run.passed ? '[local] Re-run PASSED after heal.' : '[local] Re-run still FAILED.');
     } else {
