@@ -642,6 +642,69 @@ function specTestBlocks(content) {
 }
 
 /**
+ * Like specTestBlocks but returns the FULL source span of each test() block
+ * (head + body + trailing `);`). describe/hook wrappers are skipped so nested
+ * test() blocks inside a describe are captured individually.
+ */
+function specTestFullBlocks(content) {
+  const text = content || '';
+  const blocks = [];
+  const head = /\btest\s*(\.\w+)?\s*\(\s*([`'"])([\s\S]*?)\2\s*,/g;
+  const SKIP = new Set(['describe', 'beforeAll', 'afterAll', 'beforeEach', 'afterEach', 'step', 'use']);
+  let m;
+  while ((m = head.exec(text)) !== null) {
+    const method = (m[1] || '').replace('.', '');
+    if (SKIP.has(method)) continue;
+    const start = m.index;
+    const title = m[3];
+    const arrow = text.indexOf('=>', head.lastIndex);
+    const braceStart = text.indexOf('{', arrow === -1 ? head.lastIndex : arrow);
+    if (braceStart === -1) continue;
+    let depth = 0;
+    let i = braceStart;
+    for (; i < text.length; i++) {
+      const ch = text[i];
+      if (ch === '{') depth++;
+      else if (ch === '}' && --depth === 0) { i++; break; }
+    }
+    let j = i;
+    while (j < text.length && /\s/.test(text[j])) j++;
+    if (text[j] === ')') j++;
+    while (j < text.length && /\s/.test(text[j])) j++;
+    if (text[j] === ';') j++;
+    const idm = title.match(/TC[_-]?\d+/i);
+    blocks.push({ id: idm ? normId(idm[0]) : '', title, source: text.slice(start, j), end: j });
+  }
+  return blocks;
+}
+
+/**
+ * Recovery for terse LLMs that emit ONLY the new test() (dropping existing tests):
+ * keep `prior` verbatim and append the genuinely-new test block(s) from `llmContent`,
+ * inserted right after the last existing test (stays inside any describe wrapper).
+ * Returns merged content, or null if nothing safe to merge.
+ */
+function mergeNewTestsIntoSpec(prior, llmContent, wantId) {
+  const priorIds = new Set(specTestIds(prior));
+  const llmBlocks = specTestFullBlocks(llmContent);
+  const picked = [];
+  const seen = new Set();
+  for (const b of llmBlocks) {
+    const id = b.id ? normId(b.id) : '';
+    const isNew = (id && id === wantId) || (id && !priorIds.has(id));
+    if (!isNew || seen.has(id)) continue;
+    seen.add(id);
+    picked.push(b);
+  }
+  if (!picked.length) return null;
+  const priorSpans = specTestFullBlocks(prior);
+  if (!priorSpans.length) return null;
+  const lastEnd = priorSpans[priorSpans.length - 1].end;
+  const insertion = '\n\n' + picked.map((b) => '  ' + b.source.trim()).join('\n\n');
+  return prior.slice(0, lastEnd) + insertion + prior.slice(lastEnd);
+}
+
+/**
  * Behavioral signature of a test body — captures WHAT the test does, independent of
  * its id/title/wording, so two cases that drive the same workflow collapse to the
  * same key. Primary key = the ordered workflow-layer (*Module) calls with normalized
@@ -1257,7 +1320,18 @@ async function generateAndRun(job, onLog) {
       // InventoryAccess); comparing across files falsely flags unrelated tests as "removed".
       const priorForFile = safeRead(path.join(fw, f.rel), 200000);
       const renamed = renumberedTests(priorForFile, f.content);
-      if (renamed.length) { log(`[local] ⚠ ${tc.id}: rejected spec ${f.rel} — it altered existing test(s): ${renamed.join('; ')}. Existing tests must be preserved verbatim.`); return false; }
+      if (renamed.length) {
+        // RECOVERY: terse models (e.g. GPT-5.x) sometimes emit ONLY the new test,
+        // dropping the existing ones. Rather than reject, keep the existing file
+        // verbatim and deterministically append just the new case.
+        const merged = mergeNewTestsIntoSpec(priorForFile, f.content, normId(tc.id));
+        if (merged && renumberedTests(priorForFile, merged).length === 0 && specTestIds(merged).includes(normId(tc.id))) {
+          log(`[local] ↺ ${tc.id}: LLM dropped existing tests — recovered by appending the new case to ${f.rel} (existing tests preserved verbatim).`);
+          f.content = merged;
+          return true;
+        }
+        log(`[local] ⚠ ${tc.id}: rejected spec ${f.rel} — it altered existing test(s): ${renamed.join('; ')}. Existing tests must be preserved verbatim.`); return false;
+      }
       return true;
     });
     if (batch.length === 0) continue;
