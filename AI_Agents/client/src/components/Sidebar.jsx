@@ -121,22 +121,6 @@ export default function Sidebar({ activePage, onNavigate, onToggleDark, collapse
               {!collapsed && <span className="text-sm">AI Native Playwright</span>}
             </button>
 
-            {/* ── GitHub ── */}
-            <button
-              onClick={() => handleNav('github')}
-              title={collapsed ? 'GitHub' : ''}
-              className={`flex items-center ${collapsed ? 'justify-center px-0' : 'gap-4 px-4'} py-3 w-full text-left transition-all rounded-sm ${
-                activePage === 'github'
-                  ? 'nav-item-active'
-                  : 'text-on-surface-variant dark:text-slate-400 font-medium hover:bg-surface-container-high dark:hover:bg-slate-800'
-              }`}
-            >
-              <span className={`material-symbols-outlined ${activePage === 'github' ? '' : 'text-app-dark-red dark:text-app-red'}`}>
-                cloud_upload
-              </span>
-              {!collapsed && <span className="text-sm">GitHub</span>}
-            </button>
-
             {/* ── GitHub CICD ── */}
             <button
               onClick={() => handleNav('github-cicd')}
