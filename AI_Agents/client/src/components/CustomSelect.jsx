@@ -65,7 +65,7 @@ export default function CustomSelect({
         onClick={() => !disabled && setOpen((p) => !p)}
         disabled={disabled}
         className={`
-          w-full flex items-center justify-between gap-2 text-left transition-all
+          w-full min-w-0 flex items-center justify-between gap-2 text-left transition-all
           ${isSm
             ? 'px-2 py-1 text-[11px] font-bold rounded border bg-white dark:bg-slate-800 border-slate-300 dark:border-slate-600 focus:ring-2 focus:ring-app-red/40'
             : 'px-4 py-3 font-medium rounded-t-md bg-surface-container-highest dark:bg-slate-800 border-b-2 border-app-red text-on-surface dark:text-white'
@@ -73,10 +73,10 @@ export default function CustomSelect({
           ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}
         `}
       >
-        <span className={selected ? 'text-on-surface dark:text-white' : 'text-on-surface-variant dark:text-slate-400'}>
+        <span className={`flex-1 min-w-0 truncate ${selected ? 'text-on-surface dark:text-white' : 'text-on-surface-variant dark:text-slate-400'}`}>
           {selected ? selected.label : placeholder}
         </span>
-        <span className={`material-symbols-outlined transition-transform ${open ? 'rotate-180' : ''} ${isSm ? 'text-[16px]' : 'text-[20px]'} text-on-surface-variant pointer-events-none`}>
+        <span className={`material-symbols-outlined shrink-0 transition-transform ${open ? 'rotate-180' : ''} ${isSm ? 'text-[16px]' : 'text-[20px]'} text-on-surface-variant pointer-events-none`}>
           expand_more
         </span>
       </button>

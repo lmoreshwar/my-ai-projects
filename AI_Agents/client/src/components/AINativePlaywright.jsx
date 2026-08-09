@@ -146,58 +146,47 @@ function ReportTestRow({ t }) {
   );
 }
 
-function ReportModal({ job, onClose }) {
-  const s = job && job.reportSummary;
+/* ── Inline automation report — pass/fail stats + per-test steps, rendered in-page (no modal) ── */
+function InlineReport({ summary, reportUrl, reportHref }) {
+  const s = summary;
   const passRate = s && s.total ? Math.round((s.passed / s.total) * 100) : 0;
+  if (!s) return null;
   return (
-    <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={onClose}>
-      <div className="bg-white dark:bg-slate-900 rounded-md shadow-xl w-full max-w-2xl max-h-[90vh] overflow-hidden flex flex-col" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-3 border-b border-outline-variant/30 dark:border-slate-700">
-          <h3 className="font-bold flex items-center gap-2">
-            <span className="material-symbols-outlined text-app-red">assessment</span>
-            Automation Report
-            <span className="font-mono text-xs text-slate-400">{job.jobId}</span>
-          </h3>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
-            <span className="material-symbols-outlined">close</span>
-          </button>
+    <div className="rounded-lg border border-outline-variant/30 dark:border-slate-700 overflow-hidden">
+      <div className="flex items-center gap-2 px-4 py-2.5 bg-surface-container-high dark:bg-slate-800 border-b border-outline-variant/30 dark:border-slate-700">
+        <span className="material-symbols-outlined text-app-red">assessment</span>
+        <span className="font-bold text-sm">Execution Report</span>
+        <span className={`ml-auto px-2.5 py-0.5 rounded-full text-[11px] font-bold ${s.failed ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300' : 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300'}`}>
+          {s.passed}/{s.total} passed · {passRate}%
+        </span>
+      </div>
+      <div className="p-4 space-y-4">
+        <div className="flex flex-wrap gap-2">
+          <ReportStat label="Total" value={s.total} cls="border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200" />
+          <ReportStat label="Passed" value={s.passed} cls="border-green-200 dark:border-green-900/50 text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-950/20" />
+          <ReportStat label="Failed" value={s.failed} cls="border-red-200 dark:border-red-900/50 text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/20" />
+          {s.skipped > 0 && <ReportStat label="Skipped" value={s.skipped} cls="border-slate-200 dark:border-slate-700 text-slate-500" />}
+          {s.flaky > 0 && <ReportStat label="Flaky" value={s.flaky} cls="border-amber-200 dark:border-amber-900/50 text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/20" />}
+          <ReportStat label="Duration" value={fmtDuration(s.durationMs)} cls="border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200" />
         </div>
-        {!s ? (
-          <div className="p-8 text-center text-sm text-slate-500">
-            <span className="material-symbols-outlined text-4xl text-slate-300 mb-2 block">hourglass_empty</span>
-            The report is still being prepared. It appears once the run finishes and results are collected.
+        <div>
+          <div className="flex items-center justify-between text-xs mb-1">
+            <span className="font-semibold text-slate-600 dark:text-slate-300">Pass rate</span>
+            <span className="font-mono">{passRate}%</span>
           </div>
-        ) : (
-          <div className="p-5 overflow-y-auto space-y-4">
-            <div className="flex flex-wrap gap-2">
-              <ReportStat label="Total" value={s.total} cls="border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200" />
-              <ReportStat label="Passed" value={s.passed} cls="border-green-200 dark:border-green-900/50 text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-950/20" />
-              <ReportStat label="Failed" value={s.failed} cls="border-red-200 dark:border-red-900/50 text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/20" />
-              {s.skipped > 0 && <ReportStat label="Skipped" value={s.skipped} cls="border-slate-200 dark:border-slate-700 text-slate-500" />}
-              {s.flaky > 0 && <ReportStat label="Flaky" value={s.flaky} cls="border-amber-200 dark:border-amber-900/50 text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/20" />}
-              <ReportStat label="Duration" value={fmtDuration(s.durationMs)} cls="border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200" />
-            </div>
-            <div>
-              <div className="flex items-center justify-between text-xs mb-1">
-                <span className="font-semibold text-slate-600 dark:text-slate-300">Pass rate</span>
-                <span className="font-mono">{passRate}%</span>
-              </div>
-              <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
-                <div className={`h-full ${s.failed ? 'bg-amber-500' : 'bg-green-500'}`} style={{ width: `${passRate}%` }} />
-              </div>
-            </div>
-            <div className="space-y-1.5">
-              <p className="text-sm font-semibold">Test Cases ({(s.tests || []).length})</p>
-              {(s.tests || []).map((t, i) => <ReportTestRow key={i} t={t} />)}
-              {(s.tests || []).length === 0 && <p className="text-xs text-slate-400">No individual test details were captured.</p>}
-            </div>
+          <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+            <div className={`h-full ${s.failed ? 'bg-amber-500' : 'bg-green-500'}`} style={{ width: `${passRate}%` }} />
           </div>
-        )}
-        {job && job.reportUrl && (
-          <div className="px-5 py-2.5 border-t border-outline-variant/30 dark:border-slate-700 flex items-center justify-between text-xs">
-            <span className="text-slate-400">Full Allure report + trace are attached to the run.</span>
-            <a href={reportHref(job.reportUrl)} target="_blank" rel="noreferrer" className="text-app-red underline flex items-center gap-1">
-              <span className="material-symbols-outlined text-sm">download</span>Open Allure report (GitHub artifacts) ↗
+        </div>
+        <div className="space-y-1.5">
+          <p className="text-sm font-semibold">Test Cases ({(s.tests || []).length}) — click a row to see its steps</p>
+          {(s.tests || []).map((t, i) => <ReportTestRow key={i} t={t} />)}
+          {(s.tests || []).length === 0 && <p className="text-xs text-slate-400">No individual test details were captured.</p>}
+        </div>
+        {reportUrl && (
+          <div className="pt-1 text-xs">
+            <a href={reportHref(reportUrl)} target="_blank" rel="noreferrer" className="text-app-red underline inline-flex items-center gap-1">
+              <span className="material-symbols-outlined text-sm">download</span>Full Allure report + trace (GitHub artifacts) ↗
             </a>
           </div>
         )}
@@ -296,7 +285,7 @@ function RunLogsConsole({ logs, live, trackUrl }) {
   );
 }
 
-export default function AINativePlaywright({ apiBase, generatedTestCases, onNavigate }) {
+export default function AINativePlaywright({ apiBase, generatedTestCases, onNavigate, setCicdState }) {
   const cases = useMemo(() => automationFeasibleCases(generatedTestCases), [generatedTestCases]);
 
   const [selected, setSelected] = useState(() => new Set());
@@ -304,7 +293,6 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
   const [dialogOpen, setDialogOpen] = useState(false);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
-  const [reportOpen, setReportOpen] = useState(false);
 
   // Active job + list
   const [jobs, setJobs] = useState([]);
@@ -625,6 +613,28 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
   const setF = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const reportHref = (u) => (u && u.startsWith('/') ? `${apiBase}${u}` : u);
 
+  // Hand a pre-configured run to the GitHub CI/CD page: seed the trigger config, then navigate.
+  // The user reviews and fires the actual dispatch there — no manual PR/merge gate.
+  const runInCICD = ({ scope = '', cases = '', note }) => {
+    const envRaw = (activeJob?.environment || form.environment || 'QA').toLowerCase();
+    const env = ['qa', 'uat', 'dev'].includes(envRaw) ? envRaw : 'qa';
+    if (setCicdState) {
+      setCicdState((s) => ({
+        ...s,
+        pendingTrigger: {
+          scope,
+          cases,
+          env,
+          browser: 'desktop-chrome',
+          note: note || 'Pre-filled from AI Native Playwright. Review the configuration and click Trigger.',
+        },
+      }));
+    }
+    if (onNavigate) onNavigate('github-cicd');
+  };
+  // Case ids from the active job, for the "Run these cases" shortcut.
+  const jobCaseIds = (activeJob?.testCases || []).map((t) => t.id).filter(Boolean).join(', ');
+
   /* ── Empty state ── */
   if (cases.length === 0) {
     return (
@@ -929,59 +939,69 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
             />
           )}
 
-          {/* In-app automation report — pass/fail counts + per-test steps, BLAST-styled */}
+          {/* In-app execution report — pass/fail + per-test steps, rendered inline (no navigation) */}
           {activeJob.reportSummary && (
-            <div className="pt-1">
-              <button
-                onClick={() => setReportOpen(true)}
-                className="px-4 py-2 rounded-sm bg-app-red text-white text-sm font-medium hover:opacity-90 flex items-center gap-1.5"
-              >
-                <span className="material-symbols-outlined text-lg">assessment</span>
-                View Report — {activeJob.reportSummary.passed}/{activeJob.reportSummary.total} passed
-              </button>
-            </div>
+            <InlineReport summary={activeJob.reportSummary} reportUrl={activeJob.reportUrl} reportHref={reportHref} />
           )}
 
-          {/* Report + Push to Gate / Merge */}
+          {/* Next step — run the suite in CI/CD (no manual PR/merge gate) */}
           {(activeJob.status === 'Passed' || activeJob.status === 'PushedToGate' || activeJob.status === 'Merged') && (
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              {activeJob.reportUrl && (
-                <a href={reportHref(activeJob.reportUrl)} target="_blank" rel="noreferrer" className="text-sm text-app-red underline flex items-center gap-1">
-                  <span className="material-symbols-outlined text-base">description</span> View HTML Report ↗
-                </a>
-              )}
-              {/* Local/github path: raise the PR from the app. */}
-              {activeJob.status === 'Passed' && activeJob.provider !== 'github-actions' && (
-                <button onClick={pushToGate} disabled={busy === 'gate'} title="Push the passing tests to a branch and open a Pull Request for review" className="px-4 py-2 rounded-sm bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 disabled:opacity-50 flex items-center gap-1.5">
-                  <span className="material-symbols-outlined text-lg">{busy === 'gate' ? 'progress_activity' : 'merge'}</span>
-                  <span className={busy === 'gate' ? 'animate-pulse' : ''}>{busy === 'gate' ? 'Raising Pull Request…' : 'Raise Pull Request'}</span>
+            <div className="rounded-lg border border-outline-variant/30 dark:border-slate-700 bg-surface-container-low dark:bg-slate-800/40 p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-app-red">rocket_launch</span>
+                <p className="text-sm font-bold">Next step — run it in CI/CD</p>
+              </div>
+              <p className="text-xs text-on-surface-variant dark:text-slate-400">
+                Automation is generated and green locally. Trigger it on GitHub Actions right from here — pick a
+                suite and you&apos;ll land on the CI/CD page with everything pre-filled. No PR or merge needed to run.
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <button onClick={() => runInCICD({ scope: '@Smoke', note: 'Smoke suite pre-selected from AI Native Playwright. Review and trigger.' })}
+                  className="px-4 py-2 rounded-sm bg-app-red text-white text-sm font-medium hover:bg-app-dark-red flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-lg">bolt</span> Run Smoke Suite
                 </button>
-              )}
-              {activeJob.prUrl && (
-                <a href={activeJob.prUrl} target="_blank" rel="noreferrer" className="text-sm text-app-red underline">
-                  Open PR (compare{activeJob.branch ? ` · ${activeJob.branch}` : ''}) →
-                </a>
-              )}
-              {/* Cloud path: the PR is the gate — merge it straight from the app. */}
-              {activeJob.prUrl && !activeJob.prMerged && activeJob.status !== 'Merged' && (
-                <button onClick={mergePr} disabled={busy === 'merge'} title="Merge the BLAST pull request into main" className="px-4 py-2 rounded-sm bg-green-600 text-white text-sm font-medium hover:bg-green-700 disabled:opacity-50 flex items-center gap-1.5">
-                  <span className={`material-symbols-outlined text-lg ${busy === 'merge' ? 'animate-spin' : ''}`}>{busy === 'merge' ? 'progress_activity' : 'merge_type'}</span>
-                  <span className={busy === 'merge' ? 'animate-pulse' : ''}>{busy === 'merge' ? 'Merging…' : `Merge PR${activeJob.prNumber ? ` #${activeJob.prNumber}` : ''}`}</span>
+                <button onClick={() => runInCICD({ scope: '@Regression', note: 'Regression suite pre-selected from AI Native Playwright. Review and trigger.' })}
+                  className="px-4 py-2 rounded-sm bg-indigo-600 text-white text-sm font-medium hover:bg-indigo-700 flex items-center gap-1.5">
+                  <span className="material-symbols-outlined text-lg">science</span> Run Regression Suite
                 </button>
-              )}
-              {(activeJob.prMerged || activeJob.status === 'Merged') && (
-                <span className="inline-flex items-center gap-1 text-sm font-semibold text-green-600 dark:text-green-400">
-                  <span className="material-symbols-outlined text-lg">check_circle</span> Merged into main
-                </span>
-              )}
+                {jobCaseIds && (
+                  <button onClick={() => runInCICD({ cases: jobCaseIds, note: `Running only ${jobCaseIds} — pre-filled from AI Native Playwright. Review and trigger.` })}
+                    className="px-4 py-2 rounded-sm border border-app-red text-app-red text-sm font-medium hover:bg-app-red/5 flex items-center gap-1.5">
+                    <span className="material-symbols-outlined text-lg">checklist</span> Run These Cases ({(activeJob.testCases || []).length})
+                  </button>
+                )}
+              </div>
+              {/* Secondary links: report + de-emphasized advanced PR actions */}
+              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pt-1 text-xs">
+                {activeJob.reportUrl && (
+                  <a href={reportHref(activeJob.reportUrl)} target="_blank" rel="noreferrer" className="text-app-red underline inline-flex items-center gap-1">
+                    <span className="material-symbols-outlined text-sm">description</span> HTML report ↗
+                  </a>
+                )}
+                {activeJob.prUrl && (
+                  <a href={activeJob.prUrl} target="_blank" rel="noreferrer" className="text-slate-500 dark:text-slate-400 underline">
+                    Open PR{activeJob.branch ? ` · ${activeJob.branch}` : ''} →
+                  </a>
+                )}
+                {activeJob.status === 'Passed' && activeJob.provider !== 'github-actions' && !activeJob.prUrl && (
+                  <button onClick={pushToGate} disabled={busy === 'gate'} className="text-slate-500 dark:text-slate-400 underline disabled:opacity-50">
+                    {busy === 'gate' ? 'Raising PR…' : 'Advanced: raise a PR to merge into main'}
+                  </button>
+                )}
+                {activeJob.prUrl && !activeJob.prMerged && activeJob.status !== 'Merged' && (
+                  <button onClick={mergePr} disabled={busy === 'merge'} className="text-slate-500 dark:text-slate-400 underline disabled:opacity-50">
+                    {busy === 'merge' ? 'Merging…' : `Merge PR${activeJob.prNumber ? ` #${activeJob.prNumber}` : ''}`}
+                  </button>
+                )}
+                {(activeJob.prMerged || activeJob.status === 'Merged') && (
+                  <span className="inline-flex items-center gap-1 text-green-600 dark:text-green-400 font-semibold">
+                    <span className="material-symbols-outlined text-sm">check_circle</span> Merged into main
+                  </span>
+                )}
+              </div>
             </div>
           )}
         </div>
-      )}
-
-      {/* Automation report modal */}
-      {reportOpen && activeJob && (
-        <ReportModal job={activeJob} onClose={() => setReportOpen(false)} />
       )}
 
       {/* Generate dialog */}

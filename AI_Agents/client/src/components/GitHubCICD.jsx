@@ -2,10 +2,11 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import CustomSelect from './CustomSelect';
 
 // Run-configuration options for the workflow trigger (mapped to playwright.yml inputs).
+// Only Prod is listed because the suite currently targets a single public app
+// (saucedemo.com, resolved from the BASE_URL repo secret). To add real environments,
+// add entries here AND wire a per-env BASE_URL (e.g. BASE_URL_QA) in the workflow.
 const ENVIRONMENTS = [
-  { value: 'qa', label: 'QA' },
-  { value: 'uat', label: 'UAT' },
-  { value: 'dev', label: 'Dev' },
+  { value: 'prod', label: 'Prod (saucedemo.com)' },
 ];
 const BROWSERS = [
   { value: 'desktop-chrome', label: 'Chrome' },
@@ -67,13 +68,19 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
   const [loadingReport, setLoadingReport] = useState(false);
 
   /* ── Run configuration (mapped to playwright.yml inputs on trigger) ── */
-  const [cfgEnv, setCfgEnv] = useState('qa');
+  const [cfgEnv, setCfgEnv] = useState('prod');
   const [cfgBrowser, setCfgBrowser] = useState('desktop-chrome');
   const [cfgScope, setCfgScope] = useState('');
+  const [cfgCases, setCfgCases] = useState(''); // specific TC ids → --grep "TC_01|TC_02"
   const [cfgParallel, setCfgParallel] = useState('');
   const [cfgAllure, setCfgAllure] = useState(true);
+  const [prefillNote, setPrefillNote] = useState('');
   const pollingRef = useRef(null);
   const logContainerRef = useRef(null);
+
+  // Specific case ids take priority over the tag scope. "TC_01, TC_02" → "TC_01|TC_02".
+  const casesToGrep = (raw) => raw.trim().split(/[\s,]+/).filter(Boolean).join('|');
+  const effectiveGrep = cfgCases.trim() ? casesToGrep(cfgCases) : cfgScope;
 
   const gh = connections.github || {};
   const repos = gh.repos || [];
@@ -120,6 +127,24 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
       } catch { /* silent */ }
     })();
   }, [selectedRepo, gh.token]);
+
+  /* ── Apply a pre-configured trigger handed over from the AI Native page ──
+     AINativePlaywright seeds cicdState.pendingTrigger = { scope, cases, env, browser, note }.
+     We copy it into the run config, auto-pick the Playwright execution workflow, then clear it
+     so the user just reviews and hits Trigger. */
+  const pendingTrigger = cicdState.pendingTrigger;
+  useEffect(() => {
+    if (!pendingTrigger) return;
+    if (pendingTrigger.env) setCfgEnv(pendingTrigger.env);
+    if (pendingTrigger.browser) setCfgBrowser(pendingTrigger.browser);
+    setCfgScope(pendingTrigger.scope || '');
+    setCfgCases(pendingTrigger.cases || '');
+    setPrefillNote(pendingTrigger.note || 'Run configuration was pre-filled from AI Native Playwright. Review and trigger.');
+    // Auto-select the Playwright execution workflow if it's already loaded.
+    const pw = workflows.find(w => /playwright/i.test(`${w.name} ${w.path}`));
+    if (pw) setSelectedWorkflow(pw.id);
+    setCicdState(s => ({ ...s, pendingTrigger: null }));
+  }, [pendingTrigger, workflows]);
 
   /* ── Poll run status ── */
   const pollStatus = useCallback(async (runId) => {
@@ -287,7 +312,7 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
           inputs: {
             environment: cfgEnv,
             browser: cfgBrowser,
-            test_grep: cfgScope,
+            test_grep: effectiveGrep,
             workers: cfgParallel,
             generate_allure: cfgAllure ? 'true' : 'false',
           },
@@ -486,6 +511,13 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
                 <span className="material-symbols-outlined text-app-red text-base">tune</span>
                 <h4 className="font-bold text-on-surface dark:text-white uppercase tracking-widest text-[0.7rem]">Run Configuration</h4>
               </div>
+              {prefillNote && (
+                <div className="flex items-start gap-2 p-2.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/30 border border-indigo-200 dark:border-indigo-800">
+                  <span className="material-symbols-outlined text-indigo-500 text-base">bolt</span>
+                  <p className="text-[0.72rem] text-indigo-700 dark:text-indigo-300 leading-snug flex-1">{prefillNote}</p>
+                  <button onClick={() => setPrefillNote('')} className="text-indigo-400 hover:text-indigo-600"><span className="material-symbols-outlined text-sm">close</span></button>
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-[0.7rem] font-bold text-secondary dark:text-slate-400 mb-1.5 uppercase tracking-wide">Environment</label>
@@ -497,12 +529,25 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
                 </div>
                 <div>
                   <label className="block text-[0.7rem] font-bold text-secondary dark:text-slate-400 mb-1.5 uppercase tracking-wide">Test Scope</label>
-                  <CustomSelect value={cfgScope} onChange={setCfgScope} disabled={!isConnected} options={TEST_SCOPES} />
+                  <CustomSelect value={cfgScope} onChange={setCfgScope} disabled={!isConnected || !!cfgCases.trim()} options={TEST_SCOPES} />
                 </div>
                 <div>
                   <label className="block text-[0.7rem] font-bold text-secondary dark:text-slate-400 mb-1.5 uppercase tracking-wide">Parallel</label>
                   <CustomSelect value={cfgParallel} onChange={setCfgParallel} disabled={!isConnected} options={PARALLEL_MODES} />
                 </div>
+              </div>
+              <div>
+                <label className="block text-[0.7rem] font-bold text-secondary dark:text-slate-400 mb-1.5 uppercase tracking-wide">Specific Test Cases <span className="normal-case font-normal text-slate-400">(optional — overrides scope)</span></label>
+                <input
+                  value={cfgCases}
+                  onChange={(e) => setCfgCases(e.target.value)}
+                  disabled={!isConnected}
+                  placeholder="e.g. TC_014, TC_015"
+                  className="w-full px-3 py-2 rounded-md border border-outline-variant/40 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm font-mono disabled:opacity-50"
+                />
+                {cfgCases.trim() && (
+                  <p className="text-[0.68rem] text-slate-500 dark:text-slate-400 mt-1 font-mono">--grep &quot;{effectiveGrep}&quot;</p>
+                )}
               </div>
             </div>
 
@@ -523,7 +568,7 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
                 <span className="text-sm text-on-surface dark:text-slate-200">Generate Allure report</span>
               </label>
               <p className="text-[0.7rem] text-on-surface-variant dark:text-slate-500 leading-snug">
-                Config applies only to workflows that declare matching inputs (e.g. <span className="font-mono">playwright.yml</span>); others trigger with their defaults.
+                Tests target the app defined by the <span className="font-mono">BASE_URL</span> repo secret (currently <span className="font-mono">saucedemo.com</span>). Config applies only to workflows that declare matching inputs (e.g. <span className="font-mono">playwright.yml</span>); others trigger with their defaults.
               </p>
             </div>
 

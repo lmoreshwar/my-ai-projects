@@ -652,6 +652,46 @@ app.post('/github-workflows', async (req, res) => {
 });
 
 // Trigger a workflow_dispatch
+// Parse the `on.workflow_dispatch.inputs` block of a workflow YAML into
+// { name: { required, default } }. Lightweight indentation parser (no yaml dep).
+function parseWorkflowDispatchInputs(yamlText) {
+    const lines = String(yamlText || '').split(/\r?\n/);
+    const inputs = {};
+    let inDispatch = false;
+    let inputsIndent = -1;
+    let keyIndent = -1;
+    let current = null;
+    for (const raw of lines) {
+        if (!raw.trim() || raw.trim().startsWith('#')) continue;
+        const indent = raw.length - raw.trimStart().length;
+        const line = raw.trim();
+        if (/^workflow_dispatch:\s*$/.test(line)) { inDispatch = true; inputsIndent = -1; keyIndent = -1; continue; }
+        if (inDispatch && inputsIndent === -1) {
+            if (/^inputs:\s*$/.test(line)) { inputsIndent = indent; continue; }
+            continue;
+        }
+        if (inputsIndent >= 0) {
+            if (indent <= inputsIndent) break; // exited the inputs block
+            if (keyIndent === -1) keyIndent = indent;
+            if (indent === keyIndent) {
+                const m = line.match(/^([A-Za-z0-9_-]+):\s*$/);
+                current = m ? m[1] : null;
+                if (current) inputs[current] = { required: false, default: undefined };
+            } else if (indent > keyIndent && current) {
+                const rm = line.match(/^required:\s*(true|false)\s*$/);
+                if (rm) inputs[current].required = rm[1] === 'true';
+                const dm = line.match(/^default:\s*(.+?)\s*$/);
+                if (dm) {
+                    let v = dm[1];
+                    if ((v.startsWith("'") && v.endsWith("'")) || (v.startsWith('"') && v.endsWith('"'))) v = v.slice(1, -1);
+                    inputs[current].default = v;
+                }
+            }
+        }
+    }
+    return inputs;
+}
+
 app.post('/github-trigger-workflow', async (req, res) => {
     try {
         const { token, apiUrl, repo, workflowId, branch, inputs } = req.body;
@@ -673,9 +713,44 @@ app.post('/github-trigger-workflow', async (req, res) => {
         const cleanInputs = Object.fromEntries(
             Object.entries(inputs || {}).filter(([, v]) => v !== undefined && v !== null && v !== ''),
         );
+
+        // Read the workflow's declared dispatch inputs so we send ONLY valid keys and
+        // auto-fill required inputs the UI doesn't collect (e.g. BLAST Runner's job_id/job_payload).
+        let declared = null;
+        try {
+            const wfRes = await axios.get(`${baseUrl}/repos/${repo}/actions/workflows/${workflowId}`, { headers: ghHeaders, timeout: 10000 });
+            const wfPath = wfRes.data?.path;
+            if (wfPath) {
+                const contentRes = await axios.get(`${baseUrl}/repos/${repo}/contents/${encodeURI(wfPath)}?ref=${branch || 'main'}`, { headers: ghHeaders, timeout: 10000 });
+                const yamlText = Buffer.from(contentRes.data.content || '', 'base64').toString('utf8');
+                declared = parseWorkflowDispatchInputs(yamlText);
+            }
+        } catch { /* fall back to raw inputs */ }
+
+        let finalInputs = cleanInputs;
+        if (declared && Object.keys(declared).length) {
+            const jobId = cleanInputs.job_id || `MANUAL-${Date.now()}`;
+            finalInputs = {};
+            for (const [name, meta] of Object.entries(declared)) {
+                if (cleanInputs[name] !== undefined) { finalInputs[name] = cleanInputs[name]; continue; }
+                if (name === 'job_id') finalInputs[name] = jobId;
+                else if (name === 'job_payload') finalInputs[name] = JSON.stringify({
+                    jobId,
+                    environment: cleanInputs.environment || 'prod',
+                    browser: cleanInputs.browser || 'Chrome',
+                    testCases: [],
+                    comments: 'Triggered from Command Center',
+                    executionMode: 'GenerateAndExecute',
+                });
+                else if (meta.default !== undefined) finalInputs[name] = meta.default;
+                else if (meta.required) finalInputs[name] = '';
+                // optional input with no value and no default → omit
+            }
+        }
+
         const dispatchUrl = `${baseUrl}/repos/${repo}/actions/workflows/${workflowId}/dispatches`;
         const dispatchBody = { ref: branch || 'main' };
-        if (Object.keys(cleanInputs).length) dispatchBody.inputs = cleanInputs;
+        if (Object.keys(finalInputs).length) dispatchBody.inputs = finalInputs;
         try {
             await axios.post(dispatchUrl, dispatchBody, { headers: ghHeaders, timeout: 15000 });
         } catch (err) {

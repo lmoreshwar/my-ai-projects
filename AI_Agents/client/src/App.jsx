@@ -160,12 +160,13 @@ function App() {
   useEffect(() => {
     const fetchConnections = async () => {
       const token = localStorage.getItem('blast_token');
-      if (!token) return;
+      // Locally the backend runs in DEV_MODE and bypasses auth, so a token isn't required.
+      if (!token && !isLocal) return;
 
       try {
-        const response = await fetch(`${API_BASE}/api/users/connections`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
+        const headers = {};
+        if (token) headers.Authorization = `Bearer ${token}`;
+        const response = await fetch(`${API_BASE}/api/users/connections`, { headers });
         
         if (response.ok) {
           const parsed = await response.json();
@@ -182,7 +183,7 @@ function App() {
     };
 
     fetchConnections();
-  }, [API_BASE, isLoggedIn]);
+  }, [API_BASE, isLoggedIn, isLocal]);
 
   // Persist generated test cases to localStorage
   useEffect(() => {
@@ -229,7 +230,7 @@ function App() {
           {visitedPages.has('zephyr-dashboard') && <ZephyrDashboard connections={connections} />}
         </div>
         <div style={{ display: activePage === 'ai-native-playwright' ? undefined : 'none' }}>
-          {visitedPages.has('ai-native-playwright') && <AINativePlaywright connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} />}
+          {visitedPages.has('ai-native-playwright') && <AINativePlaywright connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} setCicdState={setCicdState} />}
         </div>
         <div style={{ display: activePage === 'github' ? undefined : 'none' }}>
           {visitedPages.has('github') && <GitHubIntegration connections={connections} apiBase={API_BASE} onNavigate={setActivePage} pendingPushFiles={pendingPushFiles} setPendingPushFiles={setPendingPushFiles} />}
