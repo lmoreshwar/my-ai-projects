@@ -591,23 +591,67 @@ function featureModelSummary(model) {
   return l.join('\n');
 }
 
-/** Prompt the LLM to design cases from the feature model + a fixed test-design checklist. */
+/**
+ * Targeted, per-type test-design guidance. Only the guidance for the types the user actually
+ * selected is injected, so Boundary/Security/Accessibility each produce genuinely distinct,
+ * high-value cases instead of shallow re-wordings of positive/negative. Grounded in the evidence:
+ * every rule is conditioned on widgets that exist (inputs/controls/buttons).
+ */
+function testTypeGuidance(types, model) {
+  const norm = (t) => String(t).toLowerCase().replace(/[^a-z]/g, '');
+  const set = new Set((types || []).map(norm)); // e.g. 'security-lite' -> 'securitylite'
+  const has = (k) => [...set].some((s) => s.startsWith(k));
+  const hasInputs = model.inputs.length > 0;
+  const hasControls = model.controls.length > 0;
+  const out = [];
+  if (has('positive')) {
+    out.push('- Positive: the primary happy-path success for this feature (valid data, expected end state). At least one, but do not pad with near-duplicate happy paths.');
+  }
+  if (has('negative')) {
+    out.push('- Negative: invalid/missing/wrong-type data and wrong-state actions. One case per DISTINCT failure reason (e.g. missing required field vs wrong value vs unauthorized), each asserting the specific error/guard — never a generic "it fails".');
+  }
+  if (has('boundary') && hasInputs) {
+    out.push('- Boundary: exercise edges of each constrained input — min-1/min/min+1 and max-1/max/max+1 length or value, empty vs single-char, and leading/trailing whitespace. Pick the highest-value edges; state the exact boundary value in testData.');
+  }
+  if (has('security')) {
+    const t = ['- Security-lite (non-destructive, INPUT-level only — never attempt real exploitation): where inputs exist, try an XSS payload (<script>alert(1)</script>), an SQL-ish string (\' OR \'1\'=\'1), and an overlong string; assert the app SANITIZES/rejects and does NOT reflect/execute.'];
+    t.push('  Also add an authorization/least-privilege check only if the evidence implies a protected action. Do NOT invent endpoints or credentials.');
+    out.push(t.join('\n'));
+  }
+  if (has('accessibility')) {
+    out.push('- Accessibility: assert against the ACCESSIBLE names already in the evidence — every actionable control has a discernible name/label, inputs have associated labels, and the primary flow is operable by keyboard (Tab to reach + Enter/Space to activate). Reference the real role+name from the evidence; do not assume ARIA that is not shown.');
+  }
+  if (has('boundary') && !hasInputs) {
+    out.push('- Boundary: this screen exposes no free-text inputs — apply boundary thinking to any quantity/selection controls if present, otherwise skip rather than inventing an input.');
+  }
+  if (has('security') && !hasInputs && !hasControls) {
+    out.push('- Security note: no inputs on this screen — prefer an authorization/navigation-guard check over input injection.');
+  }
+  return out;
+}
+
+/** Prompt the LLM to design cases from the feature model + a per-type test-design checklist. */
 function buildAuthorPrompt(job, model) {
-  const types = (job.testTypes && job.testTypes.length ? job.testTypes : ['Positive', 'Negative']).join(', ');
+  const selected = job.testTypes && job.testTypes.length ? job.testTypes : ['Positive', 'Negative'];
+  const types = selected.join(', ');
   const max = Number(job.maxCases) > 0 ? Number(job.maxCases) : 8;
+  const guidance = testTypeGuidance(selected, model);
   return [
     `You are a senior QA test designer. Design up to ${max} high-value test cases for the "${job.feature}" feature of the web app at ${job.url}.`,
     'Use ONLY the widgets that actually exist in the evidence below — NEVER invent fields, buttons, or links that are not present.',
-    `Cover these test types: ${types}. Balance positive and negative; add boundary/security/accessibility ONLY if they appear in that list.`,
-    'Apply standard test-design: equivalence classes, required-field checks, boundary values, and (for inputs) a light injection/XSS negative where relevant.',
-    job.notes ? `Extra intent from the user: ${job.notes}` : '',
+    `Cover these test types: ${types}. Add a type ONLY if it appears in that list. Each case must map to exactly ONE type via its "type" field.`,
+    'Prioritise by value: one strong positive, then the most likely real defects. Every case must be a DISTINCT behavior — no two cases with the same action + data. Do not pad to reach the max.',
+    '',
+    '## Test-design rules for the selected types (follow precisely)',
+    ...guidance,
+    job.notes ? `\nExtra intent from the user (weigh heavily): ${job.notes}` : '',
     '',
     '## Evidence — live feature model (from an accessibility snapshot)',
     featureModelSummary(model),
     '',
     '## Output format — STRICT JSON ONLY (no prose, no markdown fences):',
-    '{"cases":[{"title":"concise distinctive behavior, no TC id, no @tags","type":"Positive|Negative|Boundary|Security|Accessibility","steps":"1. ...\\n2. ...","testData":"...","expectedResults":"..."}]}',
-    'Each title must be a distinct behavior. Steps numbered. Keep everything realistic for THIS exact screen.',
+    '{"cases":[{"title":"concise distinctive behavior, no TC id, no @tags","type":"Positive|Negative|Boundary|Security|Accessibility","steps":"1. ...\\n2. ...","testData":"exact values used, incl. the boundary/payload string","expectedResults":"the specific asserted outcome (exact message/state), not a generic pass/fail"}]}',
+    'Each title must name a distinct behavior. Steps numbered and executable on THIS exact screen. testData and expectedResults must be concrete, never placeholders.',
   ].filter(Boolean).join('\n');
 }
 
@@ -629,6 +673,16 @@ function parseAuthoredCases(text) {
   return [];
 }
 
+/** Canonicalize an LLM-supplied case type to one clean tag label (Security-lite -> Security, etc.). */
+function canonicalCaseType(raw) {
+  const k = String(raw || '').toLowerCase().replace(/[^a-z]/g, '');
+  if (k.startsWith('boundary')) return 'Boundary';
+  if (k.startsWith('security')) return 'Security';
+  if (k.startsWith('access') || k.startsWith('a11y')) return 'Accessibility';
+  if (k.startsWith('negative')) return 'Negative';
+  return 'Positive';
+}
+
 /** Author cases from the feature model and normalize them into the job.testCases shape. */
 async function authorCases(job, model, onLog) {
   const log = (m) => { if (onLog) onLog(m); };
@@ -645,7 +699,7 @@ async function authorCases(job, model, onLog) {
   return parsed
     .filter((c) => c && c.title)
     .map((c, i) => {
-      const type = String(c.type || 'Positive').replace(/[^A-Za-z]/g, '') || 'Positive';
+      const type = canonicalCaseType(c.type);
       return {
         id: `TC_${String(i + 1).padStart(3, '0')}`,
         title: String(c.title).trim(),
