@@ -466,21 +466,53 @@ function findDomainFiles(fw, job) {
 /**
  * Capture a live accessibility snapshot of the target URL using the framework's
  * own Playwright (evidence-based locators). Best-effort — returns '' on any failure.
+ *
+ * opts.auth = { loginUrl, username, password } performs a heuristic form login BEFORE
+ * snapshotting the target URL (Phase 3, auth-gated exploration). Credentials are passed to
+ * the child ONLY via its process environment — never written to disk, the command line, or logs
+ * — and the temp dir is purged after the run.
  */
-function captureSnapshot(fw, url) {
+function captureSnapshot(fw, url, opts = {}) {
+  const auth = opts && opts.auth && opts.auth.username && opts.auth.password ? opts.auth : null;
   return new Promise((resolve) => {
     if (!url) return resolve('');
     const dir = path.join(fw, '.blast-tmp');
     const script = path.join(dir, 'capture.cjs');
     try {
       fs.mkdirSync(dir, { recursive: true });
+      // The script reads creds from env (EXPLORE_USER/EXPLORE_PASS) so they never touch disk.
       fs.writeFileSync(script, [
         "const { chromium } = require('@playwright/test');",
         '(async () => {',
+        '  const targetUrl = process.argv[2];',
+        "  const loginUrl = process.argv[3] || '';",
+        "  const user = process.env.EXPLORE_USER || '';",
+        "  const pass = process.env.EXPLORE_PASS || '';",
         '  const browser = await chromium.launch();',
         '  try {',
         '    const page = await browser.newPage();',
-        "    await page.goto(process.argv[2], { waitUntil: 'domcontentloaded', timeout: 30000 });",
+        '    if (loginUrl && user && pass) {',
+        "      await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });",
+        '      // Heuristic form login: first visible text-like input = username, first password input, then submit.',
+        "      const userField = page.locator('input:not([type=password]):not([type=hidden]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio])').first();",
+        "      const passField = page.locator('input[type=password]').first();",
+        '      await userField.fill(user, { timeout: 10000 });',
+        '      await passField.fill(pass, { timeout: 10000 });',
+        '      // Prefer a REAL submit control (button/input[type=submit], or a Login/Sign in button); Enter as fallback.',
+        '      const submitCandidates = [',
+        "        page.locator('button[type=submit]').first(),",
+        "        page.locator('input[type=submit]').first(),",
+        "        page.getByRole('button', { name: /log ?in|sign ?in/i }).first(),",
+        '      ];',
+        '      let clicked = false;',
+        '      for (const cand of submitCandidates) {',
+        '        if (await cand.count().catch(() => 0)) { await cand.click({ timeout: 8000 }).catch(() => {}); clicked = true; break; }',
+        '      }',
+        "      if (!clicked) await passField.press('Enter').catch(() => {});",
+        "      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});",
+        '      await page.waitForTimeout(800);',
+        '    }',
+        "    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });",
         '    await page.waitForTimeout(1000);',
         "    const snap = await page.locator('body').ariaSnapshot();",
         '    process.stdout.write(snap);',
@@ -492,12 +524,16 @@ function captureSnapshot(fw, url) {
     }
     // Run via a relative path (cwd = framework) so a space-containing FRAMEWORK_PATH
     // isn't split when shell:true concatenates args.
-    const child = spawn('node', ['.blast-tmp/capture.cjs', url], { cwd: fw, env: process.env, shell: true });
+    const args = ['.blast-tmp/capture.cjs', url, auth ? auth.loginUrl || '' : ''];
+    // Creds go through the child ENV only (never argv/logs); env is copied so we don't mutate ours.
+    const childEnv = { ...process.env };
+    if (auth) { childEnv.EXPLORE_USER = auth.username; childEnv.EXPLORE_PASS = auth.password; }
+    const child = spawn('node', args, { cwd: fw, env: childEnv, shell: true });
     let out = '';
     let err = '';
     child.stdout.on('data', (d) => { out += d.toString(); });
     child.stderr.on('data', (d) => { err += d.toString(); });
-    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve(''); }, 45000);
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve(''); }, auth ? 70000 : 45000);
     child.on('close', () => {
       clearTimeout(timer);
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -630,17 +666,28 @@ async function authorCases(job, model, onLog) {
  * Autopilot entry: explore a feature headlessly, build a deterministic feature model, and have
  * the LLM author positive/negative cases grounded in that evidence. Returns { testCases,
  * featureModel, snapshot } so the EXISTING buildPlan/generateAndRun pipeline runs unchanged
- * (reuse-filter + behavioral dedup are applied there). Credentials are NOT used yet (auth-gated
- * exploration is Phase 3) and are never persisted.
+ * (reuse-filter + behavioral dedup are applied there).
+ *
+ * Phase 3 — auth-gated exploration: when `creds` ({ username, password }) are supplied, a heuristic
+ * form login runs at `job.loginUrl` (or the origin of job.url) BEFORE snapshotting job.url, so
+ * features behind a login (Cart, Checkout, …) can be explored. Credentials are transient: passed
+ * only into the child process env, never stored on the job, persisted, logged, or committed.
  */
-async function exploreAndAuthor(job, onLog) {
+async function exploreAndAuthor(job, onLog, creds) {
   const log = (m) => { if (onLog) onLog(m); };
   const fw = config().frameworkPath;
   log(`[explore] Exploring "${job.feature}" at ${job.url} …`);
-  const snapshot = await captureSnapshot(fw, job.url);
+  let auth = null;
+  if (creds && creds.username && creds.password) {
+    let loginUrl = (job.loginUrl && String(job.loginUrl).trim()) || '';
+    if (!loginUrl) { try { loginUrl = new URL(job.url).origin; } catch { loginUrl = job.url; } }
+    auth = { username: creds.username, password: creds.password, loginUrl };
+    log(`[explore] Authenticated exploration enabled — logging in at ${loginUrl} before snapshot (credentials are transient, never stored).`);
+  }
+  const snapshot = await captureSnapshot(fw, job.url, { auth });
   log(snapshot
     ? `[explore] Captured accessibility snapshot (${snapshot.length} chars).`
-    : '[explore] No live snapshot (URL unreachable or headless run failed) — authoring from feature name only.');
+    : '[explore] No live snapshot (URL unreachable, login failed, or headless run failed) — authoring from feature name only.');
   const model = buildFeatureModel(snapshot, job.feature);
   log(`[explore] Feature model: ${model.inputs.length} input(s), ${model.buttons.length} button(s), ${model.links.length} link(s).`);
   const testCases = await authorCases(job, model, log);

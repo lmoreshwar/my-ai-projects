@@ -26,6 +26,7 @@ export default function AutopilotExplorer({ apiBase }) {
     feature: '',
     username: '',
     password: '',
+    loginUrl: '',
     scopeHint: '',
     maxCases: 8,
     environment: 'QA',
@@ -82,6 +83,7 @@ export default function AutopilotExplorer({ apiBase }) {
           environment: form.environment,
           testTypes: [...testTypes],
           maxCases: Number(form.maxCases) || 8,
+          loginUrl: form.loginUrl || '',
           scopeHint: form.scopeHint || '',
           notes: form.notes || '',
           evidenceFiles: files.map((f) => f.name),
@@ -194,7 +196,9 @@ export default function AutopilotExplorer({ apiBase }) {
               </div>
             </div>
             <p className="text-[11px] text-on-surface-variant/70 dark:text-slate-500">
-              Used only for the transient explore session — never stored, logged, or committed.
+              When provided, Autopilot logs in first, then snapshots the feature URL — so screens
+              behind a login (Cart, Checkout…) can be explored. Used only for the transient explore
+              session — never stored, logged, or committed.
             </p>
           </div>
 
@@ -241,6 +245,11 @@ export default function AutopilotExplorer({ apiBase }) {
                     <option value="Production">Production</option>
                   </select>
                 </div>
+              </div>
+              <div>
+                <label className={labelCls}>Login URL (optional — auth-gated exploration)</label>
+                <input className={inputCls} value={form.loginUrl}
+                  onChange={(e) => set('loginUrl', e.target.value)} placeholder="defaults to the app origin, e.g. https://www.saucedemo.com" />
               </div>
               <div>
                 <label className={labelCls}>Scope hint (route or CSS selector)</label>

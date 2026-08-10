@@ -171,9 +171,14 @@ router.post('/generate', auth, async (req, res) => {
 router.post('/explore', auth, async (req, res) => {
   try {
     const { project, environment, url, feature, testTypes, maxCases, scopeHint, notes,
-      browser, evidenceFiles } = req.body;
-    // SECURITY: username/password may arrive for the transient explore session but are NEVER
-    // persisted, logged, or committed. They are intentionally NOT read into the job here.
+      browser, evidenceFiles, loginUrl } = req.body;
+    // SECURITY: username/password may arrive for the transient explore session. They are read into
+    // LOCAL variables only, passed straight to the explore engine (child-process env), and are NEVER
+    // written to the job, persisted, logged, or committed. loginUrl is not secret and may be stored.
+    const exploreCreds = {
+      username: req.body && req.body.username ? String(req.body.username) : '',
+      password: req.body && req.body.password ? String(req.body.password) : '',
+    };
     if (!url || !String(url).trim()) return res.status(400).json({ msg: 'Application URL is required.' });
     if (!feature || !String(feature).trim()) return res.status(400).json({ msg: 'Feature / widget name is required.' });
 
@@ -193,6 +198,7 @@ router.post('/explore', auth, async (req, res) => {
       maxCases: Number(maxCases) > 0 ? Number(maxCases) : 8,
       scopeHint: scopeHint || '',
       notes: notes || '',
+      loginUrl: loginUrl ? String(loginUrl).trim() : '',
       evidenceFiles: Array.isArray(evidenceFiles) ? evidenceFiles : [],
       browser: browser || 'Chrome',
       agent: 'AI Native Playwright Engineer',
@@ -220,7 +226,7 @@ router.post('/explore', auth, async (req, res) => {
     job = await persist(job);
     const exploreLogs = [];
     try {
-      const { testCases, featureModel } = await localAgent.exploreAndAuthor(job, (m) => exploreLogs.push(m));
+      const { testCases, featureModel } = await localAgent.exploreAndAuthor(job, (m) => exploreLogs.push(m), exploreCreds);
       job.testCases = testCases;
       job.logs = [...(job.logs || []), ...exploreLogs];
       job.featureSummary = featureModel

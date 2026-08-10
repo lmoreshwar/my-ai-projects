@@ -71,6 +71,7 @@ const AutomationJobSchema = new mongoose.Schema({
   testTypes: [{ type: String }],
   maxCases: { type: Number, default: 8 },
   scopeHint: { type: String, default: '' },
+  loginUrl: { type: String, default: '' },   // optional login page URL for auth-gated exploration (not secret)
   notes: { type: String, default: '' },
   evidenceFiles: [{ type: String }],   // uploaded snapshot paths (gitignored temp dir)
   featureSummary: { type: String, default: '' },  // e.g. "2 input(s), 1 button(s)" from the explore snapshot
