@@ -121,6 +121,22 @@ export default function Sidebar({ activePage, onNavigate, onToggleDark, collapse
               {!collapsed && <span className="text-sm">AI Native Playwright</span>}
             </button>
 
+            {/* ── Autopilot (Explore & Automate) ── */}
+            <button
+              onClick={() => handleNav('autopilot')}
+              title={collapsed ? 'Autopilot' : ''}
+              className={`flex items-center ${collapsed ? 'justify-center px-0' : 'gap-4 px-4'} py-3 w-full text-left transition-all rounded-sm ${
+                activePage === 'autopilot'
+                  ? 'nav-item-active'
+                  : 'text-on-surface-variant dark:text-slate-400 font-medium hover:bg-surface-container-high dark:hover:bg-slate-800'
+              }`}
+            >
+              <span className={`material-symbols-outlined ${activePage === 'autopilot' ? '' : 'text-app-dark-red dark:text-app-red'}`}>
+                travel_explore
+              </span>
+              {!collapsed && <span className="text-sm">Autopilot</span>}
+            </button>
+
             {/* ── GitHub CICD ── */}
             <button
               onClick={() => handleNav('github-cicd')}

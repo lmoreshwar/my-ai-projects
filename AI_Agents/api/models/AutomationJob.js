@@ -64,6 +64,16 @@ const AutomationJobSchema = new mongoose.Schema({
   comments: { type: String, default: '' },
   testCases: [TestCaseRefSchema],
 
+  // Job mode: 'cases' = classic paste-test-cases flow; 'explore' = Autopilot (author cases from a URL).
+  mode: { type: String, enum: ['cases', 'explore'], default: 'cases' },
+  // Autopilot (explore) inputs — creds are NEVER stored here (used transiently for the explore session only).
+  feature: { type: String, default: '' },
+  testTypes: [{ type: String }],
+  maxCases: { type: Number, default: 8 },
+  scopeHint: { type: String, default: '' },
+  notes: { type: String, default: '' },
+  evidenceFiles: [{ type: String }],   // uploaded snapshot paths (gitignored temp dir)
+
   // Run configuration (drives Playwright CLI flags at execution time)
   browser: { type: String, enum: ['Chrome', 'Edge', 'Firefox', 'Safari', 'All'], default: 'Chrome' },
   testScope: { type: String, enum: ['Generated only', 'Smoke'], default: 'Generated only' },

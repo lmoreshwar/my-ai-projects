@@ -165,6 +165,89 @@ router.post('/generate', auth, async (req, res) => {
   }
 });
 
+// @route   POST /api/automation/explore
+// @desc    Autopilot: create an 'explore' job from a URL + feature. PHASE 0 — scaffold stub
+//          (page → API → job flow only; the explore/author engine is wired in Phase 1).
+router.post('/explore', auth, async (req, res) => {
+  try {
+    const { project, environment, url, feature, testTypes, maxCases, scopeHint, notes,
+      browser, evidenceFiles } = req.body;
+    // SECURITY: username/password may arrive for the transient explore session but are NEVER
+    // persisted, logged, or committed. They are intentionally NOT read into the job here.
+    if (!url || !String(url).trim()) return res.status(400).json({ msg: 'Application URL is required.' });
+    if (!feature || !String(feature).trim()) return res.status(400).json({ msg: 'Feature / widget name is required.' });
+
+    const existing = isDev() ? loadDevJobs() : [];
+    const jobId = isDev() ? nextJobId(existing) : `AUTO-${Date.now()}`;
+    const now = new Date().toISOString();
+
+    let job = {
+      jobId,
+      userId: req.user.id,
+      mode: 'explore',
+      project: project || '',
+      environment: environment || 'QA',
+      url: String(url).trim(),
+      feature: String(feature).trim(),
+      testTypes: Array.isArray(testTypes) && testTypes.length ? testTypes : ['Positive', 'Negative'],
+      maxCases: Number(maxCases) > 0 ? Number(maxCases) : 8,
+      scopeHint: scopeHint || '',
+      notes: notes || '',
+      evidenceFiles: Array.isArray(evidenceFiles) ? evidenceFiles : [],
+      browser: browser || 'Chrome',
+      agent: 'AI Native Playwright Engineer',
+      skill: 'New Automation',
+      executionMode: 'GenerateAndExecute',
+      testCases: [],
+      status: 'Planning',
+      plan: '',
+      missingInfo: [],
+      approved: false,
+      provider: orchestrator.provider(),
+      generatedFiles: [],
+      reusedFiles: [],
+      executionStatus: '',
+      reportUrl: '',
+      prUrl: '',
+      logs: [],
+      error: '',
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    // PHASE 0: the explore/author engine is not wired yet — return a scaffold plan that echoes
+    // the inputs so the page → API → job round-trip is verifiable end-to-end.
+    job.plan = [
+      '# Autopilot — Explore & Automate (Phase 0 scaffold)',
+      '',
+      '> ⚙ Engine not wired yet. This confirms the **page → API → job** flow works end-to-end.',
+      '',
+      '## Received',
+      `- URL: ${job.url}`,
+      `- Feature: ${job.feature}`,
+      `- Test types: ${job.testTypes.join(', ')}`,
+      `- Max cases: ${job.maxCases}`,
+      job.scopeHint ? `- Scope hint: ${job.scopeHint}` : '',
+      `- Evidence uploads: ${job.evidenceFiles.length}`,
+      `- Auth provided: ${req.body.username ? 'yes (used transiently, NOT stored)' : 'no'}`,
+      job.notes ? `- Notes: ${job.notes}` : '',
+      '',
+      '## Next (Phase 1)',
+      '1. Explore the feature headlessly via @playwright/cli → accessibility snapshot.',
+      '2. Build a deterministic feature model (inputs / buttons / links / errors / states).',
+      '3. Author positive + negative cases from the model + a fixed test-design checklist.',
+      '4. Reuse-filter against .ai-memory so existing cases are not recreated.',
+      '5. Hand new cases to the existing generateAndRun → self-heal → PR gate.',
+    ].filter(Boolean).join('\n');
+    job.status = 'WaitingForApproval';
+    job = await persist(job);
+    res.json(job);
+  } catch (err) {
+    console.error('explore error:', err.message);
+    res.status(500).json({ msg: err.message || 'Server Error' });
+  }
+});
+
 // @route   POST /api/automation/jobs/:jobId/answer
 // @desc    Provide missing information, then re-plan
 router.post('/jobs/:jobId/answer', auth, async (req, res) => {

@@ -9,6 +9,7 @@ import TestCaseGenerator from './components/TestCaseGenerator';
 import ReviewTestCases from './components/ReviewTestCases';
 import ZephyrDashboard from './components/ZephyrDashboard';
 import AINativePlaywright from './components/AINativePlaywright';
+import AutopilotExplorer from './components/AutopilotExplorer';
 import GitHubIntegration from './components/GitHubIntegration';
 import GitHubCICD from './components/GitHubCICD';
 import SavedHistory from './components/SavedHistory';
@@ -232,6 +233,9 @@ function App() {
         <div style={{ display: activePage === 'ai-native-playwright' ? undefined : 'none' }}>
           {visitedPages.has('ai-native-playwright') && <AINativePlaywright connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} setCicdState={setCicdState} />}
         </div>
+        <div style={{ display: activePage === 'autopilot' ? undefined : 'none' }}>
+          {visitedPages.has('autopilot') && <AutopilotExplorer apiBase={API_BASE} />}
+        </div>
         <div style={{ display: activePage === 'github' ? undefined : 'none' }}>
           {visitedPages.has('github') && <GitHubIntegration connections={connections} apiBase={API_BASE} onNavigate={setActivePage} pendingPushFiles={pendingPushFiles} setPendingPushFiles={setPendingPushFiles} />}
         </div>
@@ -252,6 +256,7 @@ function App() {
             { id: 'test-cases', icon: 'edit_note', label: 'Cases' },
             { id: 'review-cases', icon: 'fact_check', label: 'Review' },
             { id: 'ai-native-playwright', icon: 'smart_toy', label: 'AI·PW' },
+            { id: 'autopilot', icon: 'travel_explore', label: 'Autopilot' },
             { id: 'github', icon: 'cloud_upload', label: 'GitHub' },
             { id: 'github-cicd', icon: 'rocket_launch', label: 'CI/CD' },
             { id: 'saved-history', icon: 'inventory_2', label: 'Artifacts' },
