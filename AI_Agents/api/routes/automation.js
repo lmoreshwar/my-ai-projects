@@ -194,8 +194,9 @@ router.post('/explore', auth, async (req, res) => {
       environment: environment || 'QA',
       url: String(url).trim(),
       feature: String(feature).trim(),
-      testTypes: Array.isArray(testTypes) && testTypes.length ? testTypes : ['Positive', 'Negative'],
-      maxCases: Number(maxCases) > 0 ? Number(maxCases) : 8,
+      // Zero-config: nothing selected → full-breadth coverage so a bare URL still yields a rich suite.
+      testTypes: Array.isArray(testTypes) && testTypes.length ? testTypes : ['Positive', 'Negative', 'Boundary', 'Security-lite', 'Accessibility'],
+      maxCases: Number(maxCases) > 0 ? Number(maxCases) : 20,
       scopeHint: scopeHint || '',
       notes: notes || '',
       loginUrl: loginUrl ? String(loginUrl).trim() : '',

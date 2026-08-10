@@ -554,6 +554,8 @@ const DRIVE_SCRIPT = [
   '  const urls = Array.isArray(cfg.urls) ? cfg.urls : [];',
   "  const loginUrl = cfg.loginUrl || '';",
   '  const allowSubmit = !!cfg.allowSubmit;',
+  '  const autoDiscover = !!cfg.autoDiscover;',
+  '  const maxDepth = Number(cfg.maxDepth) > 0 ? Number(cfg.maxDepth) : 8;',
   "  const user = process.env.EXPLORE_USER || '';",
   "  const pass = process.env.EXPLORE_PASS || '';",
   '  const states = [];',
@@ -614,7 +616,7 @@ const DRIVE_SCRIPT = [
   "      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});",
   '      await page.waitForTimeout(600);',
   '    }',
-  '    for (const u of urls) {',
+  '    const runFlow = async (page) => { for (const u of urls) {',
   "      await page.goto(u, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});",
   '      await page.waitForTimeout(700);',
   "      await addState(page, 'view');",
@@ -641,6 +643,49 @@ const DRIVE_SCRIPT = [
   '        await grabMessages(page);',
   "        await addState(page, 'after-advance');",
   '      }',
+  '    } };',
+  '    const visited = new Set();',
+  "    const DESTRUCTIVE = /delete|remove|logout|sign ?out|reset|clear|cancel|discard/i;",
+  '    const pageLabel = (p) => { try { const uu = new URL(p.url()); return (uu.pathname.split(\'/\').pop() || uu.hostname).replace(/\\.html?$/, \'\') || \'page\'; } catch (e) { return \'page\'; } };',
+  "    const hasForm = async (p) => await p.locator('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio]), textarea').count().catch(() => 0);",
+  '    const probeForm = async (p, backUrl) => {',
+  '      if (!(await primaryOf(p).count().catch(() => 0))) return false;',
+  '      await primaryOf(p).click({ timeout: 8000 }).catch(() => {});',
+  "      await p.waitForTimeout(500); await grabMessages(p); await addState(p, 'after-empty-submit');",
+  "      if (backUrl) { await p.goto(backUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}); } else { await p.goBack({ timeout: 8000 }).catch(() => {}); }",
+  '      await p.waitForTimeout(400); await fillValid(p);',
+  '      await primaryOf(p).click({ timeout: 8000 }).catch(() => {});',
+  "      await p.waitForTimeout(900); await grabMessages(p); await addState(p, 'after-valid-submit');",
+  '      return true;',
+  '    };',
+  '    const clickForward = async (p) => {',
+  '      let acts = [];',
+  "      try { acts = await p.$$eval('button, a, input[type=submit], [role=button], [data-test*=cart], [data-test*=checkout]', (els) => els.map((e) => ({ tag: e.tagName.toLowerCase(), text: (e.innerText || e.value || e.getAttribute('aria-label') || '').trim().slice(0, 40), href: e.getAttribute('href') || '', dt: e.getAttribute('data-test') || '' }))); } catch (e) { acts = []; }",
+  '      const pri = [/checkout/i, /place order|finish/i, /continue|next|proceed/i, /go to cart|view cart|your cart/i, /add to cart/i];',
+  '      for (const rx of pri) {',
+  '        const cand = acts.find((a) => a.text && rx.test(a.text) && !DESTRUCTIVE.test(a.text) && !visited.has(a.text.toLowerCase()));',
+  "        if (cand) { visited.add(cand.text.toLowerCase()); const role = cand.tag === 'a' ? 'link' : 'button'; await p.getByRole(role, { name: cand.text }).first().click({ timeout: 8000 }).catch(() => {}); await p.waitForLoadState('domcontentloaded', { timeout: 12000 }).catch(() => {}); await p.waitForTimeout(700); return true; }",
+  '      }',
+  '      const nav = acts.find((a) => (/cart|checkout/i.test(a.href) || /cart|checkout/i.test(a.dt)) && !visited.has(\'nav:\' + (a.href || a.dt)));',
+  "      if (nav) { visited.add('nav:' + (nav.href || nav.dt)); const sel = nav.dt ? ('[data-test=' + JSON.stringify(nav.dt) + ']') : ('a[href=' + JSON.stringify(nav.href) + ']'); await p.locator(sel).first().click({ timeout: 8000 }).catch(() => {}); await p.waitForLoadState('domcontentloaded', { timeout: 12000 }).catch(() => {}); await p.waitForTimeout(700); return true; }",
+  '      return false;',
+  '    };',
+  '    const walk = async (p) => {',
+  '      let depth = 0;',
+  '      while (depth < maxDepth && states.length < MAX_STATES) {',
+  '        depth++;',
+  "        await addState(p, pageLabel(p) + ' view');",
+  '        if (/complete|success|thank|confirmation/i.test(p.url())) { await grabMessages(p); break; }',
+  '        if (allowSubmit && (await hasForm(p)) > 0) { const back = p.url(); if (await probeForm(p, back)) continue; }',
+  '        if (!allowSubmit) break;',
+  '        if (!(await clickForward(p))) break;',
+  '      }',
+  '    };',
+  '    if (autoDiscover) {',
+  "      if (!(loginUrl && user && pass)) { await page.goto(urls[0] || loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}); await page.waitForTimeout(600); }",
+  '      await walk(page);',
+  '    } else {',
+  '      await runFlow(page);',
   '    }',
   '    observed.errors = [...new Set(observed.errors)].slice(0, 10);',
   '    observed.success = [...new Set(observed.success)].slice(0, 6);',
@@ -681,7 +726,7 @@ function driveFlow(fw, urls, opts = {}) {
     } catch {
       return resolve({ states: [], observed: { errors: [], success: [] } });
     }
-    const cfg = { urls: list, loginUrl: auth ? auth.loginUrl || '' : '', allowSubmit };
+    const cfg = { urls: list, loginUrl: auth ? auth.loginUrl || '' : '', allowSubmit, autoDiscover: list.length <= 1, maxDepth: Number(opts.maxDepth) > 0 ? Number(opts.maxDepth) : 8 };
     const childEnv = { ...process.env, DRIVE_CFG: JSON.stringify(cfg) };
     if (auth) { childEnv.EXPLORE_USER = auth.username; childEnv.EXPLORE_PASS = auth.password; }
     const child = spawn('node', ['.blast-tmp/drive.cjs'], { cwd: fw, env: childEnv, shell: true });
@@ -834,13 +879,27 @@ function buildAuthorPrompt(job, model) {
   const guidance = testTypeGuidance(selected, model);
   const multiStep = model.steps && model.steps.length > 1;
   return [
-    `You are a senior QA test designer. Design up to ${max} high-value test cases for the "${job.feature}" feature of the web app at ${job.url}.`,
+    `You are a senior QA architect (15+ years, manual + automation). Design up to ${max} high-value test cases for the "${job.feature}" feature of the web app at ${job.url}.`,
     'Use ONLY the widgets that actually exist in the evidence below — NEVER invent fields, buttons, or links that are not present.',
     `Cover these test types: ${types}. Add a type ONLY if it appears in that list. Each case must map to exactly ONE type via its "type" field.`,
     'Prioritise by value: one strong positive, then the most likely real defects. Every case must be a DISTINCT behavior — no two cases with the same action + data. Do not pad to reach the max.',
     multiStep ? `This feature spans ${model.steps.length} pages/steps — include at least ONE end-to-end positive that traverses every step in order to the final success/confirmation state.` : '',
     'Coverage floor: always include one positive happy path; if Negative is selected, include one required-field negative for EACH input. (These are added automatically if you omit them — so spend your budget on higher-value cases.)',
     'When the evidence lists OBSERVED error/success messages, assert those EXACT strings verbatim — never invent message text the app did not produce.',
+    '',
+    '## Coverage charter — think like a senior architect and cover every applicable dimension (skip a dimension ONLY if the evidence has no widget for it; never invent widgets):',
+    '1. Happy path: valid data end-to-end to the real success/confirmation state.',
+    '2. Primary action: the main submit/continue advances only when input is valid.',
+    '3. Secondary actions: EVERY Cancel / Back / Reset / secondary button present — assert it navigates correctly and leaves state untouched (e.g. Cancel returns to the previous screen and does NOT complete the action).',
+    '4. Required-field validation: each required input empty individually, plus all-empty.',
+    '5. Format/type validation: wrong format (email, numeric-only, etc.), special characters, and whitespace trimming where a matching input exists.',
+    '6. Boundary/equivalence: min, max, over-max, and empty for each constrained input.',
+    '7. Data integrity: values persist across steps; any totals/quantities/calculations shown are correct.',
+    '8. Navigation & state: Back preserves entered data; direct/deep-link to a protected step when unauthenticated is guarded.',
+    '9. Error handling & recovery: trigger a validation error, then correct it and confirm the flow proceeds.',
+    '10. Security-lite (non-destructive, input-level): where inputs exist, a script/HTML payload stays literal (not executed/reflected).',
+    '11. Accessibility: actionable controls have discernible names/labels; the primary flow is keyboard-operable (Tab + Enter/Space).',
+    'Only emit a dimension as a case when its test type is in the selected list above AND the evidence supports it.',
     '',
     '## Test-design rules for the selected types (follow precisely)',
     ...guidance,
@@ -988,6 +1047,33 @@ const coversBoundary = (cases, name) => {
   return cases.some((c) => caseType(c) === 'Boundary' && normTitle(c.title).includes(nn));
 };
 
+/** The observed secondary/abort control on the screen (Cancel/Back/Reset), if any. */
+function secondaryButton(model) {
+  const re = /cancel|go back|^back$|reset|abort|discard/i;
+  return model.buttons.find((b) => re.test(b)) || '';
+}
+
+/** Deterministic secondary-action case: exercise Cancel/Back and assert it aborts without side effects. */
+function synthSecondaryAction(job, model, btn) {
+  const filled = model.inputs.filter((i) => i.name);
+  const steps = [];
+  let n = 1;
+  filled.forEach((i) => steps.push(`${n++}. Enter a valid ${i.name}.`));
+  steps.push(`${n++}. Click "${btn}".`);
+  return {
+    title: `${job.feature}: "${btn}" aborts without completing the action`,
+    type: 'Negative',
+    steps: steps.join('\n'),
+    testData: `Uses "${btn}"; no submission of the primary action`,
+    expectedResults: `Clicking "${btn}" navigates back to the previous screen and does NOT complete ${job.feature} — no order/record is created and prior state (e.g. cart) is preserved.`,
+  };
+}
+
+const coversSecondary = (cases, btn) => {
+  const nn = normTitle(btn);
+  return !!btn && cases.some((c) => normTitle(c.title).includes(nn));
+};
+
 /**
  * Guarantee a minimum coverage floor regardless of what the LLM returned: one positive happy path,
  * and (when Negative is selected) one required-field negative per named input. Floor cases are
@@ -1010,6 +1096,11 @@ function ensureCoverageFloor(cases, job, model, feature) {
     for (const inp of named) {
       if (!coversBoundary(cases, inp.name)) additions.push(shapeCase(synthBoundary(job, model, inp), feature, true));
     }
+  }
+  // Secondary/abort action (Cancel/Back/Reset) — guaranteed when the control is actually on screen.
+  const secondary = secondaryButton(model);
+  if ((selected.has('Negative') || selected.has('Positive')) && secondary && !coversSecondary(cases, secondary)) {
+    additions.push(shapeCase(synthSecondaryAction(job, model, secondary), feature, true));
   }
   // Merge + de-dup by normalized title (LLM cases win ties, keeping their richer wording).
   const seen = new Set();
