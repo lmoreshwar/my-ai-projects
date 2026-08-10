@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node api/index.js",
     "runner": "node scripts/blast-runner.js",
+    "blast:reset": "node scripts/blast-reset.js",
     "render-build": "npm install && cd client && npm install && npm run build"
   },
   "dependencies": {

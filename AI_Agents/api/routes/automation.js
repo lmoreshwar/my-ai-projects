@@ -374,6 +374,12 @@ async function runGenerationInBackground(job) {
     if ((!job.logs || job.logs.length === 0) && result.logs) job.logs = result.logs;
     job.generatedFiles = result.generatedFiles || [];
     job.reusedFiles = result.reusedFiles || [];
+    // Phase 1/3: persist the transaction branch + per-case outcomes so push-to-gate and the UI
+    // know exactly which cases shipped and which will be retried.
+    if (result.branch) job.branch = result.branch;
+    if (result.automatedCases) job.automatedCases = result.automatedCases;
+    if (result.failedCases) job.failedCases = result.failedCases;
+    if (result.missingCases) job.missingCases = result.missingCases;
 
     if (job.executionMode === 'GenerateOnly') {
       job.status = 'Completed';
@@ -382,7 +388,10 @@ async function runGenerationInBackground(job) {
       // Map the framework-relative report to the URL the API serves it at.
       job.reportUrl = result.reportUrl ? '/automation-report/index.html' : '';
       if (result.reportSummary) { job.reportSummary = result.reportSummary; }
-      job.status = result.executionStatus === 'PASSED' ? 'Passed' : 'Failed';
+      // PASSED → Passed; PARTIAL (some green, some pruned) → Partial; else Failed.
+      job.status = result.executionStatus === 'PASSED'
+        ? 'Passed'
+        : (result.executionStatus === 'PARTIAL' ? 'Partial' : 'Failed');
     }
   } catch (genErr) {
     job.status = 'Failed';
@@ -448,8 +457,8 @@ router.post('/jobs/:jobId/push-gate', auth, async (req, res) => {
   try {
     const job = await findJob(req.params.jobId);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
-    if (job.status !== 'Passed') {
-      return res.status(400).json({ msg: 'Push to Gate is only allowed after a passing run.' });
+    if (job.status !== 'Passed' && job.status !== 'Partial') {
+      return res.status(400).json({ msg: 'Push to Gate is only allowed after a passing (or partial) run.' });
     }
 
     const onLog = (line) => { job.logs = [...(job.logs || []), line]; };
@@ -462,6 +471,30 @@ router.post('/jobs/:jobId/push-gate', auth, async (req, res) => {
     res.json(saved);
   } catch (err) {
     console.error('push-gate error:', err.message);
+    res.status(500).json({ msg: err.message || 'Server Error' });
+  }
+});
+
+// @route   POST /api/automation/jobs/:jobId/discard
+// @desc    Discard a generation attempt — delete the orphan job branch (locally, and remotely
+//          when the client explicitly confirms) so a fresh generation starts from scratch.
+router.post('/jobs/:jobId/discard', auth, async (req, res) => {
+  try {
+    const job = await findJob(req.params.jobId);
+    if (!job) return res.status(404).json({ msg: 'Job not found' });
+    const deleteRemote = req.body && req.body.deleteRemote === true;
+    const onLog = (line) => { job.logs = [...(job.logs || []), line]; };
+    const result = await orchestrator.requestDiscard(job, { deleteRemote }, onLog);
+    if (result.logs && result.logs.length) {
+      job.logs = [...(job.logs || []), ...result.logs.filter((l) => !(job.logs || []).includes(l))];
+    }
+    job.branch = '';
+    job.prUrl = '';
+    job.status = 'Discarded';
+    const saved = await persist(job);
+    res.json(saved);
+  } catch (err) {
+    console.error('discard error:', err.message);
     res.status(500).json({ msg: err.message || 'Server Error' });
   }
 });

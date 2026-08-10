@@ -9,7 +9,7 @@ function authHeaders() {
 const TEST_TYPES = ['Positive', 'Negative', 'Boundary', 'Security-lite', 'Accessibility'];
 // Default to Positive only; the user opts into Negative/Boundary/Security/Accessibility manually.
 const DEFAULT_TYPES = ['Positive'];
-const TERMINAL = new Set(['Passed', 'Failed', 'Completed', 'PushedToGate', 'Merged']);
+const TERMINAL = new Set(['Passed', 'Partial', 'Failed', 'Completed', 'PushedToGate', 'Merged', 'Discarded']);
 
 const inputCls =
   'w-full px-3 py-2 rounded-lg border border-outline-variant/50 dark:border-slate-700 bg-white dark:bg-slate-800 text-on-surface dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-app-red/40 transition';
@@ -42,6 +42,7 @@ export default function AutopilotExplorer({ apiBase }) {
   const [error, setError] = useState('');
   const [job, setJob] = useState(null);
   const [proceeding, setProceeding] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
   const fileInputRef = useRef(null);
   const pollRef = useRef(null);
 
@@ -136,6 +137,28 @@ export default function AutopilotExplorer({ apiBase }) {
       setProceeding(false);
     }
   }, [apiBase, job, pollProgress]);
+
+  // Discard the attempt — deletes the orphan generation branch so a fresh run starts from scratch.
+  const discard = useCallback(async () => {
+    if (!job) return;
+    const deleteRemote = job.status === 'PushedToGate' &&
+      window.confirm('A branch was already pushed to origin. Also delete the REMOTE branch? This cannot be undone.');
+    if (!window.confirm('Discard this attempt and delete the generation branch? Any un-merged generated tests will be removed.')) return;
+    setError('');
+    setDiscarding(true);
+    try {
+      const res = await fetch(`${apiBase}/api/automation/jobs/${job.jobId}/discard`, {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify({ deleteRemote }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.msg || `Discard failed (${res.status})`);
+      setJob(data);
+    } catch (e) {
+      setError(e.message || 'Could not discard the attempt.');
+    } finally {
+      setDiscarding(false);
+    }
+  }, [apiBase, job]);
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8">
@@ -407,6 +430,30 @@ export default function AutopilotExplorer({ apiBase }) {
                     ) : null}
                   </div>
                 )}
+                {job.status === 'Partial' && (
+                  <div className="text-sm text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/30 rounded-lg px-3 py-2">
+                    <div className="flex items-center gap-2 font-semibold">
+                      <span className="material-symbols-outlined text-[18px]">rule</span>
+                      Partial — only passing case(s) were kept.
+                      {job.reportUrl ? (
+                        <a href={`${apiBase}${job.reportUrl}`} target="_blank" rel="noreferrer"
+                          className="underline text-app-red ml-1">View report</a>
+                      ) : null}
+                    </div>
+                    {Array.isArray(job.automatedCases) && job.automatedCases.length > 0 && (
+                      <div className="mt-1 text-xs">Automated: <span className="font-mono">{job.automatedCases.join(', ')}</span></div>
+                    )}
+                    {Array.isArray(job.failedCases) && job.failedCases.length > 0 && (
+                      <div className="text-xs">Will retry next run: <span className="font-mono">{job.failedCases.join(', ')}</span></div>
+                    )}
+                  </div>
+                )}
+                {job.status === 'Discarded' && (
+                  <div className="text-sm text-on-surface-variant dark:text-slate-400 flex items-center gap-2 py-1">
+                    <span className="material-symbols-outlined text-[18px]">delete</span>
+                    Attempt discarded — generate again to start fresh.
+                  </div>
+                )}
                 {job.status === 'Failed' && (
                   <div className="text-sm text-error flex items-center gap-2 py-1">
                     <span className="material-symbols-outlined text-[18px]">error</span>
@@ -416,6 +463,13 @@ export default function AutopilotExplorer({ apiBase }) {
                         className="underline text-app-red ml-1">View report</a>
                     ) : null}
                   </div>
+                )}
+                {(job.status === 'Failed' || job.status === 'Partial' || job.status === 'PushedToGate') && (
+                  <button onClick={discard} disabled={discarding}
+                    className="mt-2 w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl font-semibold text-on-surface-variant dark:text-slate-300 border border-outline-variant/50 dark:border-slate-700 hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 transition">
+                    <span className="material-symbols-outlined text-[18px]">{discarding ? 'progress_activity' : 'delete_sweep'}</span>
+                    {discarding ? 'Discarding…' : 'Discard attempt'}
+                  </button>
                 )}
               </div>
 

@@ -227,6 +227,17 @@ async function requestPushToGate(job, onLog) {
   return { prUrl: `https://github.com/example/ai-native-playwright/pull/${Math.floor(Math.random() * 900 + 100)}` };
 }
 
+/**
+ * Discard a generation attempt (Phase 2) — delete the orphan job branch after a failed/closed
+ * PR so a fresh generation starts from scratch. Local provider only.
+ */
+async function requestDiscard(job, opts, onLog) {
+  if (provider() === 'local') {
+    return localAgent.discardBranch(job, opts || {}, onLog);
+  }
+  return { branch: job.branch || '', localDeleted: false, remoteDeleted: false, logs: ['[discard] Discard is only supported for the local provider.'] };
+}
+
 function serializeRequest(job) {
   return {
     jobId: job.jobId,
@@ -303,5 +314,6 @@ module.exports = {
   requestGenerate,
   requestProgress,
   requestPushToGate,
+  requestDiscard,
   isSimulated: () => provider() === 'simulation',
 };

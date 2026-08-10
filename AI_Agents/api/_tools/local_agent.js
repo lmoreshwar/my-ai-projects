@@ -1824,6 +1824,33 @@ async function generateAndRun(job, onLog) {
     if (typeof onLog === 'function') { try { onLog(m); } catch { /* streaming best-effort */ } }
   };
   log(`[local] Provider active — framework at ${fw}.`);
+  // Phase 1: run the WHOLE generation inside a git transaction so dev is never mutated in place.
+  const requested = (job.testCases || []).map((tc) => normId(tc.id)).filter(Boolean);
+  const txn = await beginGenerationTxn(fw, job, log);
+  if (!txn.ok) {
+    log(`[local] ⛔ Cannot start a clean generation: ${txn.reason}`);
+    return {
+      generatedFiles: [], reusedFiles: [], executionStatus: 'FAILED', reportUrl: '',
+      requestedCases: requested, missingCases: requested, verified: false, error: txn.reason, logs,
+    };
+  }
+  let result;
+  try {
+    result = await coreGenerate(fw, job, log, logs);
+  } catch (e) {
+    // Any crash mid-generation → roll the tree back and drop the branch, then surface the error.
+    await restoreBaselineTxn(fw, txn.baseline, txn.branch, { discardBranch: true }, log);
+    throw e;
+  }
+  return finalizeGenerationTxn(fw, job, txn, result, log);
+}
+
+/**
+ * The generation body. Runs entirely on the transaction branch created by generateAndRun, so
+ * every file write and index refresh is isolated from the baseline until finalize decides whether
+ * to keep the branch (push-eligible) or discard it.
+ */
+async function coreGenerate(fw, job, log, logs) {
   const activeSkill = resolveSkill(job);
   log(`[local] Skill selected: ${job.skill || 'New Automation'} → grounding on ${activeSkill.tag} (mode: ${activeSkill.key}).`);
   // READ-BEFORE contract: rebuild the reuse index from src/ BEFORE grounding. In a fresh
@@ -2130,16 +2157,53 @@ async function generateAndRun(job, onLog) {
     log(`[local] ✅ Verification passed — all ${requestedIds.length} requested case(s) present: ${requestedIds.join(', ')}.`);
   }
 
+  // Phase 3 — per-case pass/fail from the Playwright JSON. A case counts as automated only
+  // when EVERY test carrying its id passed; a present-but-failing case is pruned so the PR
+  // ships only green work, and its id rejoins "missing" to be regenerated on the next run.
+  const statusById = {};
+  for (const t of (run.summary && run.summary.tests) || []) {
+    const ok = t.status === 'passed';
+    for (const id of idsInTitle(t.title)) {
+      if (!(id in statusById)) statusById[id] = ok;
+      else statusById[id] = statusById[id] && ok;
+    }
+  }
+  const automatedCases = requestedIds.filter((id) => presentIds.has(id) && statusById[id] === true);
+  let failedCases = requestedIds.filter((id) => presentIds.has(id) && statusById[id] === false);
+  const partial = automatedCases.length > 0 && failedCases.length > 0;
+  if (partial) {
+    log(`[local] ⚑ Partial success — automated (passing): ${automatedCases.join(', ')}; NOT automated (failing, will retry next run): ${failedCases.join(', ')}.`);
+    let prunedAny = false;
+    for (const rel of specPaths()) {
+      const abs = path.join(fw, rel);
+      const before = safeRead(abs, 200000);
+      if (!before) continue;
+      const after = pruneFailingTests(before, failedCases);
+      if (after && after !== before) {
+        fs.writeFileSync(abs, after, 'utf8');
+        prunedAny = true;
+        log(`[local]   ✂ Removed failing case(s) from ${rel} — only passing cases will be committed.`);
+      }
+    }
+    if (prunedAny) {
+      const reidx = await refreshIndex(fw);
+      log(reidx.ok ? '[local] Re-indexed after pruning failing cases ✓.' : '[local] Re-index after prune skipped/failed (non-fatal).');
+    }
+  }
+
+  const executionStatus = run.passed ? 'PASSED' : (partial ? 'PARTIAL' : 'FAILED');
   return {
     generatedFiles: written,
     reusedFiles: written.filter((w) => w.reused).map((w) => w.path),
     backups: allBackups,
-    executionStatus: run.passed ? 'PASSED' : 'FAILED',
+    executionStatus,
     reportUrl: 'playwright-report/index.html',
     reportSummary: run.summary || null,
     requestedCases: requestedIds,
-    missingCases,
-    verified: missingCases.length === 0,
+    automatedCases,
+    failedCases,
+    missingCases: [...new Set([...missingCases, ...failedCases])],
+    verified: missingCases.length === 0 && failedCases.length === 0,
     logs,
   };
 }
@@ -2158,35 +2222,230 @@ function git(fw, args) {
   });
 }
 
+// Paths a generation transaction is allowed to create/modify/clean. Everything a run writes
+// (source, reuse index, backups) lives under one of these — never the user's other files.
+const TXN_PATHS = ['src', '.ai-memory', '.blast-backups'];
+
+async function gitCurrentBranch(fw) {
+  const r = await git(fw, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  return r.code === 0 ? r.output.trim() : '';
+}
+
+/** The repo's default branch (origin/HEAD target), falling back to 'dev'. */
+async function gitDefaultBranch(fw) {
+  const r = await git(fw, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']);
+  if (r.code === 0 && r.output.trim()) return r.output.trim().replace(/^origin\//, '');
+  return 'dev';
+}
+
+/** Extract the file path from a `git status --porcelain` line (handles renames + quotes). */
+function porcelainPath(line) {
+  const p = String(line).slice(2).trim();
+  const parts = p.split(' -> ');
+  return (parts[1] || parts[0] || '').replace(/^"|"$/g, '');
+}
+
+const isTxnOwnedPath = (p) =>
+  TXN_PATHS.some((b) => p === b || p.startsWith(`${b}/`) || p.startsWith(`${b}\\`));
+
 /**
- * Commit the generated tests on a fresh branch and push to origin.
- * Only the generated src/ files are staged (never .env, backups, or temp).
- * Returns { branch, pushed, compareUrl, logs }.
+ * Begin a generation transaction (Phase 1 + Phase 4 guard).
+ *  - Refuses to run from a detached HEAD.
+ *  - Refuses to run when the tree has uncommitted NON-generation edits (protects the user's
+ *    in-progress work — nothing is ever wiped without consent).
+ *  - Auto-cleans leftover generation artifacts from an earlier aborted run so we start pristine.
+ *  - Creates the isolated job branch from the baseline so EVERY write happens on the branch,
+ *    never on dev — the local reuse index therefore only ever reflects MERGED coverage.
+ * Returns { ok, baseline, branch, reason }.
+ */
+async function beginGenerationTxn(fw, job, log) {
+  const baseline = await gitCurrentBranch(fw);
+  if (!baseline || baseline === 'HEAD') {
+    return { ok: false, reason: 'Framework repo is in a detached-HEAD state — check out a branch first.' };
+  }
+  const dirtyR = await git(fw, ['status', '--porcelain']);
+  const dirty = dirtyR.code === 0 ? dirtyR.output.split('\n').map((l) => l.replace(/\r$/, '')).filter(Boolean) : [];
+  const foreign = dirty.map(porcelainPath).filter((p) => p && !isTxnOwnedPath(p));
+  if (foreign.length) {
+    return {
+      ok: false,
+      reason: `Framework working tree has uncommitted non-generation changes (${foreign.slice(0, 5).join(', ')}${foreign.length > 5 ? '…' : ''}). Commit or stash them, then retry — B.L.A.S.T. will not touch your work.`,
+    };
+  }
+  if (dirty.length) {
+    if (log) log('[txn] Clearing leftover generation artifacts from a prior run…');
+    await git(fw, ['checkout', '-f', '--', ...TXN_PATHS]);
+    await git(fw, ['clean', '-fd', '--', ...TXN_PATHS]);
+  }
+  const branch = `blast/auto-${String(job.jobId).toLowerCase()}`;
+  const co = await git(fw, ['checkout', '-B', branch]);
+  if (co.code !== 0) return { ok: false, reason: `git checkout -B ${branch} failed: ${co.output.slice(-200)}` };
+  if (log) log(`[txn] Generating on isolated branch ${branch} (baseline: ${baseline}).`);
+  return { ok: true, baseline, branch };
+}
+
+/** Commit the generation output (src + reuse index) to the job branch. Returns the sha or ''. */
+async function commitGenerationTxn(fw, job, log) {
+  await git(fw, ['add', '--', ...TXN_PATHS]);
+  const ids = (job.testCases || []).map((tc) => tc.id).filter(Boolean).join(', ');
+  const msg = `test(automation): ${job.jobId} — ${job.project || job.feature || 'suite'} (${ids || 'cases'})`;
+  const commit = await git(fw, ['commit', '-m', `"${msg.replace(/"/g, "'")}"`]);
+  if (commit.code !== 0 && !/nothing to commit/i.test(commit.output)) {
+    if (log) log(`[txn] commit warning: ${commit.output.slice(-160)}`);
+    return '';
+  }
+  const sha = await git(fw, ['rev-parse', 'HEAD']);
+  return sha.code === 0 ? sha.output.trim() : '';
+}
+
+/**
+ * Restore the baseline working tree after a transaction. On success the job branch is KEPT
+ * (its commit is ready for Push to Gate) while dev returns to a pristine state; on failure the
+ * branch is also deleted so a failed/closed attempt leaves ZERO local residue.
+ */
+async function restoreBaselineTxn(fw, baseline, branch, opts, log) {
+  const co = await git(fw, ['checkout', '-f', baseline]);
+  if (co.code !== 0) { if (log) log(`[txn] restore checkout failed: ${co.output.slice(-160)}`); return; }
+  await git(fw, ['clean', '-fd', '--', ...TXN_PATHS]);
+  if (opts && opts.discardBranch && branch) {
+    const del = await git(fw, ['branch', '-D', branch]);
+    if (del.code === 0 && log) log(`[txn] Discarded branch ${branch}.`);
+  }
+}
+
+/**
+ * Finalize a transaction: commit + keep the branch when there is push-eligible work (a new case
+ * whose test passed), otherwise discard it. Always leaves the baseline tree pristine.
+ */
+async function finalizeGenerationTxn(fw, job, txn, result, log) {
+  const wroteNew = (result.generatedFiles || []).some(
+    (f) => !f.reused && (f.action === 'created' || f.action === 'overwritten'),
+  );
+  const automated = (result.automatedCases || []).length;
+  const eligible = wroteNew && (result.executionStatus === 'PASSED' || automated > 0);
+  if (eligible) {
+    const sha = await commitGenerationTxn(fw, job, log);
+    result.branch = txn.branch;
+    if (sha) result.commit = sha;
+    await restoreBaselineTxn(fw, txn.baseline, txn.branch, { discardBranch: false }, log);
+    if (log) log(`[txn] Work committed to ${txn.branch}; ${txn.baseline} restored clean — ready for Push to Gate.`);
+  } else {
+    await restoreBaselineTxn(fw, txn.baseline, txn.branch, { discardBranch: true }, log);
+    if (log) log(`[txn] Nothing push-eligible — discarded ${txn.branch}; ${txn.baseline} left pristine (no residue).`);
+  }
+  return result;
+}
+
+/** All TC ids embedded in a test title (a title may carry more than one). */
+function idsInTitle(title) {
+  const out = [];
+  const re = /TC[_-]?\d+[A-Za-z_]*/gi;
+  let m;
+  while ((m = re.exec(String(title || ''))) !== null) out.push(normId(m[0]));
+  return out;
+}
+
+/**
+ * Remove the test() blocks whose TC id is in `failedIds` so only PASSING cases are committed
+ * (Phase 3). Returns unchanged content when nothing matches or when pruning would empty the
+ * spec (caller then treats the whole run as FAILED rather than shipping an empty file).
+ */
+function pruneFailingTests(content, failedIds) {
+  const fail = new Set((failedIds || []).map(normId));
+  if (!fail.size) return content;
+  const blocks = specTestFullBlocks(content);
+  const remove = blocks.filter((b) => b.id && fail.has(normId(b.id)));
+  if (!remove.length) return content;
+  const remaining = blocks.filter((b) => !(b.id && fail.has(normId(b.id))));
+  if (!remaining.length) return content; // would empty the spec — keep as-is
+  let out = content;
+  for (const b of remove) {
+    const at = out.indexOf(b.source);
+    if (at !== -1) out = out.slice(0, at) + out.slice(at + b.source.length);
+  }
+  return out.replace(/\n{3,}/g, '\n\n');
+}
+
+/**
+ * Discard a generation attempt (Phase 2): delete the local job branch (and optionally the remote
+ * one) after a failed/closed PR. The working tree is already pristine from the transaction, so
+ * this only removes the orphan branch. Returns { branch, localDeleted, remoteDeleted, logs }.
+ */
+async function discardBranch(job, opts, onLog) {
+  const { frameworkPath: fw } = config();
+  const logs = [];
+  const log = (m) => { logs.push(m); if (typeof onLog === 'function') { try { onLog(m); } catch { /* best-effort */ } } };
+  const branch = `blast/auto-${String(job.jobId).toLowerCase()}`;
+  const cur = await gitCurrentBranch(fw);
+  if (cur === branch) {
+    const base = await gitDefaultBranch(fw);
+    await git(fw, ['checkout', '-f', base]);
+    await git(fw, ['clean', '-fd', '--', ...TXN_PATHS]);
+    log(`[discard] Switched off ${branch} to ${base}.`);
+  }
+  const localDel = await git(fw, ['branch', '-D', branch]);
+  log(localDel.code === 0 ? `[discard] Deleted local branch ${branch}.` : `[discard] No local branch ${branch} to delete.`);
+  let remoteDeleted = false;
+  if (opts && opts.deleteRemote) {
+    const rd = await git(fw, ['push', 'origin', '--delete', branch]);
+    remoteDeleted = rd.code === 0;
+    log(remoteDeleted ? `[discard] Deleted remote branch origin/${branch}.` : '[discard] Remote branch delete skipped/failed (may not exist).');
+  }
+  return { branch, localDeleted: localDel.code === 0, remoteDeleted, logs };
+}
+
+/**
+ * Doctor (Phase 4): force the framework repo back to a pristine baseline and remove every orphan
+ * blast/* branch left behind by interrupted runs. Only ever touches TXN_PATHS + blast/* branches,
+ * never the user's other files or branches. Returns { logs, base, deletedBranches }.
+ */
+async function resetFramework(onLog) {
+  const { frameworkPath: fw } = config();
+  const logs = [];
+  const log = (m) => { logs.push(m); if (typeof onLog === 'function') { try { onLog(m); } catch { /* best-effort */ } } };
+  const base = await gitDefaultBranch(fw);
+  const cur = await gitCurrentBranch(fw);
+  if (cur && cur.startsWith('blast/')) {
+    await git(fw, ['checkout', '-f', base]);
+    log(`[reset] Switched off ${cur} to ${base}.`);
+  }
+  await git(fw, ['checkout', '-f', '--', ...TXN_PATHS]);
+  await git(fw, ['clean', '-fd', '--', ...TXN_PATHS]);
+  log(`[reset] Restored ${TXN_PATHS.join(', ')} to ${base} HEAD.`);
+  const branches = await git(fw, ['branch', '--list', 'blast/*']);
+  const orphans = (branches.output || '')
+    .split('\n')
+    .map((l) => l.replace(/^\*?\s*/, '').trim())
+    .filter((b) => b.startsWith('blast/'));
+  const deletedBranches = [];
+  for (const b of orphans) {
+    const del = await git(fw, ['branch', '-D', b]);
+    if (del.code === 0) { deletedBranches.push(b); log(`[reset] Deleted orphan branch ${b}.`); }
+  }
+  if (!deletedBranches.length) log('[reset] No orphan blast/* branches to delete.');
+  log('[reset] Framework repo is pristine.');
+  return { logs, base, deletedBranches };
+}
+
+/**
+ * Publish the generated tests: push the transaction branch already created during generation
+ * and return the PR-compare URL. Returns { branch, pushed, compareUrl, logs }.
  */
 async function pushBranch(job, onLog) {
   const { frameworkPath: fw } = config();
   const logs = [];
   const log = (m) => { logs.push(m); if (typeof onLog === 'function') { try { onLog(m); } catch { /* best-effort */ } } };
 
-  const files = (job.generatedFiles || []).map((f) => f.path).filter((p) => p && p.startsWith('src/'));
-  if (files.length === 0) throw new Error('No generated src/ files to push.');
-
-  const branch = `blast/auto-${job.jobId}`.toLowerCase();
-  log(`[push] Creating branch ${branch}…`);
-  const co = await git(fw, ['checkout', '-B', branch]);
-  if (co.code !== 0) throw new Error(`git checkout failed: ${co.output.slice(-300)}`);
-
-  const add = await git(fw, ['add', '--', ...files.map((f) => `"${f}"`)]);
-  if (add.code !== 0) throw new Error(`git add failed: ${add.output.slice(-300)}`);
-
-  const ids = (job.testCases || []).map((tc) => tc.id).join(', ');
-  const msg = `test(automation): ${job.jobId} — ${job.project || 'suite'} (${ids || 'cases'})`;
-  const commit = await git(fw, ['commit', '-m', `"${msg}"`]);
-  if (commit.code !== 0 && !/nothing to commit/i.test(commit.output)) {
-    throw new Error(`git commit failed: ${commit.output.slice(-300)}`);
+  // Phase 1: generation already committed the work to job.branch inside its transaction.
+  // Push-to-gate now only publishes that existing branch — it never re-checkouts, re-adds, or
+  // re-commits (the dev tree is pristine at this point, so a fresh commit would be empty).
+  const branch = (job.branch || `blast/auto-${job.jobId}`).toLowerCase();
+  const verify = await git(fw, ['rev-parse', '--verify', branch]);
+  if (verify.code !== 0) {
+    throw new Error(`Branch ${branch} not found locally — the generation branch was discarded or never created (no push-eligible work). Re-generate before pushing.`);
   }
-  log(`[push] Committed ${files.length} file(s).`);
 
+  log(`[push] Pushing ${branch} to origin…`);
   const push = await git(fw, ['push', '-u', 'origin', branch]);
   if (push.code !== 0) throw new Error(`git push failed: ${push.output.slice(-300)}`);
   log('[push] Pushed to origin.');
@@ -2444,6 +2703,8 @@ module.exports = {
   buildFeatureModel,
   ensureFixturesRegistered,
   pushBranch,
+  discardBranch,
+  resetFramework,
   config,
   resolveSkill,
   skillModeDirective,

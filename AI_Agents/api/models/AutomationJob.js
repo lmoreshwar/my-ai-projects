@@ -9,10 +9,12 @@ const JOB_STATUSES = [
   'Generating',
   'Executing',
   'Passed',
+  'Partial',
   'Failed',
   'PushedToGate',
   'Merged',
   'Completed',
+  'Discarded',
 ];
 
 const TestCaseRefSchema = new mongoose.Schema(
@@ -100,7 +102,7 @@ const AutomationJobSchema = new mongoose.Schema({
   // Results
   generatedFiles: [GeneratedFileSchema],
   reusedFiles: [{ type: String }],
-  executionStatus: { type: String, enum: ['', 'PASSED', 'FAILED', 'SKIPPED'], default: '' },
+  executionStatus: { type: String, enum: ['', 'PASSED', 'PARTIAL', 'FAILED', 'SKIPPED'], default: '' },
   reportUrl: { type: String, default: '' },
   reportSummary: { type: mongoose.Schema.Types.Mixed, default: null },  // parsed Playwright results for the in-app report
   prUrl: { type: String, default: '' },
@@ -111,6 +113,8 @@ const AutomationJobSchema = new mongoose.Schema({
   prMergeableState: { type: String, default: '' },  // clean | dirty | blocked | behind | unknown
   gateFailed: { type: Boolean, default: false },    // true when the run finished but the completion gate failed (no PR)
   missingCases: [{ type: String }],                 // requested case ids the runner could not automate
+  automatedCases: [{ type: String }],               // requested case ids whose generated test PASSED
+  failedCases: [{ type: String }],                  // requested case ids present but whose test FAILED (pruned, will retry)
   logs: [{ type: String }],
   error: { type: String, default: '' },
 
