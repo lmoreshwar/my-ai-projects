@@ -7,7 +7,8 @@ function authHeaders() {
 }
 
 const TEST_TYPES = ['Positive', 'Negative', 'Boundary', 'Security-lite', 'Accessibility'];
-const DEFAULT_TYPES = ['Positive', 'Negative'];
+// Default to Positive only; the user opts into Negative/Boundary/Security/Accessibility manually.
+const DEFAULT_TYPES = ['Positive'];
 const TERMINAL = new Set(['Passed', 'Failed', 'Completed', 'PushedToGate', 'Merged']);
 
 const inputCls =
