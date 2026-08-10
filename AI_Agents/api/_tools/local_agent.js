@@ -22,6 +22,10 @@ const { spawn } = require('child_process');
 const LLMConnector = require('./llm_connector');
 
 const RUN_TIMEOUT_MS = Number(process.env.LOCAL_RUN_TIMEOUT_MS || 300000);
+// How many times to ask the LLM for one case before giving up. LLMs are non-deterministic
+// and sometimes answer a duplicate-looking case with prose (no ===FILE=== block); a retry
+// (with a stricter directive) usually yields parseable code the behavioral dedup can then judge.
+const GEN_ATTEMPTS = Number(process.env.BLAST_GEN_ATTEMPTS || 3);
 const FILE_RE = /===FILE:([^|=]+)\|(page|module|spec|fixture|config|other)===\s*\n([\s\S]*?)\n===ENDFILE===/g;
 
 // Sensible default model per platform when none is configured for that platform.
@@ -1156,6 +1160,7 @@ function buildPlan(job, fwOverride, providerName) {
   if (toAdd.length) {
     lines.push(`> ＋ ${toAdd.length} case(s) are **new** and will be added:`);
     toAdd.forEach((c) => lines.push(`  - 🆕 ${c.id} ${c.title || ''} — new → generate`));
+    lines.push('  - ↺ A final **behavioral de-duplication** runs at generation: any case above that turns out to drive the SAME actions + test-data as an existing test is auto-skipped (reused as-is), never duplicated — even when its id/title differ (e.g. a re-worded locked-user check collapses onto the existing one). Only genuinely-new behavior is written and PR-gated.');
   }
   if (specTestCount > cases.length && !toAdd.length) {
     lines.push('', `> ℹ️ \`${specRel}\` already contains **${specTestCount} test(s)** — a superset of your ${cases.length} selected. Running the spec executes **all ${specTestCount}** (Playwright runs the whole file), which is why the report shows ${specTestCount} tests.`);
@@ -1362,9 +1367,36 @@ async function generateAndRun(job, onLog) {
     }
     if (tc.id) requestedIds.push(String(tc.id).toUpperCase().replace(/-/g, '_'));
     log(`[local] Generating ${tc.id} "${tc.title || ''}" (${i + 1}/${newCases.length})…`);
-    const genText = await llmGenerate(buildGeneratePrompt({ ...job, testCases: [tc] }, grounding, snapshot, existNow), buildSystemPrompt());
-    let batch = sanitizeFiles(parseFiles(genText));
-    if (batch.length === 0) { log(`[local] ⚠ ${tc.id}: LLM returned no parseable files — skipped.`); continue; }
+    // RETRY on unparseable output: LLMs occasionally answer with prose (no ===FILE=== block),
+    // most often when a case overlaps existing coverage. Retry with a stricter "code only"
+    // directive so the behavioral dedup below gets real code to judge instead of a false miss.
+    const basePrompt = buildGeneratePrompt({ ...job, testCases: [tc] }, grounding, snapshot, existNow);
+    let batch = [];
+    for (let attempt = 1; attempt <= GEN_ATTEMPTS; attempt++) {
+      const prompt = attempt === 1 ? basePrompt : basePrompt
+        + '\n\n## STRICT OUTPUT (retry — your previous reply had no ===FILE=== block)\n'
+        + 'Output ONLY the file(s) in the exact ===FILE:<path>|<layer>=== / ===ENDFILE=== format — no prose, no markdown, no explanation. '
+        + 'Even if this case looks already covered, STILL emit the single spec test() for it so it can be de-duplicated automatically.';
+      const genText = await llmGenerate(prompt, buildSystemPrompt());
+      batch = sanitizeFiles(parseFiles(genText));
+      if (batch.length) break;
+      log(`[local] ⚠ ${tc.id}: LLM returned no parseable files (attempt ${attempt}/${GEN_ATTEMPTS})${attempt < GEN_ATTEMPTS ? ' — retrying…' : '.'}`);
+    }
+    if (batch.length === 0) {
+      // Still nothing parseable after retries. If this case is ALREADY covered by an existing
+      // test, treat it as reuse (skip) — LLMs often refuse to emit a known duplicate. Only a
+      // genuinely-uncovered case is a real miss (kept in requestedIds → honest FAILED, no PR).
+      const already = caseCoveredAnywhere(fw, tc);
+      const pushed = String(tc.id).toUpperCase().replace(/-/g, '_');
+      if (already) {
+        log(`[local] ⏭ ${tc.id} "${tc.title || ''}" already covered by an existing test in ${already} — skipping (LLM emitted no new code; existing coverage reused).`);
+        const ri = requestedIds.lastIndexOf(pushed);
+        if (ri >= 0) requestedIds.splice(ri, 1);
+      } else {
+        log(`[local] ⚠ ${tc.id}: LLM returned no parseable files after ${GEN_ATTEMPTS} attempts — not automated (counts as a miss).`);
+      }
+      continue;
+    }
     batch = batch.filter((f) => {
       if (f.layer !== 'spec') return true;
       const dups = duplicateSpecIds(f.content);
