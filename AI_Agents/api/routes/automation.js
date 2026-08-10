@@ -171,7 +171,7 @@ router.post('/generate', auth, async (req, res) => {
 router.post('/explore', auth, async (req, res) => {
   try {
     const { project, environment, url, feature, testTypes, maxCases, scopeHint, notes,
-      browser, evidenceFiles, loginUrl } = req.body;
+      browser, evidenceFiles, loginUrl, flowUrls } = req.body;
     // SECURITY: username/password may arrive for the transient explore session. They are read into
     // LOCAL variables only, passed straight to the explore engine (child-process env), and are NEVER
     // written to the job, persisted, logged, or committed. loginUrl is not secret and may be stored.
@@ -199,6 +199,7 @@ router.post('/explore', auth, async (req, res) => {
       scopeHint: scopeHint || '',
       notes: notes || '',
       loginUrl: loginUrl ? String(loginUrl).trim() : '',
+      flowUrls: Array.isArray(flowUrls) ? flowUrls.map((u) => String(u).trim()).filter(Boolean) : [],
       evidenceFiles: Array.isArray(evidenceFiles) ? evidenceFiles : [],
       browser: browser || 'Chrome',
       agent: 'AI Native Playwright Engineer',

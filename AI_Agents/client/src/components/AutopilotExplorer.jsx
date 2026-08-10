@@ -27,6 +27,7 @@ export default function AutopilotExplorer({ apiBase }) {
     username: '',
     password: '',
     loginUrl: '',
+    flowUrls: '',
     scopeHint: '',
     maxCases: 8,
     environment: 'QA',
@@ -84,6 +85,7 @@ export default function AutopilotExplorer({ apiBase }) {
           testTypes: [...testTypes],
           maxCases: Number(form.maxCases) || 8,
           loginUrl: form.loginUrl || '',
+          flowUrls: (form.flowUrls || '').split(/\r?\n/).map((u) => u.trim()).filter(Boolean),
           scopeHint: form.scopeHint || '',
           notes: form.notes || '',
           evidenceFiles: files.map((f) => f.name),
@@ -250,6 +252,12 @@ export default function AutopilotExplorer({ apiBase }) {
                 <label className={labelCls}>Login URL (optional — auth-gated exploration)</label>
                 <input className={inputCls} value={form.loginUrl}
                   onChange={(e) => set('loginUrl', e.target.value)} placeholder="defaults to the app origin, e.g. https://www.saucedemo.com" />
+              </div>
+              <div>
+                <label className={labelCls}>Flow / step URLs (optional — one per line, for multi-step features)</label>
+                <textarea className={inputCls} rows={3} value={form.flowUrls}
+                  onChange={(e) => set('flowUrls', e.target.value)}
+                  placeholder={'https://www.saucedemo.com/checkout-step-one.html\nhttps://www.saucedemo.com/checkout-step-two.html'} />
               </div>
               <div>
                 <label className={labelCls}>Scope hint (route or CSS selector)</label>

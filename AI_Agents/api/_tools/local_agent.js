@@ -580,14 +580,32 @@ function buildFeatureModel(snapshot, feature) {
   return model;
 }
 
+/** Render one model's widget lines (shared by single- and multi-step evidence blocks). */
+function widgetLines(m, prefix) {
+  const p = prefix || '';
+  const l = [];
+  l.push(`${p}Inputs: ${m.inputs.length ? m.inputs.map((i) => `${i.name || '(unlabeled)'} [${i.role}]`).join(', ') : 'none detected'}`);
+  l.push(`${p}Buttons: ${m.buttons.length ? m.buttons.join(', ') : 'none detected'}`);
+  l.push(`${p}Links: ${m.links.length ? m.links.join(', ') : 'none detected'}`);
+  if (m.controls && m.controls.length) l.push(`${p}Controls: ${m.controls.map((c) => `${c.name || '(unlabeled)'} [${c.role}]`).join(', ')}`);
+  return l;
+}
+
 /** Human-readable evidence block fed to the case author so it designs against real widgets only. */
 function featureModelSummary(model) {
   const l = [`Feature under test: ${model.feature || '(unnamed)'}`];
-  l.push(`Inputs: ${model.inputs.length ? model.inputs.map((i) => `${i.name || '(unlabeled)'} [${i.role}]`).join(', ') : 'none detected'}`);
-  l.push(`Buttons: ${model.buttons.length ? model.buttons.join(', ') : 'none detected'}`);
-  l.push(`Links: ${model.links.length ? model.links.join(', ') : 'none detected'}`);
-  if (model.controls.length) l.push(`Controls: ${model.controls.map((c) => `${c.name || '(unlabeled)'} [${c.role}]`).join(', ')}`);
-  if (model.texts.length) l.push(`Visible text/labels: ${model.texts.slice(0, 12).join(' | ')}`);
+  if (model.steps && model.steps.length > 1) {
+    l.push(`This feature spans ${model.steps.length} pages/steps:`);
+    model.steps.forEach((s) => {
+      l.push(`  • ${s.label} (${s.url}):`);
+      widgetLines(s, '    ').forEach((x) => l.push(x));
+    });
+    l.push('Combined widgets across all steps:');
+    widgetLines(model, '  ').forEach((x) => l.push(x));
+  } else {
+    widgetLines(model, '').forEach((x) => l.push(x));
+  }
+  if (model.texts && model.texts.length) l.push(`Visible text/labels: ${model.texts.slice(0, 12).join(' | ')}`);
   return l.join('\n');
 }
 
@@ -636,11 +654,14 @@ function buildAuthorPrompt(job, model) {
   const types = selected.join(', ');
   const max = Number(job.maxCases) > 0 ? Number(job.maxCases) : 8;
   const guidance = testTypeGuidance(selected, model);
+  const multiStep = model.steps && model.steps.length > 1;
   return [
     `You are a senior QA test designer. Design up to ${max} high-value test cases for the "${job.feature}" feature of the web app at ${job.url}.`,
     'Use ONLY the widgets that actually exist in the evidence below — NEVER invent fields, buttons, or links that are not present.',
     `Cover these test types: ${types}. Add a type ONLY if it appears in that list. Each case must map to exactly ONE type via its "type" field.`,
     'Prioritise by value: one strong positive, then the most likely real defects. Every case must be a DISTINCT behavior — no two cases with the same action + data. Do not pad to reach the max.',
+    multiStep ? `This feature spans ${model.steps.length} pages/steps — include at least ONE end-to-end positive that traverses every step in order to the final success/confirmation state.` : '',
+    'Coverage floor: always include one positive happy path; if Negative is selected, include one required-field negative for EACH input. (These are added automatically if you omit them — so spend your budget on higher-value cases.)',
     '',
     '## Test-design rules for the selected types (follow precisely)',
     ...guidance,
@@ -683,69 +704,205 @@ function canonicalCaseType(raw) {
   return 'Positive';
 }
 
-/** Author cases from the feature model and normalize them into the job.testCases shape. */
+/** Normalize a case shape (LLM- or floor-authored) into the job.testCases record. */
+function shapeCase(raw, feature, floor) {
+  const type = canonicalCaseType(raw.type);
+  return {
+    id: '',
+    title: String(raw.title).trim(),
+    tags: `${feature}, ${type}`,
+    executionTags: '',
+    complexity: 'Medium',
+    description: '',
+    preconditions: '',
+    testData: String(raw.testData || ''),
+    steps: String(raw.steps || ''),
+    expectedResults: String(raw.expectedResults || ''),
+    comments: floor ? 'Coverage-floor (deterministic scaffold).' : 'Authored by Autopilot (explore mode).',
+  };
+}
+
+const normTitle = (t) => String(t || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const caseType = (c) => String(c.tags || '').split(',').pop().trim();
+
+/** Best-guess a valid value for an input from its accessible name (scaffold data for the floor). */
+function validPlaceholder(name) {
+  const n = String(name || '').toLowerCase();
+  if (/e-?mail/.test(n)) return 'user@example.com';
+  if (/zip|postal|pin\b/.test(n)) return '12345';
+  if (/phone|mobile|tel/.test(n)) return '5551234567';
+  if (/first ?name/.test(n)) return 'John';
+  if (/last ?name/.test(n)) return 'Doe';
+  if (/password/.test(n)) return 'Passw0rd!';
+  if (/user/.test(n)) return 'standard_user';
+  if (/name/.test(n)) return 'John Doe';
+  return 'Valid value';
+}
+
+/** The most likely primary/submit control on the screen (for scaffolded flows). */
+function primaryButton(model) {
+  const re = /continue|submit|save|finish|checkout|log ?in|sign ?in|next|place|confirm|apply|add/i;
+  return model.buttons.find((b) => re.test(b)) || model.buttons[0] || 'Submit';
+}
+
+/** Deterministic happy-path scaffold: fill every named input with valid data, click the primary control. */
+function synthHappyPath(job, model) {
+  const filled = model.inputs.filter((i) => i.name);
+  const primary = primaryButton(model);
+  const steps = [];
+  let n = 1;
+  filled.forEach((i) => steps.push(`${n++}. Enter a valid ${i.name} (e.g. "${validPlaceholder(i.name)}").`));
+  steps.push(`${n++}. Click "${primary}".`);
+  return {
+    title: `Complete ${job.feature} successfully with valid data`,
+    type: 'Positive',
+    steps: steps.join('\n'),
+    testData: filled.map((i) => `${i.name}: ${validPlaceholder(i.name)}`).join('; ') || 'valid inputs',
+    expectedResults: `${job.feature} accepts the input and advances to the next step / shows the success (confirmation) state.`,
+  };
+}
+
+/** Deterministic required-field negative: all inputs valid except one left blank; expect a field error. */
+function synthRequiredNeg(job, model, input) {
+  const others = model.inputs.filter((i) => i.name && i.name !== input.name);
+  const primary = primaryButton(model);
+  const steps = [];
+  let n = 1;
+  others.forEach((i) => steps.push(`${n++}. Enter a valid ${i.name}.`));
+  steps.push(`${n++}. Leave "${input.name}" blank.`);
+  steps.push(`${n++}. Click "${primary}".`);
+  return {
+    title: `${job.feature}: ${input.name} is required`,
+    type: 'Negative',
+    steps: steps.join('\n'),
+    testData: `${input.name}: (blank); all other fields valid`,
+    expectedResults: `A validation error indicates ${input.name} is required and the form does not submit.`,
+  };
+}
+
+const coversRequiredNeg = (cases, name) => {
+  const nn = normTitle(name);
+  return cases.some((c) => caseType(c) === 'Negative' && normTitle(c.title).includes(nn) &&
+    /(missing|blank|empty|required|without)/.test(normTitle(c.title)));
+};
+
+/**
+ * Guarantee a minimum coverage floor regardless of what the LLM returned: one positive happy path,
+ * and (when Negative is selected) one required-field negative per named input. Floor cases are
+ * grounded in real widgets and always survive the maxCases cap.
+ */
+function ensureCoverageFloor(cases, job, model, feature) {
+  const max = Number(job.maxCases) > 0 ? Number(job.maxCases) : 8;
+  const selected = new Set((job.testTypes && job.testTypes.length ? job.testTypes : ['Positive', 'Negative']).map(canonicalCaseType));
+  const named = model.inputs.filter((i) => i.name);
+  const additions = [];
+  if (selected.has('Positive') && named.length && !cases.some((c) => caseType(c) === 'Positive')) {
+    additions.push(shapeCase(synthHappyPath(job, model), feature, true));
+  }
+  if (selected.has('Negative') && named.length) {
+    for (const inp of named) {
+      if (!coversRequiredNeg(cases, inp.name)) additions.push(shapeCase(synthRequiredNeg(job, model, inp), feature, true));
+    }
+  }
+  // Merge + de-dup by normalized title (LLM cases win ties, keeping their richer wording).
+  const seen = new Set();
+  const merged = [];
+  for (const c of [...cases, ...additions]) {
+    const k = normTitle(c.title);
+    if (seen.has(k)) continue;
+    seen.add(k); merged.push(c);
+  }
+  if (merged.length > max) {
+    const floorKeys = new Set(additions.map((a) => normTitle(a.title)));
+    const floor = merged.filter((c) => floorKeys.has(normTitle(c.title)));
+    const rest = merged.filter((c) => !floorKeys.has(normTitle(c.title)));
+    return [...floor, ...rest].slice(0, Math.max(max, floor.length));
+  }
+  return merged;
+}
+
+/** Author cases from the feature model (retry once on empty) and apply the deterministic coverage floor. */
 async function authorCases(job, model, onLog) {
   const log = (m) => { if (onLog) onLog(m); };
-  let text = '';
-  try {
-    text = await llmGenerate(buildAuthorPrompt(job, model), 'You output ONLY strict JSON. No prose, no markdown fences.');
-  } catch (e) {
-    log(`[explore] LLM authoring failed: ${e.message}`);
-    return [];
+  const sys = 'You output ONLY strict JSON. No prose, no markdown fences.';
+  let parsed = [];
+  for (let attempt = 1; attempt <= 2 && parsed.length === 0; attempt++) {
+    try {
+      const base = buildAuthorPrompt(job, model);
+      const prompt = attempt === 1 ? base
+        : `${base}\n\nIMPORTANT: your previous reply was empty or unparseable. Reply with ONLY the JSON object now.`;
+      const text = await llmGenerate(prompt, sys);
+      parsed = parseAuthoredCases(text);
+      if (parsed.length === 0) log(`[explore] Author attempt ${attempt} yielded 0 parseable case(s)${attempt < 2 ? ' — retrying…' : ''}.`);
+    } catch (e) {
+      log(`[explore] LLM authoring failed (attempt ${attempt}): ${e.message}`);
+    }
   }
-  const parsed = parseAuthoredCases(text);
   const feature = pascal(job.feature);
-  log(`[explore] Authored ${parsed.length} candidate case(s) from the feature model.`);
-  return parsed
-    .filter((c) => c && c.title)
-    .map((c, i) => {
-      const type = canonicalCaseType(c.type);
-      return {
-        id: `TC_${String(i + 1).padStart(3, '0')}`,
-        title: String(c.title).trim(),
-        tags: `${feature}, ${type}`,
-        executionTags: '',
-        complexity: 'Medium',
-        description: '',
-        preconditions: '',
-        testData: String(c.testData || ''),
-        steps: String(c.steps || ''),
-        expectedResults: String(c.expectedResults || ''),
-        comments: 'Authored by Autopilot (explore mode).',
-      };
-    });
+  let cases = parsed.filter((c) => c && c.title).map((c) => shapeCase(c, feature, false));
+  const before = cases.length;
+  cases = ensureCoverageFloor(cases, job, model, feature);
+  cases.forEach((c, i) => { c.id = `TC_${String(i + 1).padStart(3, '0')}`; });
+  const added = cases.length - before;
+  log(`[explore] Authored ${before} LLM case(s)${added > 0 ? ` + ${added} coverage-floor case(s)` : ''} → ${cases.length} total.`);
+  return cases;
+}
+
+/** Merge per-step feature models (multi-page flows) into one model that also keeps a per-step breakdown. */
+function mergeFeatureModels(steps, feature) {
+  const m = { feature: feature || '', inputs: [], buttons: [], links: [], controls: [], texts: [], steps: [] };
+  const seenIn = new Set(); const seenBtn = new Set(); const seenLink = new Set(); const seenCtrl = new Set();
+  for (const s of steps) {
+    m.steps.push({ label: s.label, url: s.url, inputs: s.inputs, buttons: s.buttons, links: s.links, controls: s.controls });
+    for (const i of s.inputs) { const k = `${i.role}|${i.name}`; if (!seenIn.has(k)) { seenIn.add(k); m.inputs.push(i); } }
+    for (const b of s.buttons) { if (!seenBtn.has(b)) { seenBtn.add(b); m.buttons.push(b); } }
+    for (const l of s.links) { if (!seenLink.has(l)) { seenLink.add(l); m.links.push(l); } }
+    for (const c of s.controls) { const k = `${c.role}|${c.name}`; if (!seenCtrl.has(k)) { seenCtrl.add(k); m.controls.push(c); } }
+    for (const t of s.texts) { if (!m.texts.includes(t)) m.texts.push(t); }
+  }
+  return m;
 }
 
 /**
- * Autopilot entry: explore a feature headlessly, build a deterministic feature model, and have
- * the LLM author positive/negative cases grounded in that evidence. Returns { testCases,
- * featureModel, snapshot } so the EXISTING buildPlan/generateAndRun pipeline runs unchanged
- * (reuse-filter + behavioral dedup are applied there).
+ * Autopilot entry: explore a feature headlessly (one or more flow URLs), build a deterministic
+ * feature model, and have the LLM author cases grounded in that evidence — then apply the coverage
+ * floor. Returns { testCases, featureModel, snapshot } so the EXISTING buildPlan/generateAndRun
+ * pipeline runs unchanged (reuse-filter + behavioral dedup are applied there).
  *
- * Phase 3 — auth-gated exploration: when `creds` ({ username, password }) are supplied, a heuristic
- * form login runs at `job.loginUrl` (or the origin of job.url) BEFORE snapshotting job.url, so
- * features behind a login (Cart, Checkout, …) can be explored. Credentials are transient: passed
- * only into the child process env, never stored on the job, persisted, logged, or committed.
+ * Multi-step: job.flowUrls (optional) snapshots each page of a wizard and merges the models so the
+ * author can design an end-to-end happy path. Exploration NEVER submits forms (no side effects).
+ *
+ * Auth-gated: when `creds` are supplied, a heuristic form login runs at job.loginUrl (or the origin
+ * of the first URL) BEFORE each snapshot. Credentials are transient — passed only into the child
+ * process env, never stored on the job, persisted, logged, or committed.
  */
 async function exploreAndAuthor(job, onLog, creds) {
   const log = (m) => { if (onLog) onLog(m); };
   const fw = config().frameworkPath;
-  log(`[explore] Exploring "${job.feature}" at ${job.url} …`);
+  const urls = (Array.isArray(job.flowUrls) && job.flowUrls.length ? job.flowUrls : [job.url])
+    .map((u) => String(u || '').trim()).filter(Boolean);
+  log(`[explore] Exploring "${job.feature}" across ${urls.length} URL(s) …`);
   let auth = null;
   if (creds && creds.username && creds.password) {
     let loginUrl = (job.loginUrl && String(job.loginUrl).trim()) || '';
-    if (!loginUrl) { try { loginUrl = new URL(job.url).origin; } catch { loginUrl = job.url; } }
+    if (!loginUrl) { try { loginUrl = new URL(urls[0]).origin; } catch { loginUrl = urls[0]; } }
     auth = { username: creds.username, password: creds.password, loginUrl };
-    log(`[explore] Authenticated exploration enabled — logging in at ${loginUrl} before snapshot (credentials are transient, never stored).`);
+    log(`[explore] Authenticated exploration enabled — logging in at ${loginUrl} before each snapshot (credentials are transient, never stored).`);
   }
-  const snapshot = await captureSnapshot(fw, job.url, { auth });
-  log(snapshot
-    ? `[explore] Captured accessibility snapshot (${snapshot.length} chars).`
-    : '[explore] No live snapshot (URL unreachable, login failed, or headless run failed) — authoring from feature name only.');
-  const model = buildFeatureModel(snapshot, job.feature);
-  log(`[explore] Feature model: ${model.inputs.length} input(s), ${model.buttons.length} button(s), ${model.links.length} link(s).`);
+  const steps = [];
+  for (let idx = 0; idx < urls.length; idx++) {
+    const u = urls[idx];
+    const snap = await captureSnapshot(fw, u, { auth });
+    const sm = buildFeatureModel(snap, job.feature);
+    sm.url = u; sm.label = `Step ${idx + 1}`; sm.snapshot = snap;
+    steps.push(sm);
+    log(snap
+      ? `[explore] Step ${idx + 1} (${u}): ${sm.inputs.length} input(s), ${sm.buttons.length} button(s), ${sm.links.length} link(s).`
+      : `[explore] Step ${idx + 1} (${u}): no live snapshot (unreachable, login failed, or redirected).`);
+  }
+  const model = mergeFeatureModels(steps, job.feature);
   const testCases = await authorCases(job, model, log);
-  return { testCases, featureModel: model, snapshot };
+  return { testCases, featureModel: model, snapshot: steps.length ? steps[0].snapshot : '' };
 }
 
 function buildSystemPrompt() {
