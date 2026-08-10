@@ -1322,6 +1322,91 @@ function isDestructiveOverwrite(current, next, layer) {
 }
 
 /**
+ * DETERMINISTIC fixture registrar — guarantees every newly-created Page/Module gets a
+ * fixture entry in src/fixtures/index.ts, WITHOUT trusting the LLM to regenerate that
+ * file. The reuse guard (isDestructiveOverwrite) legitimately protects fixtures/index.ts
+ * from an LLM emit that SHRINKS it (drops existing fixtures) — but that protection used
+ * to leave brand-new Page/Module classes unregistered, so the generated spec referenced
+ * fixtures Playwright didn't know ("Test has unknown parameter 'checkoutModule'"). This
+ * merges each new fixture in additively via targeted string injection: it NEVER rewrites
+ * or drops existing content, so it's safe to run every generation and is fully idempotent
+ * (a fixture that's already registered is skipped).
+ *
+ * For a created `src/pages/CheckoutPage.ts` it injects, if missing:
+ *   import { CheckoutPage } from '../pages/CheckoutPage';
+ *   type member:  checkoutPage: CheckoutPage;
+ *   fixture:      checkoutPage: async ({ page }, use) => { await use(new CheckoutPage(page)); },
+ *
+ * Returns { changed, added:[fixtureName…], backup:relPath|null }.
+ */
+function ensureFixturesRegistered(fw, written) {
+  const rel = 'src/fixtures/index.ts';
+  const abs = path.join(fw, rel);
+  if (!fs.existsSync(abs)) return { changed: false, added: [], backup: null };
+  let src = fs.readFileSync(abs, 'utf8');
+
+  // Collect the Page/Module classes touched this run (created OR extended).
+  const seen = new Set();
+  const candidates = [];
+  for (const w of written) {
+    if (w.layer !== 'page' && w.layer !== 'module') continue;
+    const className = path.basename(w.path).replace(/\.ts$/, '');
+    if (!/^[A-Z]\w*(Page|Module)$/.test(className)) continue;
+    const fixtureName = className.charAt(0).toLowerCase() + className.slice(1);
+    if (seen.has(fixtureName)) continue;
+    seen.add(fixtureName);
+    const dir = w.layer === 'page' ? 'pages' : 'modules';
+    candidates.push({ className, fixtureName, importPath: `../${dir}/${className}` });
+  }
+  if (candidates.length === 0) return { changed: false, added: [], backup: null };
+
+  const added = [];
+  for (const c of candidates) {
+    // Already wired up (type member OR fixture entry present) → nothing to do.
+    if (new RegExp(`\\b${c.fixtureName}\\s*:`).test(src)) continue;
+
+    // 1) import — append after the last existing import statement.
+    if (!new RegExp(`import\\s*\\{[^}]*\\b${c.className}\\b[^}]*\\}`).test(src)) {
+      const importLine = `import { ${c.className} } from '${c.importPath}';`;
+      const importRe = /^import .*;$/gm;
+      let lastEnd = -1;
+      let mm;
+      while ((mm = importRe.exec(src)) !== null) lastEnd = mm.index + mm[0].length;
+      src = lastEnd >= 0
+        ? src.slice(0, lastEnd) + '\n' + importLine + src.slice(lastEnd)
+        : importLine + '\n' + src;
+    }
+
+    // 2) type member — inject at the top of the `TestFixtures` type block.
+    const typeAnchor = src.match(/export type TestFixtures\s*=\s*\{/);
+    if (typeAnchor) {
+      const at = typeAnchor.index + typeAnchor[0].length;
+      src = src.slice(0, at) + `\n    ${c.fixtureName}: ${c.className};` + src.slice(at);
+    }
+
+    // 3) fixture function — inject at the top of the `.extend<TestFixtures>({ … })` object.
+    const extAnchor = src.match(/\.extend<TestFixtures>\(\{/);
+    if (extAnchor) {
+      const at = extAnchor.index + extAnchor[0].length;
+      const fn = `\n    ${c.fixtureName}: async ({ page }, use) => {\n        await use(new ${c.className}(page));\n    },`;
+      src = src.slice(0, at) + fn + src.slice(at);
+    }
+
+    added.push(c.fixtureName);
+  }
+
+  if (added.length === 0) return { changed: false, added: [], backup: null };
+
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const bakRel = path.join('.blast-backups', `fixtures-index.ts.bak-${ts}`);
+  const bakAbs = path.join(fw, bakRel);
+  fs.mkdirSync(path.dirname(bakAbs), { recursive: true });
+  fs.copyFileSync(abs, bakAbs);
+  fs.writeFileSync(abs, src, 'utf8');
+  return { changed: true, added, backup: bakRel };
+}
+
+/**
  * Safely write parsed files under FRAMEWORK_PATH/src.
  * - Refuses paths that escape the repo or src/.
  * - If a file already exists with identical content → REUSED (not rewritten).
@@ -1976,6 +2061,17 @@ async function generateAndRun(job, onLog) {
   }
   if (allBackups.length) log(`[local] Backups saved: ${allBackups.join(', ')}`);
 
+  // Deterministically register any NEW Page/Module as a fixture so the generated spec can
+  // resolve it — even if the LLM's fixtures/index.ts emit was rejected by the reuse guard.
+  // Additive merge only (never rewrites existing fixtures); idempotent; prevents the
+  // "Test has unknown parameter '<fixture>'" failure at run time.
+  const fxReg = ensureFixturesRegistered(fw, written);
+  if (fxReg.changed) {
+    if (fxReg.backup) allBackups.push(fxReg.backup);
+    log(`[local]   ＋ registered ${fxReg.added.length} new fixture(s) in src/fixtures/index.ts: ${fxReg.added.join(', ')}`);
+    recordWrite({ path: 'src/fixtures/index.ts', layer: 'fixture', reused: false, action: 'overwritten' });
+  }
+
   const specPaths = () => written.filter((w) => w.layer === 'spec').map((w) => w.path);
   if (specPaths().length === 0) {
     log('[local] No spec file generated (LLM output likely truncated) — requested case(s) NOT automated. Verification FAILED; no PR will be opened.');
@@ -1998,6 +2094,13 @@ async function generateAndRun(job, onLog) {
       hr.written.forEach((w) => { recordWrite(w); logWrite(w); });
       allBackups.push(...hr.backups);
       files = healed;
+      // Register any Page/Module the heal introduced, same additive guarantee as the first pass.
+      const fxHeal = ensureFixturesRegistered(fw, hr.written);
+      if (fxHeal.changed) {
+        if (fxHeal.backup) allBackups.push(fxHeal.backup);
+        log(`[local]   ＋ registered ${fxHeal.added.length} new fixture(s) during heal: ${fxHeal.added.join(', ')}`);
+        recordWrite({ path: 'src/fixtures/index.ts', layer: 'fixture', reused: false, action: 'overwritten' });
+      }
       log(`[local] Applied heal to ${hr.written.length} file(s). Re-running…`);
       run = await runPlaywright(fw, specPaths(), job, { applyScope: true });
       log(run.passed ? '[local] Re-run PASSED after heal.' : '[local] Re-run still FAILED.');
@@ -2339,6 +2442,7 @@ module.exports = {
   generateAndRun,
   exploreAndAuthor,
   buildFeatureModel,
+  ensureFixturesRegistered,
   pushBranch,
   config,
   resolveSkill,
