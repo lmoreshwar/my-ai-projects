@@ -214,6 +214,32 @@ function titleOverlap(requested, specTitle) {
   return want.filter((w) => have.has(w)).length / want.length;
 }
 
+// Generic filler words that carry no domain signal. Excluded from distinctive matching so a
+// bare id collision that only shares boilerplate ("user login with valid credentials") is NOT
+// mistaken for the same test — the source of false "already automated" plan claims.
+const GENERIC_TOKENS = new Set([
+  'login', 'logout', 'user', 'users', 'valid', 'invalid', 'with', 'without', 'credentials',
+  'credential', 'page', 'test', 'tests', 'verify', 'validate', 'validation', 'check', 'ensure',
+  'the', 'and', 'for', 'using', 'use', 'from', 'into', 'that', 'this', 'when', 'then', 'should',
+  'must', 'enter', 'click', 'button', 'field', 'fields', 'form', 'submit', 'attempt', 'attempts',
+  'via', 'are', 'was', 'new', 'existing', 'system', 'app', 'application', 'flow', 'case',
+  'scenario', 'successful', 'success', 'fail', 'failure', 'display', 'displays', 'shows', 'show',
+  'showing', 'message', 'error', 'errors', 'exact', 'correct', 'proper', 'prevent', 'reject',
+]);
+
+/** Distinctive (non-generic, ≥3-char) tokens of a title/case — the words that actually identify it. */
+function distinctiveTokens(s) {
+  return [...new Set(normalizeText(s).split(' ').filter((w) => w.length >= 3 && !GENERIC_TOKENS.has(w)))];
+}
+
+/** Overlap fraction over DISTINCTIVE tokens only (filters generic filler that inflates false matches). */
+function distinctiveOverlap(requested, have) {
+  const want = distinctiveTokens(requested);
+  if (!want.length) return 0;
+  const set = new Set(distinctiveTokens(have));
+  return want.filter((w) => set.has(w)).length / want.length;
+}
+
 /**
  * Coverage check scoped to an ALREADY-RESOLVED domain spec. A case counts as covered
  * only when it is the SAME test — never on a bare id collision. TC ids (TC_009…) are
@@ -322,13 +348,31 @@ function caseCoveredAnywhere(fw, tc) {
         }
       }
     }
+    // Distinctive-token match across EVERY entry (any id): catches a re-worded case whose
+    // identifying words match an existing test even when the id/wording differ — e.g.
+    // "Display exact locked-user error message" ↔ "Locked User Login Attempt" (both → {locked}).
+    // High threshold + a small-set guard keeps this precise: a genuinely-different case that
+    // merely shares one distinctive word with a rich unrelated title will NOT match.
+    const wantDist = distinctiveTokens(tc && tc.title);
+    if (wantDist.length) {
+      for (const arr of Object.values(man.testIndex)) {
+        for (const e of (Array.isArray(arr) ? arr : [arr])) {
+          const haveDist = distinctiveTokens(e.title);
+          if (!haveDist.length) continue;
+          const ov = distinctiveOverlap(tc && tc.title, e.title);
+          if (ov >= 0.8 && (wantDist.length >= 2 || haveDist.length <= 2)) return e.spec;
+        }
+      }
+    }
     const rid = normId(tc && tc.id);
     const arr = rid ? man.testIndex[rid] : null;
     const list = arr ? (Array.isArray(arr) ? arr : [arr]) : [];
     let best = null;
     let bestScore = 0;
     for (const e of list) {
-      const sc = titleOverlap(tc && tc.title, e.title);
+      // Distinctive overlap (not raw titleOverlap) so a shared id with only generic words
+      // in common ("…user login valid credentials") is NOT falsely reported as covered.
+      const sc = distinctiveOverlap(tc && tc.title, e.title);
       if (sc > bestScore) { bestScore = sc; best = e; }
     }
     if (best && bestScore >= 0.6) return best.spec;
@@ -349,13 +393,40 @@ function caseCoveredAnywhere(fw, tc) {
  */
 function resolveDomain(fw, job) {
   const specs = listSpecs(fw);
+  const cases = job.testCases || [];
+  // Tier 1 — a case TITLE appears verbatim in a spec: the same test is already present.
   let best = null;
   let bestCount = 0;
   for (const s of specs) {
-    const count = (job.testCases || []).filter((tc) => idInText(s.content, tc)).length;
+    const count = cases.filter((tc) => idInText(s.content, tc)).length;
     if (count > bestCount) { best = s; bestCount = count; }
   }
-  if (best && bestCount > 0) {
+  // Tier 2 — the coverage matcher maps the cases to an existing spec (re-worded duplicates
+  // whose titles are NOT verbatim, e.g. a locked-user check that collapses onto login.spec.ts).
+  if (!best) {
+    const tally = new Map();
+    for (const tc of cases) {
+      const rel = caseCoveredAnywhere(fw, tc);
+      if (rel) tally.set(rel, (tally.get(rel) || 0) + 1);
+    }
+    let topRel = null;
+    let topN = 0;
+    for (const [rel, n] of tally) { if (n > topN) { topRel = rel; topN = n; } }
+    if (topRel) best = specs.find((s) => s.rel === topRel) || null;
+  }
+  // Tier 3 — distinctive-token affinity to an existing spec: route a genuinely-new case that
+  // clearly belongs to an existing domain (a new locked-user edge case → login.spec.ts) into
+  // that spec to EXTEND, instead of inventing a phantom domain from a tag. Strong signal only.
+  if (!best && specs.length) {
+    let topS = null;
+    let topScore = 0;
+    for (const s of specs) {
+      const score = cases.reduce((a, tc) => a + distinctiveOverlap(tc.title, s.content), 0) / (cases.length || 1);
+      if (score > topScore) { topScore = score; topS = s; }
+    }
+    if (topS && topScore >= 0.5) best = topS;
+  }
+  if (best) {
     const F = pascal(best.base);
     return { F, base: best.base, matched: true, matchedSpec: best, specRel: best.rel, pageRel: `src/pages/${F}Page.ts`, moduleRel: `src/modules/${F}Module.ts` };
   }
@@ -1315,6 +1386,7 @@ async function generateAndRun(job, onLog) {
   // filled with the ACTUAL id used per case — a colliding id is reassigned below, so this
   // must reflect the real (post-reassignment) id for the completion check to be accurate.
   const requestedIds = [];
+  const collapsedSpecs = new Set(); // specs that requested cases turned out to duplicate (reuse targets)
   if (newCases.length) log(`[local] ${newCases.length} new case(s) to add: ${newCases.map((c) => c.id).join(', ')} (existing tests are preserved).`);
 
   // 1) Generate — ONE case per LLM call so each response stays small enough to
@@ -1390,6 +1462,7 @@ async function generateAndRun(job, onLog) {
       const pushed = String(tc.id).toUpperCase().replace(/-/g, '_');
       if (already) {
         log(`[local] ⏭ ${tc.id} "${tc.title || ''}" already covered by an existing test in ${already} — skipping (LLM emitted no new code; existing coverage reused).`);
+        collapsedSpecs.add(already);
         const ri = requestedIds.lastIndexOf(pushed);
         if (ri >= 0) requestedIds.splice(ri, 1);
       } else {
@@ -1447,6 +1520,7 @@ async function generateAndRun(job, onLog) {
     }
     if (dupHit) {
       log(`[local] ⏭ Semantic duplicate: ${tc.id} "${tc.title || ''}" performs the same actions as existing ${dupHit.hit.id || dupHit.hit.title} in ${dupHit.spec} — skipping (no new coverage; existing tests unchanged).`);
+      collapsedSpecs.add(dupHit.spec);
       const pushed = String(tc.id).toUpperCase().replace(/-/g, '_');
       const ri = requestedIds.lastIndexOf(pushed);
       if (ri >= 0) requestedIds.splice(ri, 1);
@@ -1458,26 +1532,31 @@ async function generateAndRun(job, onLog) {
     files = batch;
   }
   if (written.length === 0) {
-    // All requested cases collapsed to existing coverage (semantic duplicates) — nothing
-    // new to add. Treat as reuse: re-run the existing spec, open no PR (no file changed).
-    if (requestedIds.length === 0 && domSpec) {
-      log('[local] All requested case(s) already covered by existing tests (semantic duplicates) — nothing new to generate. Reusing existing tests.');
-      log(`[local] Running (reuse-only): ${domSpec.rel}`);
-      const reuseRun = await runPlaywright(fw, [domSpec.rel], job, { applyScope: true });
-      log(reuseRun.passed ? '[local] Run PASSED.' : '[local] Run FAILED.');
-      await refreshIndex(fw);
-      return {
-        generatedFiles: existing.map((e) => ({ path: e.rel, layer: e.layer, reused: true, action: 'reused' })),
-        reusedFiles: existing.map((e) => e.rel),
-        backups: allBackups,
-        executionStatus: reuseRun.passed ? 'PASSED' : 'FAILED',
-        reportUrl: 'playwright-report/index.html',
-        reportSummary: reuseRun.summary || null,
-        requestedCases: [],
-        missingCases: [],
-        verified: true,
-        logs,
-      };
+    // All requested cases collapsed to existing coverage (semantic duplicates) — nothing new
+    // to add. This is a REUSE SUCCESS, not a failure: re-run the spec(s) the cases collapsed
+    // onto (or the resolved domain spec) and report PASS. Open no PR (no file changed).
+    if (requestedIds.length === 0) {
+      const reuseTargets = [...new Set([...(domSpec ? [domSpec.rel] : []), ...collapsedSpecs])];
+      if (reuseTargets.length) {
+        log(`[local] All requested case(s) already covered by existing tests (semantic duplicates) — nothing new to generate. Reusing: ${reuseTargets.join(', ')}.`);
+        log(`[local] Running (reuse-only): ${reuseTargets.join(', ')}`);
+        const reuseRun = await runPlaywright(fw, reuseTargets, job, { applyScope: true });
+        log(reuseRun.passed ? '[local] Run PASSED.' : '[local] Run FAILED.');
+        await refreshIndex(fw);
+        const reused = (existing.length ? existing.map((e) => e.rel) : reuseTargets);
+        return {
+          generatedFiles: reused.map((rel) => ({ path: rel, layer: rel.includes('/tests/') ? 'spec' : 'other', reused: true, action: 'reused' })),
+          reusedFiles: reused,
+          backups: allBackups,
+          executionStatus: reuseRun.passed ? 'PASSED' : 'FAILED',
+          reportUrl: 'playwright-report/index.html',
+          reportSummary: reuseRun.summary || null,
+          requestedCases: [],
+          missingCases: [],
+          verified: true,
+          logs,
+        };
+      }
     }
     log('[local] Nothing written after generation — requested case(s) not automated. No PR.');
     return { generatedFiles: [], reusedFiles: [], executionStatus: 'FAILED', reportUrl: '', requestedCases: requestedIds, missingCases: requestedIds, verified: false, logs };
