@@ -556,6 +556,7 @@ const DRIVE_SCRIPT = [
   '  const allowSubmit = !!cfg.allowSubmit;',
   '  const autoDiscover = !!cfg.autoDiscover;',
   '  const maxDepth = Number(cfg.maxDepth) > 0 ? Number(cfg.maxDepth) : 8;',
+  "  const stateFile = cfg.stateFile || '';",
   "  const user = process.env.EXPLORE_USER || '';",
   "  const pass = process.env.EXPLORE_PASS || '';",
   '  const states = [];',
@@ -614,6 +615,8 @@ const DRIVE_SCRIPT = [
   '      for (const c of subs) { if (await c.count().catch(() => 0)) { await c.click({ timeout: 8000 }).catch(() => {}); clicked = true; break; } }',
   "      if (!clicked) await page.locator('input[type=password]').first().press('Enter').catch(() => {});",
   "      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});",
+  '      // Hand off the authenticated storage state (cookies/tokens only — NO password) for @playwright/cli evidence.',
+  '      if (stateFile) { try { await page.context().storageState({ path: stateFile }); } catch (e) { /* best-effort */ } }',
   '      await page.waitForTimeout(600);',
   '    }',
   '    const runFlow = async (page) => { for (const u of urls) {',
@@ -726,7 +729,7 @@ function driveFlow(fw, urls, opts = {}) {
     } catch {
       return resolve({ states: [], observed: { errors: [], success: [] } });
     }
-    const cfg = { urls: list, loginUrl: auth ? auth.loginUrl || '' : '', allowSubmit, autoDiscover: list.length <= 1, maxDepth: Number(opts.maxDepth) > 0 ? Number(opts.maxDepth) : 8 };
+    const cfg = { urls: list, loginUrl: auth ? auth.loginUrl || '' : '', allowSubmit, autoDiscover: list.length <= 1, maxDepth: Number(opts.maxDepth) > 0 ? Number(opts.maxDepth) : 8, stateFile: opts.stateFile || '' };
     const childEnv = { ...process.env, DRIVE_CFG: JSON.stringify(cfg) };
     if (auth) { childEnv.EXPLORE_USER = auth.username; childEnv.EXPLORE_PASS = auth.password; }
     const child = spawn('node', ['.blast-tmp/drive.cjs'], { cwd: fw, env: childEnv, shell: true });
@@ -741,6 +744,49 @@ function driveFlow(fw, urls, opts = {}) {
     });
     child.on('error', () => { clearTimeout(timer); resolve({ states: [], observed: { errors: [], success: [] } }); });
   });
+}
+
+/** Run one @playwright/cli command in a named session; resolves stdout (best-effort). */
+function runCli(fw, session, args, timeoutMs = 40000) {
+  return new Promise((resolve) => {
+    const child = spawn('playwright-cli', [`-s=${session}`, ...args], { cwd: fw, shell: true });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', () => { /* diagnostics only */ });
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve(out); }, timeoutMs);
+    child.on('close', () => { clearTimeout(timer); resolve(out); });
+    child.on('error', () => { clearTimeout(timer); resolve(''); });
+  });
+}
+
+/**
+ * Capture authoritative locator evidence via @playwright/cli (Microsoft-recommended path).
+ * Auth is handed off as a saved storage state (cookies only — NO credentials in argv/logs).
+ * Returns [{ url, snapshot }]; best-effort, never throws.
+ */
+async function captureCliEvidence(fw, urls, opts = {}) {
+  const list = [...new Set((urls || []).filter(Boolean))];
+  if (!list.length) return [];
+  const session = `blast-${Date.now().toString(36)}`;
+  const log = opts.log || (() => {});
+  const evidence = [];
+  try {
+    await runCli(fw, session, ['open']);
+    if (opts.stateFile && fs.existsSync(opts.stateFile)) {
+      await runCli(fw, session, ['state-load', opts.stateFile]);
+      log('[cli] Loaded authenticated storage state (no credentials exposed).');
+    }
+    for (const url of list) {
+      await runCli(fw, session, ['goto', url]);
+      const raw = await runCli(fw, session, ['snapshot']);
+      const m = raw.match(/```yaml\n([\s\S]*?)```/);
+      const snap = (m ? m[1] : raw).trim().slice(0, 4000);
+      if (snap) { evidence.push({ url, snapshot: snap }); log(`[cli] Captured @playwright/cli snapshot for ${url} (${snap.length} chars).`); }
+    }
+  } catch { /* best-effort */ } finally {
+    await runCli(fw, session, ['close']).catch(() => {});
+  }
+  return evidence;
 }
 
 /** Build the union feature model from a walked state sequence + attach the observed messages. */
@@ -871,6 +917,22 @@ function testTypeGuidance(types, model) {
   return out;
 }
 
+/** Render @playwright/cli snapshots (real element refs) as an authoritative locator-evidence block. */
+function cliEvidenceSummary(model) {
+  const ev = model && Array.isArray(model.cliEvidence) ? model.cliEvidence : [];
+  if (!ev.length) return '';
+  const keep = /\b(textbox|button|link|checkbox|radio|combobox|listbox|option|heading|tab|menuitem|searchbox|switch|slider)\b/;
+  const out = ['', '## Authoritative locators (@playwright/cli — real role+name; prefer getByRole/getByLabel from these):'];
+  ev.forEach((e) => {
+    const lines = String(e.snapshot).split('\n')
+      .map((ln) => ln.replace(/\s*\[ref=[^\]]+\]/g, '').replace(/\s*\[cursor=[^\]]+\]/g, '').replace(/\s*\[level=\d+\]/g, '').trim())
+      .filter((ln) => keep.test(ln))
+      .slice(0, 20);
+    if (lines.length) out.push(`### ${e.url}`, ...lines.map((x) => `- ${x.replace(/^-\s*/, '')}`));
+  });
+  return out.length > 2 ? out.join('\n') : '';
+}
+
 /** Prompt the LLM to design cases from the feature model + a per-type test-design checklist. */
 function buildAuthorPrompt(job, model) {
   const selected = job.testTypes && job.testTypes.length ? job.testTypes : ['Positive', 'Negative'];
@@ -907,6 +969,7 @@ function buildAuthorPrompt(job, model) {
     '',
     '## Evidence — live feature model (from an accessibility snapshot)',
     featureModelSummary(model),
+    cliEvidenceSummary(model),
     '',
     '## Output format — STRICT JSON ONLY (no prose, no markdown fences):',
     '{"cases":[{"title":"concise distinctive behavior, no TC id, no @tags","type":"Positive|Negative|Boundary|Security|Accessibility","steps":"1. ...\\n2. ...","testData":"exact values used, incl. the boundary/payload string","expectedResults":"the specific asserted outcome (exact message/state), not a generic pass/fail"}]}',
@@ -1195,7 +1258,10 @@ async function exploreAndAuthor(job, onLog, creds) {
   log(allowSubmit
     ? '[explore] Stateful mode: will fill + submit forms to capture success/validation states (non-Production).'
     : `[explore] View-only mode (${isProd ? 'Production — no form submission' : 'no credentials'}).`);
-  const drive = await driveFlow(fw, urls, { auth, allowSubmit });
+  // Opt-in: use @playwright/cli (Microsoft-recommended) for authoritative locator evidence.
+  const useCli = String(job.exploreEvidence || process.env.EXPLORE_EVIDENCE || '').toLowerCase() === 'cli';
+  const stateFile = useCli && auth ? path.join(fw, '.blast-cli-state.json') : '';
+  const drive = await driveFlow(fw, urls, { auth, allowSubmit, stateFile });
   if (drive.states.length) {
     drive.states.forEach((s) => log(`[explore] State '${s.label}' @ ${s.url} captured (${s.snapshot.length} chars).`));
   } else {
@@ -1205,6 +1271,14 @@ async function exploreAndAuthor(job, onLog, creds) {
   if (drive.observed.errors.length) log(`[explore] Observed validation message(s): ${drive.observed.errors.slice(0, 5).join(' | ')}`);
   if (drive.observed.success.length) log(`[explore] Observed success/confirmation: ${drive.observed.success.slice(0, 3).join(' | ')}`);
   const model = modelFromStates(drive.states, job.feature, drive.observed);
+  if (useCli) {
+    log('[explore] Capturing authoritative locator evidence via @playwright/cli …');
+    try {
+      model.cliEvidence = await captureCliEvidence(fw, urls, { stateFile, log });
+      log(`[explore] @playwright/cli evidence: ${model.cliEvidence.length} screen(s) with real element refs.`);
+    } catch (e) { log(`[explore] @playwright/cli evidence skipped: ${String((e && e.message) || e)}`); }
+    finally { try { if (stateFile) fs.rmSync(stateFile, { force: true }); } catch { /* ignore */ } }
+  }
   log(`[explore] Feature model: ${model.inputs.length} input(s), ${model.buttons.length} button(s), ${model.links.length} link(s); ${model.observed.errors.length} error + ${model.observed.success.length} success message(s) observed.`);
   const testCases = await authorCases(job, model, log);
   return { testCases, featureModel: model, snapshot: drive.states.length ? drive.states[0].snapshot : '' };
