@@ -543,6 +543,176 @@ function captureSnapshot(fw, url, opts = {}) {
   });
 }
 
+// The child driver: one persistent session that logs in once, then WALKS the flow — after each
+// page it optionally performs a bounded, non-destructive interaction pass (fill-valid → submit,
+// empty → submit) so we capture the REAL post-action states (success + validation messages), not
+// just static page loads. Config comes via env DRIVE_CFG (no secrets) + EXPLORE_USER/PASS.
+const DRIVE_SCRIPT = [
+  "const { chromium } = require('@playwright/test');",
+  '(async () => {',
+  "  const cfg = JSON.parse(process.env.DRIVE_CFG || '{}');",
+  '  const urls = Array.isArray(cfg.urls) ? cfg.urls : [];',
+  "  const loginUrl = cfg.loginUrl || '';",
+  '  const allowSubmit = !!cfg.allowSubmit;',
+  "  const user = process.env.EXPLORE_USER || '';",
+  "  const pass = process.env.EXPLORE_PASS || '';",
+  '  const states = [];',
+  '  const observed = { errors: [], success: [] };',
+  '  const MAX_STATES = 14;',
+  "  const snap = async (page) => (await page.locator('body').ariaSnapshot()).slice(0, 4000);",
+  '  const addState = async (page, label) => { if (states.length < MAX_STATES) states.push({ label, url: page.url(), snapshot: await snap(page) }); };',
+  "  const primaryRe = /continue|finish|checkout|place order|submit|confirm|save|next|pay/i;",
+  '  const primaryOf = (page) => page.getByRole(\'button\', { name: primaryRe }).first();',
+  '  const grabMessages = async (page) => {',
+  "    const sels = ['[data-test*=\"error\"]', '.error-message-container', '.error', '[role=\"alert\"]', '.complete-header', '.complete-text', '[data-test=\"complete-header\"]', '[data-test=\"complete-text\"]'];",
+  '    for (const s of sels) {',
+  '      const loc = page.locator(s);',
+  '      const n = await loc.count().catch(() => 0);',
+  '      for (let i = 0; i < Math.min(n, 4); i++) {',
+  "        const t = (await loc.nth(i).innerText().catch(() => '')).trim();",
+  '        if (!t) continue;',
+  '        const success = /thank|success|complete|confirmed|your order/i.test(t) || /complete/.test(s);',
+  '        (success ? observed.success : observed.errors).push(t.slice(0, 160));',
+  '      }',
+  '    }',
+  '  };',
+  '  const fillValid = async (page) => {',
+  "    const fields = page.locator('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio]), textarea');",
+  '    const n = await fields.count().catch(() => 0);',
+  '    for (let i = 0; i < Math.min(n, 8); i++) {',
+  '      const f = fields.nth(i);',
+  '      if (!(await f.isVisible().catch(() => false))) continue;',
+  "      const nm = ((await f.getAttribute('name')) || (await f.getAttribute('placeholder')) || (await f.getAttribute('aria-label')) || '').toLowerCase();",
+  "      const type = (await f.getAttribute('type')) || 'text';",
+  "      let v = 'Test';",
+  "      if (/mail/.test(nm)) v = 'user@example.com';",
+  "      else if (/zip|postal|pin/.test(nm)) v = '12345';",
+  "      else if (/phone|mobile|tel/.test(nm)) v = '5551234567';",
+  "      else if (/first/.test(nm)) v = 'John';",
+  "      else if (/last/.test(nm)) v = 'Doe';",
+  "      else if (/pass/.test(nm)) v = 'Passw0rd!';",
+  "      else if (/user/.test(nm)) v = 'standard_user';",
+  "      if (type === 'number') v = '42';",
+  '      await f.fill(String(v)).catch(() => {});',
+  '    }',
+  '  };',
+  '  const browser = await chromium.launch();',
+  '  try {',
+  '    const page = await browser.newPage();',
+  '    if (loginUrl && user && pass) {',
+  "      await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });",
+  "      await page.locator('input:not([type=password]):not([type=hidden]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio])').first().fill(user, { timeout: 10000 }).catch(() => {});",
+  "      await page.locator('input[type=password]').first().fill(pass, { timeout: 10000 }).catch(() => {});",
+  '      const subs = [',
+  "        page.locator('button[type=submit]').first(),",
+  "        page.locator('input[type=submit]').first(),",
+  "        page.getByRole('button', { name: /log ?in|sign ?in/i }).first(),",
+  '      ];',
+  '      let clicked = false;',
+  '      for (const c of subs) { if (await c.count().catch(() => 0)) { await c.click({ timeout: 8000 }).catch(() => {}); clicked = true; break; } }',
+  "      if (!clicked) await page.locator('input[type=password]').first().press('Enter').catch(() => {});",
+  "      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});",
+  '      await page.waitForTimeout(600);',
+  '    }',
+  '    for (const u of urls) {',
+  "      await page.goto(u, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});",
+  '      await page.waitForTimeout(700);',
+  "      await addState(page, 'view');",
+  '      if (!allowSubmit) continue;',
+  '      const hasPrimary = await primaryOf(page).count().catch(() => 0);',
+  '      if (!hasPrimary) continue;',
+  "      const fields = page.locator('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio]), textarea');",
+  '      const nFields = await fields.count().catch(() => 0);',
+  '      if (nFields > 0) {',
+  '        await primaryOf(page).click({ timeout: 8000 }).catch(() => {});',
+  '        await page.waitForTimeout(500);',
+  '        await grabMessages(page);',
+  "        await addState(page, 'after-empty-submit');",
+  "        await page.goto(u, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});",
+  '        await page.waitForTimeout(500);',
+  '        await fillValid(page);',
+  '        await primaryOf(page).click({ timeout: 8000 }).catch(() => {});',
+  '        await page.waitForTimeout(800);',
+  '        await grabMessages(page);',
+  "        await addState(page, 'after-valid-submit');",
+  '      } else {',
+  '        await primaryOf(page).click({ timeout: 8000 }).catch(() => {});',
+  '        await page.waitForTimeout(800);',
+  '        await grabMessages(page);',
+  "        await addState(page, 'after-advance');",
+  '      }',
+  '    }',
+  '    observed.errors = [...new Set(observed.errors)].slice(0, 10);',
+  '    observed.success = [...new Set(observed.success)].slice(0, 6);',
+  '    process.stdout.write(JSON.stringify({ states, observed }));',
+  '  } catch (e) {',
+  '    process.stdout.write(JSON.stringify({ states, observed, error: String((e && e.message) || e) }));',
+  '  } finally { await browser.close(); }',
+  "})().catch((e) => { process.stderr.write(String(e)); process.exit(1); });",
+].join('\n');
+
+function parseDrive(out) {
+  try {
+    const j = JSON.parse(String(out).trim());
+    return { states: Array.isArray(j.states) ? j.states : [], observed: j.observed || { errors: [], success: [] }, error: j.error };
+  } catch {
+    return { states: [], observed: { errors: [], success: [] } };
+  }
+}
+
+/**
+ * Stateful, action-aware exploration: one browser session that logs in once and walks every flow
+ * URL, snapshotting the state AFTER each bounded interaction (fill-valid→submit to reach the next
+ * state / success; empty→submit to surface validation errors). `allowSubmit` is gated to non-prod
+ * by the caller. Returns { states:[{label,url,snapshot}], observed:{errors,success} }. Credentials
+ * go through the child env only — never argv, disk, or logs.
+ */
+function driveFlow(fw, urls, opts = {}) {
+  const auth = opts.auth && opts.auth.username && opts.auth.password ? opts.auth : null;
+  const allowSubmit = !!opts.allowSubmit;
+  return new Promise((resolve) => {
+    const list = (urls || []).filter(Boolean);
+    if (!list.length) return resolve({ states: [], observed: { errors: [], success: [] } });
+    const dir = path.join(fw, '.blast-tmp');
+    const script = path.join(dir, 'drive.cjs');
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(script, DRIVE_SCRIPT, 'utf8');
+    } catch {
+      return resolve({ states: [], observed: { errors: [], success: [] } });
+    }
+    const cfg = { urls: list, loginUrl: auth ? auth.loginUrl || '' : '', allowSubmit };
+    const childEnv = { ...process.env, DRIVE_CFG: JSON.stringify(cfg) };
+    if (auth) { childEnv.EXPLORE_USER = auth.username; childEnv.EXPLORE_PASS = auth.password; }
+    const child = spawn('node', ['.blast-tmp/drive.cjs'], { cwd: fw, env: childEnv, shell: true });
+    let out = '';
+    child.stdout.on('data', (d) => { out += d.toString(); });
+    child.stderr.on('data', () => { /* diagnostics only */ });
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve(parseDrive(out)); }, 150000);
+    child.on('close', () => {
+      clearTimeout(timer);
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
+      resolve(parseDrive(out));
+    });
+    child.on('error', () => { clearTimeout(timer); resolve({ states: [], observed: { errors: [], success: [] } }); });
+  });
+}
+
+/** Build the union feature model from a walked state sequence + attach the observed messages. */
+function modelFromStates(states, feature, observed) {
+  const stepModels = (states || []).map((s, i) => {
+    const m = buildFeatureModel(s.snapshot, feature);
+    m.url = s.url; m.label = s.label || `State ${i + 1}`; m.snapshot = s.snapshot;
+    return m;
+  });
+  const model = mergeFeatureModels(stepModels, feature);
+  model.observed = {
+    errors: (observed && observed.errors) || [],
+    success: (observed && observed.success) || [],
+  };
+  return model;
+}
+
 /* ──────────────────────────────────────────────────────────────────────────
  * Autopilot (explore mode) engine — turn a URL + feature into authored cases.
  * Explore (@playwright/cli snapshot) → deterministic feature model → LLM authors
@@ -606,6 +776,14 @@ function featureModelSummary(model) {
     widgetLines(model, '').forEach((x) => l.push(x));
   }
   if (model.texts && model.texts.length) l.push(`Visible text/labels: ${model.texts.slice(0, 12).join(' | ')}`);
+  if (model.observed) {
+    if (model.observed.errors && model.observed.errors.length) {
+      l.push(`OBSERVED validation/error messages (assert these EXACT strings in negative cases — do NOT paraphrase): ${model.observed.errors.slice(0, 8).map((e) => `"${e}"`).join(' | ')}`);
+    }
+    if (model.observed.success && model.observed.success.length) {
+      l.push(`OBSERVED success/confirmation (assert in the positive / end-to-end case): ${model.observed.success.slice(0, 4).map((s) => `"${s}"`).join(' | ')}`);
+    }
+  }
   return l.join('\n');
 }
 
@@ -662,6 +840,7 @@ function buildAuthorPrompt(job, model) {
     'Prioritise by value: one strong positive, then the most likely real defects. Every case must be a DISTINCT behavior — no two cases with the same action + data. Do not pad to reach the max.',
     multiStep ? `This feature spans ${model.steps.length} pages/steps — include at least ONE end-to-end positive that traverses every step in order to the final success/confirmation state.` : '',
     'Coverage floor: always include one positive happy path; if Negative is selected, include one required-field negative for EACH input. (These are added automatically if you omit them — so spend your budget on higher-value cases.)',
+    'When the evidence lists OBSERVED error/success messages, assert those EXACT strings verbatim — never invent message text the app did not produce.',
     '',
     '## Test-design rules for the selected types (follow precisely)',
     ...guidance,
@@ -786,6 +965,29 @@ const coversRequiredNeg = (cases, name) => {
     /(missing|blank|empty|required|without)/.test(normTitle(c.title)));
 };
 
+/** Deterministic boundary case: one constrained input at its edges (whitespace + overlong), others valid. */
+function synthBoundary(job, model, input) {
+  const others = model.inputs.filter((i) => i.name && i.name !== input.name);
+  const primary = primaryButton(model);
+  const steps = [];
+  let n = 1;
+  others.forEach((i) => steps.push(`${n++}. Enter a valid ${i.name}.`));
+  steps.push(`${n++}. In "${input.name}", enter a boundary value: leading/trailing spaces around a 256-character string.`);
+  steps.push(`${n++}. Click "${primary}".`);
+  return {
+    title: `${job.feature}: ${input.name} boundary (whitespace & max length)`,
+    type: 'Boundary',
+    steps: steps.join('\n'),
+    testData: `${input.name}: "  ${'A'.repeat(256)}  " (leading/trailing spaces, 256 chars); all other fields valid`,
+    expectedResults: `The app trims/limits ${input.name} and either accepts the normalized value or shows a clear validation message — it must not crash or enter an unhandled state.`,
+  };
+}
+
+const coversBoundary = (cases, name) => {
+  const nn = normTitle(name);
+  return cases.some((c) => caseType(c) === 'Boundary' && normTitle(c.title).includes(nn));
+};
+
 /**
  * Guarantee a minimum coverage floor regardless of what the LLM returned: one positive happy path,
  * and (when Negative is selected) one required-field negative per named input. Floor cases are
@@ -802,6 +1004,11 @@ function ensureCoverageFloor(cases, job, model, feature) {
   if (selected.has('Negative') && named.length) {
     for (const inp of named) {
       if (!coversRequiredNeg(cases, inp.name)) additions.push(shapeCase(synthRequiredNeg(job, model, inp), feature, true));
+    }
+  }
+  if (selected.has('Boundary') && named.length) {
+    for (const inp of named) {
+      if (!coversBoundary(cases, inp.name)) additions.push(shapeCase(synthBoundary(job, model, inp), feature, true));
     }
   }
   // Merge + de-dup by normalized title (LLM cases win ties, keeping their richer wording).
@@ -887,22 +1094,29 @@ async function exploreAndAuthor(job, onLog, creds) {
     let loginUrl = (job.loginUrl && String(job.loginUrl).trim()) || '';
     if (!loginUrl) { try { loginUrl = new URL(urls[0]).origin; } catch { loginUrl = urls[0]; } }
     auth = { username: creds.username, password: creds.password, loginUrl };
-    log(`[explore] Authenticated exploration enabled — logging in at ${loginUrl} before each snapshot (credentials are transient, never stored).`);
+    log(`[explore] Authenticated exploration enabled — logging in at ${loginUrl} (credentials are transient, never stored).`);
   }
-  const steps = [];
-  for (let idx = 0; idx < urls.length; idx++) {
-    const u = urls[idx];
-    const snap = await captureSnapshot(fw, u, { auth });
-    const sm = buildFeatureModel(snap, job.feature);
-    sm.url = u; sm.label = `Step ${idx + 1}`; sm.snapshot = snap;
-    steps.push(sm);
-    log(snap
-      ? `[explore] Step ${idx + 1} (${u}): ${sm.inputs.length} input(s), ${sm.buttons.length} button(s), ${sm.links.length} link(s).`
-      : `[explore] Step ${idx + 1} (${u}): no live snapshot (unreachable, login failed, or redirected).`);
+  // Action-aware walk: submit forms to observe real success/error states — but ONLY off Production
+  // (safe on QA/UAT/demo) and only when authenticated (we know the app + creds). Anonymous or prod
+  // exploration stays view-only (no side effects).
+  const isProd = String(job.environment || '').toLowerCase().startsWith('prod');
+  const allowSubmit = !!auth && !isProd;
+  log(allowSubmit
+    ? '[explore] Stateful mode: will fill + submit forms to capture success/validation states (non-Production).'
+    : `[explore] View-only mode (${isProd ? 'Production — no form submission' : 'no credentials'}).`);
+  const drive = await driveFlow(fw, urls, { auth, allowSubmit });
+  if (drive.states.length) {
+    drive.states.forEach((s) => log(`[explore] State '${s.label}' @ ${s.url} captured (${s.snapshot.length} chars).`));
+  } else {
+    log('[explore] No live states captured (unreachable, login failed, or redirected).');
   }
-  const model = mergeFeatureModels(steps, job.feature);
+  if (drive.error) log(`[explore] Driver note: ${drive.error}`);
+  if (drive.observed.errors.length) log(`[explore] Observed validation message(s): ${drive.observed.errors.slice(0, 5).join(' | ')}`);
+  if (drive.observed.success.length) log(`[explore] Observed success/confirmation: ${drive.observed.success.slice(0, 3).join(' | ')}`);
+  const model = modelFromStates(drive.states, job.feature, drive.observed);
+  log(`[explore] Feature model: ${model.inputs.length} input(s), ${model.buttons.length} button(s), ${model.links.length} link(s); ${model.observed.errors.length} error + ${model.observed.success.length} success message(s) observed.`);
   const testCases = await authorCases(job, model, log);
-  return { testCases, featureModel: model, snapshot: steps.length ? steps[0].snapshot : '' };
+  return { testCases, featureModel: model, snapshot: drive.states.length ? drive.states[0].snapshot : '' };
 }
 
 function buildSystemPrompt() {
