@@ -507,6 +507,146 @@ function captureSnapshot(fw, url) {
   });
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Autopilot (explore mode) engine — turn a URL + feature into authored cases.
+ * Explore (@playwright/cli snapshot) → deterministic feature model → LLM authors
+ * positive/negative cases grounded in that evidence → hand to the SAME
+ * buildPlan/generateAndRun pipeline (reuse + behavioral dedup applied there).
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Parse a Playwright ariaSnapshot (a YAML-ish `- role "name"` tree) into a lightweight,
+ * DETERMINISTIC feature model. This is code, not LLM, so authored cases can only reference
+ * widgets that actually exist on the screen — the anti-hallucination guarantee.
+ */
+function buildFeatureModel(snapshot, feature) {
+  const model = { feature: feature || '', inputs: [], buttons: [], links: [], controls: [], texts: [] };
+  const re = /^\s*-\s+([a-zA-Z]+)(?:\s+"([^"]*)")?/;
+  for (const line of String(snapshot || '').split('\n')) {
+    const m = line.match(re);
+    if (!m) continue;
+    const role = m[1].toLowerCase();
+    const name = (m[2] || '').trim();
+    if (role === 'textbox' || role === 'searchbox' || role === 'spinbutton') {
+      model.inputs.push({ role, name });
+    } else if (role === 'button' && name) {
+      model.buttons.push(name);
+    } else if (role === 'link' && name) {
+      model.links.push(name);
+    } else if (['checkbox', 'combobox', 'radio', 'switch', 'slider'].includes(role)) {
+      model.controls.push({ role, name });
+    } else if (['text', 'alert', 'heading'].includes(role) && name) {
+      model.texts.push(name);
+    }
+  }
+  model.buttons = [...new Set(model.buttons)];
+  model.links = [...new Set(model.links)];
+  return model;
+}
+
+/** Human-readable evidence block fed to the case author so it designs against real widgets only. */
+function featureModelSummary(model) {
+  const l = [`Feature under test: ${model.feature || '(unnamed)'}`];
+  l.push(`Inputs: ${model.inputs.length ? model.inputs.map((i) => `${i.name || '(unlabeled)'} [${i.role}]`).join(', ') : 'none detected'}`);
+  l.push(`Buttons: ${model.buttons.length ? model.buttons.join(', ') : 'none detected'}`);
+  l.push(`Links: ${model.links.length ? model.links.join(', ') : 'none detected'}`);
+  if (model.controls.length) l.push(`Controls: ${model.controls.map((c) => `${c.name || '(unlabeled)'} [${c.role}]`).join(', ')}`);
+  if (model.texts.length) l.push(`Visible text/labels: ${model.texts.slice(0, 12).join(' | ')}`);
+  return l.join('\n');
+}
+
+/** Prompt the LLM to design cases from the feature model + a fixed test-design checklist. */
+function buildAuthorPrompt(job, model) {
+  const types = (job.testTypes && job.testTypes.length ? job.testTypes : ['Positive', 'Negative']).join(', ');
+  const max = Number(job.maxCases) > 0 ? Number(job.maxCases) : 8;
+  return [
+    `You are a senior QA test designer. Design up to ${max} high-value test cases for the "${job.feature}" feature of the web app at ${job.url}.`,
+    'Use ONLY the widgets that actually exist in the evidence below — NEVER invent fields, buttons, or links that are not present.',
+    `Cover these test types: ${types}. Balance positive and negative; add boundary/security/accessibility ONLY if they appear in that list.`,
+    'Apply standard test-design: equivalence classes, required-field checks, boundary values, and (for inputs) a light injection/XSS negative where relevant.',
+    job.notes ? `Extra intent from the user: ${job.notes}` : '',
+    '',
+    '## Evidence — live feature model (from an accessibility snapshot)',
+    featureModelSummary(model),
+    '',
+    '## Output format — STRICT JSON ONLY (no prose, no markdown fences):',
+    '{"cases":[{"title":"concise distinctive behavior, no TC id, no @tags","type":"Positive|Negative|Boundary|Security|Accessibility","steps":"1. ...\\n2. ...","testData":"...","expectedResults":"..."}]}',
+    'Each title must be a distinct behavior. Steps numbered. Keep everything realistic for THIS exact screen.',
+  ].filter(Boolean).join('\n');
+}
+
+/** Extract the cases array from an LLM response that should be strict JSON (tolerant of fences/prose). */
+function parseAuthoredCases(text) {
+  if (!text) return [];
+  let s = String(text).trim().replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+  const objStart = s.indexOf('{');
+  const arrStart = s.indexOf('[');
+  try {
+    if (arrStart >= 0 && (objStart < 0 || arrStart < objStart)) {
+      return JSON.parse(s.slice(arrStart, s.lastIndexOf(']') + 1));
+    }
+    if (objStart >= 0) {
+      const obj = JSON.parse(s.slice(objStart, s.lastIndexOf('}') + 1));
+      return Array.isArray(obj.cases) ? obj.cases : (Array.isArray(obj) ? obj : []);
+    }
+  } catch { /* unparseable → no cases */ }
+  return [];
+}
+
+/** Author cases from the feature model and normalize them into the job.testCases shape. */
+async function authorCases(job, model, onLog) {
+  const log = (m) => { if (onLog) onLog(m); };
+  let text = '';
+  try {
+    text = await llmGenerate(buildAuthorPrompt(job, model), 'You output ONLY strict JSON. No prose, no markdown fences.');
+  } catch (e) {
+    log(`[explore] LLM authoring failed: ${e.message}`);
+    return [];
+  }
+  const parsed = parseAuthoredCases(text);
+  const feature = pascal(job.feature);
+  log(`[explore] Authored ${parsed.length} candidate case(s) from the feature model.`);
+  return parsed
+    .filter((c) => c && c.title)
+    .map((c, i) => {
+      const type = String(c.type || 'Positive').replace(/[^A-Za-z]/g, '') || 'Positive';
+      return {
+        id: `TC_${String(i + 1).padStart(3, '0')}`,
+        title: String(c.title).trim(),
+        tags: `${feature}, ${type}`,
+        executionTags: '',
+        complexity: 'Medium',
+        description: '',
+        preconditions: '',
+        testData: String(c.testData || ''),
+        steps: String(c.steps || ''),
+        expectedResults: String(c.expectedResults || ''),
+        comments: 'Authored by Autopilot (explore mode).',
+      };
+    });
+}
+
+/**
+ * Autopilot entry: explore a feature headlessly, build a deterministic feature model, and have
+ * the LLM author positive/negative cases grounded in that evidence. Returns { testCases,
+ * featureModel, snapshot } so the EXISTING buildPlan/generateAndRun pipeline runs unchanged
+ * (reuse-filter + behavioral dedup are applied there). Credentials are NOT used yet (auth-gated
+ * exploration is Phase 3) and are never persisted.
+ */
+async function exploreAndAuthor(job, onLog) {
+  const log = (m) => { if (onLog) onLog(m); };
+  const fw = config().frameworkPath;
+  log(`[explore] Exploring "${job.feature}" at ${job.url} …`);
+  const snapshot = await captureSnapshot(fw, job.url);
+  log(snapshot
+    ? `[explore] Captured accessibility snapshot (${snapshot.length} chars).`
+    : '[explore] No live snapshot (URL unreachable or headless run failed) — authoring from feature name only.');
+  const model = buildFeatureModel(snapshot, job.feature);
+  log(`[explore] Feature model: ${model.inputs.length} input(s), ${model.buttons.length} button(s), ${model.links.length} link(s).`);
+  const testCases = await authorCases(job, model, log);
+  return { testCases, featureModel: model, snapshot };
+}
+
 function buildSystemPrompt() {
   return [
     'You are the AI Native Playwright Engineer. You output ONLY code files in the exact 3-layer architecture.',
@@ -1939,6 +2079,8 @@ module.exports = {
   isConfigured,
   buildPlan,
   generateAndRun,
+  exploreAndAuthor,
+  buildFeatureModel,
   pushBranch,
   config,
   resolveSkill,

@@ -73,6 +73,7 @@ const AutomationJobSchema = new mongoose.Schema({
   scopeHint: { type: String, default: '' },
   notes: { type: String, default: '' },
   evidenceFiles: [{ type: String }],   // uploaded snapshot paths (gitignored temp dir)
+  featureSummary: { type: String, default: '' },  // e.g. "2 input(s), 1 button(s)" from the explore snapshot
 
   // Run configuration (drives Playwright CLI flags at execution time)
   browser: { type: String, enum: ['Chrome', 'Edge', 'Firefox', 'Safari', 'All'], default: 'Chrome' },

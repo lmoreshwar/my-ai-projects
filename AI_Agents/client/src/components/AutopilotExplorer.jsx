@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 
 /* ── API helper (auth via blast_token) ── */
 function authHeaders() {
@@ -8,6 +8,7 @@ function authHeaders() {
 
 const TEST_TYPES = ['Positive', 'Negative', 'Boundary', 'Security-lite', 'Accessibility'];
 const DEFAULT_TYPES = ['Positive', 'Negative'];
+const TERMINAL = new Set(['Passed', 'Failed', 'Completed', 'PushedToGate', 'Merged']);
 
 const inputCls =
   'w-full px-3 py-2 rounded-lg border border-outline-variant/50 dark:border-slate-700 bg-white dark:bg-slate-800 text-on-surface dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-app-red/40 transition';
@@ -37,7 +38,12 @@ export default function AutopilotExplorer({ apiBase }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [job, setJob] = useState(null);
+  const [proceeding, setProceeding] = useState(false);
   const fileInputRef = useRef(null);
+  const pollRef = useRef(null);
+
+  const stopPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+  useEffect(() => () => stopPoll(), []);
 
   const set = useCallback((k, v) => setForm((f) => ({ ...f, [k]: v })), []);
 
@@ -90,6 +96,41 @@ export default function AutopilotExplorer({ apiBase }) {
       setBusy(false);
     }
   }, [apiBase, form, testTypes, files]);
+
+  // Poll generation progress until the run reaches a terminal state.
+  const pollProgress = useCallback((jobId) => {
+    stopPoll();
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/automation/jobs/${jobId}/progress`, { headers: authHeaders() });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data && data.jobId) {
+          setJob(data);
+          if (TERMINAL.has(data.status)) { stopPoll(); setProceeding(false); }
+        }
+      } catch { /* transient — keep polling */ }
+    }, 2000);
+  }, [apiBase]);
+
+  // Approve the plan → generate + run the scripts (existing pipeline), then stream progress.
+  const proceed = useCallback(async () => {
+    if (!job) return;
+    setError('');
+    setProceeding(true);
+    try {
+      const res = await fetch(`${apiBase}/api/automation/jobs/${job.jobId}/approve`, {
+        method: 'POST', headers: authHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.msg || `Approve failed (${res.status})`);
+      setJob(data);
+      if (TERMINAL.has(data.status)) setProceeding(false);
+      else pollProgress(job.jobId);
+    } catch (e) {
+      setError(e.message || 'Could not start generation.');
+      setProceeding(false);
+    }
+  }, [apiBase, job, pollProgress]);
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-8">
@@ -286,12 +327,91 @@ export default function AutopilotExplorer({ apiBase }) {
           )}
           {job && (
             <div>
-              <div className="text-[11px] text-on-surface-variant dark:text-slate-500 mb-2">
-                Job <span className="font-mono">{job.jobId}</span> · status {job.status}
+              <div className="text-[11px] text-on-surface-variant dark:text-slate-500 mb-2 flex items-center gap-2">
+                Job <span className="font-mono">{job.jobId}</span> · status{' '}
+                <span className="font-semibold">{job.status}</span>
+                {job.featureSummary ? <span>· {job.featureSummary}</span> : null}
               </div>
-              <pre className="text-xs whitespace-pre-wrap font-mono text-on-surface dark:text-slate-200 bg-surface-container dark:bg-slate-800/40 rounded-lg p-3 max-h-[520px] overflow-auto">
+
+              {/* Authored cases */}
+              {Array.isArray(job.testCases) && job.testCases.length > 0 && (
+                <div className="mb-3">
+                  <div className="text-xs font-bold text-on-surface dark:text-slate-200 mb-1">
+                    Authored cases ({job.testCases.length})
+                  </div>
+                  <ul className="space-y-1 max-h-40 overflow-auto">
+                    {job.testCases.map((tc) => (
+                      <li key={tc.id} className="text-xs text-on-surface-variant dark:text-slate-300 flex gap-2">
+                        <span className="font-mono text-app-red shrink-0">{tc.id}</span>
+                        <span className="truncate">{tc.title}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <pre className="text-xs whitespace-pre-wrap font-mono text-on-surface dark:text-slate-200 bg-surface-container dark:bg-slate-800/40 rounded-lg p-3 max-h-72 overflow-auto">
                 {job.plan}
               </pre>
+
+              {/* Missing info blocks Proceed */}
+              {Array.isArray(job.missingInfo) && job.missingInfo.length > 0 && (
+                <div className="mt-3 text-xs text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/30 rounded-lg px-3 py-2">
+                  <strong>Needs info before proceeding:</strong>
+                  <ul className="list-disc ml-4 mt-1">
+                    {job.missingInfo.map((m, i) => <li key={i}>{m}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              {/* Proceed / result actions */}
+              <div className="mt-3">
+                {job.status === 'WaitingForApproval' && (
+                  <button onClick={proceed} disabled={proceeding}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-white bg-green-600 hover:bg-green-700 disabled:opacity-60 transition">
+                    <span className="material-symbols-outlined text-[18px]">play_arrow</span>
+                    Proceed — generate scripts
+                  </button>
+                )}
+                {(proceeding || job.status === 'Generating' || job.status === 'Executing') && (
+                  <div className="flex items-center gap-2 text-sm text-indigo-600 dark:text-indigo-300 py-2">
+                    <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
+                    Generating &amp; running the scripts…
+                  </div>
+                )}
+                {(job.status === 'Passed' || job.status === 'Completed') && (
+                  <div className="text-sm text-green-700 dark:text-green-300 flex items-center gap-2 py-1">
+                    <span className="material-symbols-outlined text-[18px]">check_circle</span>
+                    Done — {job.executionStatus || job.status}.
+                    {job.reportUrl ? (
+                      <a href={`${apiBase}${job.reportUrl}`} target="_blank" rel="noreferrer"
+                        className="underline text-app-red ml-1">View report</a>
+                    ) : null}
+                  </div>
+                )}
+                {job.status === 'Failed' && (
+                  <div className="text-sm text-error flex items-center gap-2 py-1">
+                    <span className="material-symbols-outlined text-[18px]">error</span>
+                    {job.error || 'Run failed.'}
+                    {job.reportUrl ? (
+                      <a href={`${apiBase}${job.reportUrl}`} target="_blank" rel="noreferrer"
+                        className="underline text-app-red ml-1">View report</a>
+                    ) : null}
+                  </div>
+                )}
+              </div>
+
+              {/* Live logs */}
+              {Array.isArray(job.logs) && job.logs.length > 0 && (
+                <details className="mt-3" open={proceeding}>
+                  <summary className="text-xs font-semibold text-on-surface-variant dark:text-slate-400 cursor-pointer">
+                    Logs ({job.logs.length})
+                  </summary>
+                  <pre className="mt-1 text-[11px] whitespace-pre-wrap font-mono text-on-surface-variant dark:text-slate-400 bg-black/5 dark:bg-black/30 rounded-lg p-2 max-h-52 overflow-auto">
+                    {job.logs.join('\n')}
+                  </pre>
+                </details>
+              )}
             </div>
           )}
         </div>

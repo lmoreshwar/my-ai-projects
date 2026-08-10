@@ -215,31 +215,28 @@ router.post('/explore', auth, async (req, res) => {
       updatedAt: now,
     };
 
-    // PHASE 0: the explore/author engine is not wired yet — return a scaffold plan that echoes
-    // the inputs so the page → API → job round-trip is verifiable end-to-end.
-    job.plan = [
-      '# Autopilot — Explore & Automate (Phase 0 scaffold)',
-      '',
-      '> ⚙ Engine not wired yet. This confirms the **page → API → job** flow works end-to-end.',
-      '',
-      '## Received',
-      `- URL: ${job.url}`,
-      `- Feature: ${job.feature}`,
-      `- Test types: ${job.testTypes.join(', ')}`,
-      `- Max cases: ${job.maxCases}`,
-      job.scopeHint ? `- Scope hint: ${job.scopeHint}` : '',
-      `- Evidence uploads: ${job.evidenceFiles.length}`,
-      `- Auth provided: ${req.body.username ? 'yes (used transiently, NOT stored)' : 'no'}`,
-      job.notes ? `- Notes: ${job.notes}` : '',
-      '',
-      '## Next (Phase 1)',
-      '1. Explore the feature headlessly via @playwright/cli → accessibility snapshot.',
-      '2. Build a deterministic feature model (inputs / buttons / links / errors / states).',
-      '3. Author positive + negative cases from the model + a fixed test-design checklist.',
-      '4. Reuse-filter against .ai-memory so existing cases are not recreated.',
-      '5. Hand new cases to the existing generateAndRun → self-heal → PR gate.',
-    ].filter(Boolean).join('\n');
-    job.status = 'WaitingForApproval';
+    // PHASE 1: explore the feature (headless snapshot), author +/- cases from the evidence,
+    // then build the SAME reuse-first plan the classic flow uses. Credentials are never persisted.
+    job = await persist(job);
+    const exploreLogs = [];
+    try {
+      const { testCases, featureModel } = await localAgent.exploreAndAuthor(job, (m) => exploreLogs.push(m));
+      job.testCases = testCases;
+      job.logs = [...(job.logs || []), ...exploreLogs];
+      job.featureSummary = featureModel
+        ? `${featureModel.inputs.length} input(s), ${featureModel.buttons.length} button(s), ${featureModel.links.length} link(s)`
+        : '';
+    } catch (e) {
+      job.logs = [...(job.logs || []), ...exploreLogs, `[explore] error: ${e.message}`];
+    }
+
+    // Build the implementation plan from the authored cases (reuse analysis + file plan).
+    const { plan, missingInfo, reusedFiles, logs } = await orchestrator.requestPlan(job);
+    job.plan = plan;
+    job.missingInfo = missingInfo;
+    job.reusedFiles = reusedFiles;
+    if (Array.isArray(logs) && logs.length) job.logs = [...(job.logs || []), ...logs];
+    job.status = missingInfo && missingInfo.length ? 'Pending' : 'WaitingForApproval';
     job = await persist(job);
     res.json(job);
   } catch (err) {
