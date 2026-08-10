@@ -18,6 +18,8 @@
  */
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+const https = require('https');
 const { spawn } = require('child_process');
 const LLMConnector = require('./llm_connector');
 
@@ -1284,6 +1286,107 @@ async function exploreAndAuthor(job, onLog, creds) {
   return { testCases, featureModel: model, snapshot: drive.states.length ? drive.states[0].snapshot : '' };
 }
 
+/**
+ * POST a payload to a remote B.L.A.S.T. worker route and resolve its JSON response. Adds bearer
+ * auth, forwards any `logs[]` in the response to onLog, and rejects on non-200. Shared by the
+ * explore/generate delegations so both use one HTTP client.
+ */
+function callWorker(pathname, payload, { url, token, timeoutMs }, onLog) {
+  const log = (m) => { if (onLog) onLog(m); };
+  return new Promise((resolve, reject) => {
+    const base = String(url || '').trim().replace(/\/+$/, '');
+    let u;
+    try { u = new URL(`${base}${pathname}`); } catch { return reject(new Error(`invalid worker URL for ${pathname}`)); }
+    const lib = u.protocol === 'https:' ? https : http;
+    const body = JSON.stringify(payload || {});
+    const req = lib.request({
+      protocol: u.protocol,
+      hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      timeout: Number(timeoutMs || 180000),
+    }, (resp) => {
+      let out = '';
+      resp.on('data', (d) => { out += d; });
+      resp.on('end', () => {
+        let parsed = null;
+        try { parsed = JSON.parse(out || '{}'); } catch { /* non-JSON body */ }
+        if (resp.statusCode !== 200) {
+          return reject(new Error((parsed && parsed.error) || `worker responded ${resp.statusCode}`));
+        }
+        if (Array.isArray(parsed && parsed.logs)) parsed.logs.forEach((l) => log(l));
+        resolve(parsed || {});
+      });
+    });
+    req.on('timeout', () => req.destroy(new Error('worker request timed out')));
+    req.on('error', (e) => reject(e));
+    req.write(body);
+    req.end();
+  });
+}
+
+/**
+ * Delegate exploration to a remote B.L.A.S.T. worker (a persistent host with Chromium +
+ * @playwright/cli) instead of running it in-process. Same return shape as exploreAndAuthor
+ * ({ testCases, featureModel }). Credentials travel ONLY in the request body over the worker's
+ * bearer-auth channel — never logged or persisted here. Bearer token from EXPLORE_WORKER_TOKEN
+ * (falls back to WORKER_TOKEN). Used when EXPLORE_WORKER_URL is set (e.g. B.L.A.S.T. on Render).
+ */
+async function exploreViaWorker(job, onLog, creds) {
+  const opts = {
+    url: process.env.EXPLORE_WORKER_URL,
+    token: process.env.EXPLORE_WORKER_TOKEN || process.env.WORKER_TOKEN || '',
+    timeoutMs: process.env.EXPLORE_WORKER_TIMEOUT_MS || 180000,
+  };
+  try {
+    const r = await callWorker('/explore', { job, creds: creds || {} }, opts, onLog);
+    return { testCases: r.testCases || [], featureModel: r.featureModel || null, snapshot: '' };
+  } catch (e) {
+    throw new Error(`remote explore failed: ${e.message}`);
+  }
+}
+
+/**
+ * Delegate the full generate → run → self-heal pipeline to a remote worker (which has Chromium +
+ * the framework to actually execute the tests). Returns the same object generateAndRun produces.
+ * Worker URL from GENERATE_WORKER_URL (falls back to EXPLORE_WORKER_URL so one VM can do both);
+ * token from GENERATE_WORKER_TOKEN (falls back to WORKER_TOKEN). Longer default timeout since a
+ * generation runs the browser and one heal round.
+ */
+async function generateViaWorker(job, onLog) {
+  const opts = {
+    url: process.env.GENERATE_WORKER_URL || process.env.EXPLORE_WORKER_URL,
+    token: process.env.GENERATE_WORKER_TOKEN || process.env.WORKER_TOKEN || '',
+    timeoutMs: process.env.GENERATE_WORKER_TIMEOUT_MS || 600000,
+  };
+  try {
+    const r = await callWorker('/generate', { job }, opts, onLog);
+    return r.result || r;
+  } catch (e) {
+    throw new Error(`remote generate failed: ${e.message}`);
+  }
+}
+
+/**
+ * Explore dispatcher: when EXPLORE_WORKER_URL is set, run the crawl + @playwright/cli evidence +
+ * LLM authoring on the remote worker (no local Chromium/CLI needed); otherwise run in-process
+ * exactly as before. Additive — the default path is unchanged when the flag is unset.
+ */
+async function explore(job, onLog, creds) {
+  const workerUrl = String(process.env.EXPLORE_WORKER_URL || '').trim();
+  if (workerUrl) {
+    if (onLog) onLog(`[explore] Delegating to remote worker ${workerUrl}`);
+    return exploreViaWorker(job, onLog, creds);
+  }
+  return exploreAndAuthor(job, onLog, creds);
+}
+
 function buildSystemPrompt() {
   return [
     'You are the AI Native Playwright Engineer. You output ONLY code files in the exact 3-layer architecture.',
@@ -2196,6 +2299,13 @@ function writeJobFile(fw, job) {
  * Returns { generatedFiles, reusedFiles, executionStatus, reportUrl, logs }.
  */
 async function generateAndRun(job, onLog) {
+  // When a remote worker is configured, run the whole generate → run → self-heal there (it has
+  // Chromium + the framework). Falls back to EXPLORE_WORKER_URL so one VM can serve both routes.
+  const workerUrl = String(process.env.GENERATE_WORKER_URL || process.env.EXPLORE_WORKER_URL || '').trim();
+  if (workerUrl) {
+    if (typeof onLog === 'function') onLog(`[generate] Delegating to remote worker ${workerUrl}`);
+    return generateViaWorker(job, onLog);
+  }
   const { frameworkPath: fw } = config();
   const logs = [];
   const log = (m) => {
@@ -3079,6 +3189,9 @@ module.exports = {
   buildPlan,
   generateAndRun,
   exploreAndAuthor,
+  explore,
+  exploreViaWorker,
+  generateViaWorker,
   buildFeatureModel,
   ensureFixturesRegistered,
   pushBranch,

@@ -228,7 +228,7 @@ router.post('/explore', auth, async (req, res) => {
     job = await persist(job);
     const exploreLogs = [];
     try {
-      const { testCases, featureModel } = await localAgent.exploreAndAuthor(job, (m) => exploreLogs.push(m), exploreCreds);
+      const { testCases, featureModel } = await localAgent.explore(job, (m) => exploreLogs.push(m), exploreCreds);
       job.testCases = testCases;
       job.logs = [...(job.logs || []), ...exploreLogs];
       job.featureSummary = featureModel
