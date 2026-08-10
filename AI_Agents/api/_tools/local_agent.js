@@ -241,6 +241,20 @@ function distinctiveOverlap(requested, have) {
 }
 
 /**
+ * Strip the `TC_00N` id prefix and `@Tag` decorations from a title so only the human-readable
+ * words remain. Manifest test titles are stored WITH tags/ids (e.g.
+ * "TC_005 Locked User Login Attempt @Regression @Automation @Critical"); tokenizing those raw
+ * pollutes the distinctive set with {005, regression, automation, …} and breaks matching.
+ */
+function titleCore(s) {
+  return String(s || '')
+    .replace(/@[^@]*/g, ' ')          // @Tags (a tag may contain spaces, e.g. "@Locked User Validation")
+    .replace(/\bTC[_-]?\d+\b/gi, ' ')  // the TC id prefix
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
  * Coverage check scoped to an ALREADY-RESOLVED domain spec. A case counts as covered
  * only when it is the SAME test — never on a bare id collision. TC ids (TC_009…) are
  * NOT globally unique, so a shared id with a DIFFERENT title (e.g. the spec's TC_009
@@ -339,12 +353,13 @@ function caseCoveredAnywhere(fw, tc) {
   if (man && man.testIndex) {
     // testIndex values are ARRAYS ({domain,spec,title}[]) because TC ids are not globally
     // unique. Match title-first (across every entry), then fall back to id + title overlap.
-    const want = normalizeText(tc && tc.title);
+    // Titles are stored WITH id-prefix + @tags — compare their CORE words only.
+    const want = normalizeText(titleCore(tc && tc.title));
     if (want.length >= 6) {
       for (const arr of Object.values(man.testIndex)) {
         for (const e of (Array.isArray(arr) ? arr : [arr])) {
-          const have = normalizeText(e.title);
-          if (have.includes(want) || want.includes(have)) return e.spec;
+          const have = normalizeText(titleCore(e.title));
+          if (have && (have.includes(want) || want.includes(have))) return e.spec;
         }
       }
     }
@@ -353,13 +368,13 @@ function caseCoveredAnywhere(fw, tc) {
     // "Display exact locked-user error message" ↔ "Locked User Login Attempt" (both → {locked}).
     // High threshold + a small-set guard keeps this precise: a genuinely-different case that
     // merely shares one distinctive word with a rich unrelated title will NOT match.
-    const wantDist = distinctiveTokens(tc && tc.title);
+    const wantDist = distinctiveTokens(titleCore(tc && tc.title));
     if (wantDist.length) {
       for (const arr of Object.values(man.testIndex)) {
         for (const e of (Array.isArray(arr) ? arr : [arr])) {
-          const haveDist = distinctiveTokens(e.title);
+          const haveDist = distinctiveTokens(titleCore(e.title));
           if (!haveDist.length) continue;
-          const ov = distinctiveOverlap(tc && tc.title, e.title);
+          const ov = distinctiveOverlap(titleCore(tc && tc.title), titleCore(e.title));
           if (ov >= 0.8 && (wantDist.length >= 2 || haveDist.length <= 2)) return e.spec;
         }
       }
@@ -372,7 +387,7 @@ function caseCoveredAnywhere(fw, tc) {
     for (const e of list) {
       // Distinctive overlap (not raw titleOverlap) so a shared id with only generic words
       // in common ("…user login valid credentials") is NOT falsely reported as covered.
-      const sc = distinctiveOverlap(tc && tc.title, e.title);
+      const sc = distinctiveOverlap(titleCore(tc && tc.title), titleCore(e.title));
       if (sc > bestScore) { bestScore = sc; best = e; }
     }
     if (best && bestScore >= 0.6) return best.spec;
