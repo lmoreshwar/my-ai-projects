@@ -563,6 +563,7 @@ const DRIVE_SCRIPT = [
   "  const pass = process.env.EXPLORE_PASS || '';",
   '  const states = [];',
   '  const observed = { errors: [], success: [] };',
+  "  const diag = { loginRequested: false, loginStatus: 0, loginErr: '', authOk: false, landedUrl: '' };",
   '  const MAX_STATES = 14;',
   "  const snap = async (page) => (await page.locator('body').ariaSnapshot()).slice(0, 4000);",
   '  const addState = async (page, label) => { if (states.length < MAX_STATES) states.push({ label, url: page.url(), snapshot: await snap(page) }); };',
@@ -605,7 +606,10 @@ const DRIVE_SCRIPT = [
   '  try {',
   '    const page = await browser.newPage();',
   '    if (loginUrl && user && pass) {',
-  "      await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });",
+  '      diag.loginRequested = true;',
+  '      let _resp = null;',
+  "      try { _resp = await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (e) { diag.loginErr = 'nav:' + String((e && e.message) || e); }",
+  '      diag.loginStatus = _resp ? _resp.status() : 0;',
   "      await page.locator('input:not([type=password]):not([type=hidden]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio])').first().fill(user, { timeout: 10000 }).catch(() => {});",
   "      await page.locator('input[type=password]').first().fill(pass, { timeout: 10000 }).catch(() => {});",
   '      const subs = [',
@@ -617,6 +621,11 @@ const DRIVE_SCRIPT = [
   '      for (const c of subs) { if (await c.count().catch(() => 0)) { await c.click({ timeout: 8000 }).catch(() => {}); clicked = true; break; } }',
   "      if (!clicked) await page.locator('input[type=password]').first().press('Enter').catch(() => {});",
   "      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});",
+  "      const _errSel = '[data-test=error], .error-message-container, [role=alert], .error, .error-message';",
+  "      if (!diag.loginErr) { diag.loginErr = ((await page.locator(_errSel).first().innerText().catch(() => '')) || '').trim().slice(0, 200); }",
+  '      diag.landedUrl = page.url();',
+  "      const _pwdVisible = await page.locator('input[type=password]').first().isVisible().catch(() => false);",
+  '      diag.authOk = !diag.loginErr && !_pwdVisible;',
   '      // Hand off the authenticated storage state (cookies/tokens only — NO password) for @playwright/cli evidence.',
   '      if (stateFile) { try { await page.context().storageState({ path: stateFile }); } catch (e) { /* best-effort */ } }',
   '      await page.waitForTimeout(600);',
@@ -687,16 +696,18 @@ const DRIVE_SCRIPT = [
   '      }',
   '    };',
   '    if (autoDiscover) {',
-  "      if (!(loginUrl && user && pass)) { await page.goto(urls[0] || loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {}); await page.waitForTimeout(600); }",
+  "      await page.goto(urls[0] || loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});",
+  '      await page.waitForTimeout(600);',
+  '      diag.landedUrl = page.url();',
   '      await walk(page);',
   '    } else {',
   '      await runFlow(page);',
   '    }',
   '    observed.errors = [...new Set(observed.errors)].slice(0, 10);',
   '    observed.success = [...new Set(observed.success)].slice(0, 6);',
-  '    process.stdout.write(JSON.stringify({ states, observed }));',
+  '    process.stdout.write(JSON.stringify({ states, observed, diag }));',
   '  } catch (e) {',
-  '    process.stdout.write(JSON.stringify({ states, observed, error: String((e && e.message) || e) }));',
+  '    process.stdout.write(JSON.stringify({ states, observed, diag, error: String((e && e.message) || e) }));',
   '  } finally { await browser.close(); }',
   "})().catch((e) => { process.stderr.write(String(e)); process.exit(1); });",
 ].join('\n');
@@ -704,9 +715,9 @@ const DRIVE_SCRIPT = [
 function parseDrive(out) {
   try {
     const j = JSON.parse(String(out).trim());
-    return { states: Array.isArray(j.states) ? j.states : [], observed: j.observed || { errors: [], success: [] }, error: j.error };
+    return { states: Array.isArray(j.states) ? j.states : [], observed: j.observed || { errors: [], success: [] }, diag: j.diag || {}, error: j.error };
   } catch {
-    return { states: [], observed: { errors: [], success: [] } };
+    return { states: [], observed: { errors: [], success: [] }, diag: {} };
   }
 }
 
@@ -722,14 +733,14 @@ function driveFlow(fw, urls, opts = {}) {
   const allowSubmit = !!opts.allowSubmit;
   return new Promise((resolve) => {
     const list = (urls || []).filter(Boolean);
-    if (!list.length) return resolve({ states: [], observed: { errors: [], success: [] } });
+    if (!list.length) return resolve({ states: [], observed: { errors: [], success: [] }, diag: {} });
     const dir = path.join(fw, '.blast-tmp');
     const script = path.join(dir, 'drive.cjs');
     try {
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(script, DRIVE_SCRIPT, 'utf8');
     } catch {
-      return resolve({ states: [], observed: { errors: [], success: [] } });
+      return resolve({ states: [], observed: { errors: [], success: [] }, diag: {} });
     }
     const cfg = { urls: list, loginUrl: auth ? auth.loginUrl || '' : '', allowSubmit, autoDiscover: list.length <= 1, maxDepth: Number(opts.maxDepth) > 0 ? Number(opts.maxDepth) : 8, stateFile: opts.stateFile || '' };
     const childEnv = { ...process.env, DRIVE_CFG: JSON.stringify(cfg) };
@@ -744,7 +755,7 @@ function driveFlow(fw, urls, opts = {}) {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
       resolve(parseDrive(out));
     });
-    child.on('error', () => { clearTimeout(timer); resolve({ states: [], observed: { errors: [], success: [] } }); });
+    child.on('error', () => { clearTimeout(timer); resolve({ states: [], observed: { errors: [], success: [] }, diag: {} }); });
   });
 }
 
@@ -1226,6 +1237,146 @@ function mergeFeatureModels(steps, feature) {
   return m;
 }
 
+/** Normalize a URL to origin+path (no trailing slash, lowercased) for cheap comparison. */
+function diagUrlNorm(u) {
+  try { const x = new URL(String(u)); return (x.origin + x.pathname).replace(/\/+$/, '').toLowerCase(); }
+  catch { return String(u || '').trim().toLowerCase().replace(/\/+$/, ''); }
+}
+
+/** Path component of a URL ('/' when none). */
+function diagUrlPath(u) {
+  try { return (new URL(String(u)).pathname || '/').replace(/\/+$/, '') || '/'; }
+  catch { return '/'; }
+}
+
+/** Heuristic: does the captured model look like a bare login/sign-in screen (auth gate)? */
+function looksLikeLoginScreen(model) {
+  const btns = model.buttons || []; const ins = model.inputs || []; const links = model.links || [];
+  const hasLoginBtn = btns.some((b) => /log ?in|sign ?in/i.test(b));
+  const hasPwdField = ins.some((i) => /pass(word)?/i.test(i.name || ''));
+  const compact = ins.length <= 3 && btns.length <= 2 && links.length === 0;
+  return (hasLoginBtn || hasPwdField) && compact;
+}
+
+/** Significant tokens (>=3 chars) of a feature name, used to check the page is actually related. */
+function featureTokens(feature) {
+  return String(feature || '').toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length >= 3);
+}
+
+/** Does the captured evidence mention the requested feature at all? (anti-hallucination gate) */
+function featureMentioned(feature, model, states) {
+  const toks = featureTokens(feature);
+  if (!toks.length) return true; // name too short to judge — don't block
+  const hay = [
+    ...(states || []).map((s) => s.url || ''),
+    ...(model.texts || []),
+    ...(model.buttons || []),
+    ...(model.links || []),
+    ...(model.inputs || []).map((i) => i.name || ''),
+    ...(model.controls || []).map((c) => c.name || ''),
+  ].join(' ').toLowerCase();
+  return toks.some((t) => hay.includes(t));
+}
+
+/**
+ * Classify the health of an exploration in FAIL-FAST STAGES so the plan can show an honest,
+ * actionable message instead of authoring cases from evidence that doesn't match the request:
+ *   'login-url-bad'    — credentials given but the Login URL never loaded.
+ *   'auth-failed'      — Login URL loaded but sign-in was rejected (wrong username/password).
+ *   'unreachable'      — nothing loaded at all (bad Application URL / app down / network).
+ *   'auth-required'    — a protected page was reached without credentials.
+ *   'feature-not-found'— page loaded/authenticated but nothing matches the requested feature.
+ *   'ok'               — real target evidence captured; author normally.
+ */
+function diagnoseExploration(job, drive, model, auth, effLoginUrl) {
+  const states = (drive && drive.states) || [];
+  const d = (drive && drive.diag) || {};
+  // Stage 1 — login URL + credentials (only when credentials were supplied).
+  if (auth) {
+    const navFailed = /^nav:/.test(d.loginErr || '') || (Number(d.loginStatus) >= 400);
+    if (navFailed) return { kind: 'login-url-bad' };
+    if (d.loginRequested && !d.authOk) return { kind: 'auth-failed' };
+  }
+  // Stage 2 — did anything load at all?
+  if (states.length === 0) return { kind: 'unreachable' };
+  // Stage 3 — a protected page was reached without credentials.
+  const target = job.url || (states[0] && states[0].url) || '';
+  const deepTarget = diagUrlPath(target) !== '/' && diagUrlNorm(target) !== diagUrlNorm(effLoginUrl || '');
+  if (!auth && deepTarget && looksLikeLoginScreen(model)) return { kind: 'auth-required' };
+  // Stage 4 — the captured screen has nothing to do with the requested feature.
+  if (!featureMentioned(job.feature, model, states)) return { kind: 'feature-not-found' };
+  return { kind: 'ok' };
+}
+
+/**
+ * Build a STRUCTURED blocker (NOT a test case — no TC id) that the UI renders as a precise message
+ * and uses to DISABLE the "Proceed & Generate" button. The password is never included.
+ */
+function buildBlocked(kind, job, effLoginUrl, creds, drive) {
+  const feature = job.feature || 'the target';
+  const appUrl = job.url || '(not provided)';
+  const login = effLoginUrl || (job.loginUrl && String(job.loginUrl).trim()) || '(same origin as the Application URL)';
+  const user = (creds && creds.username) || '(none provided)';
+  const rawErr = drive && drive.diag && drive.diag.loginErr;
+  const errNote = rawErr && !/^nav:/.test(rawErr) ? ` The app reported: "${rawErr}".` : '';
+  const map = {
+    'login-url-bad': {
+      title: 'Login URL is unreachable',
+      message: `The Login URL "${login}" did not load, so sign-in could not be attempted and "${feature}" was never reached.`,
+      checklist: [
+        `Verify the Login URL is correct (path + https://): "${login}".`,
+        'Confirm the app is running and reachable from this machine (network / VPN / firewall).',
+        'Fix the Login URL, then run Explore again.',
+      ],
+    },
+    'auth-failed': {
+      title: 'Sign-in failed — username or password is incorrect',
+      message: `The Login URL loaded, but sign-in was rejected, so "${feature}" was never reached.${errNote}`,
+      checklist: [
+        `Re-check the Username and Password for this environment (Username tried: "${user}").`,
+        `Confirm the Login URL points at the real sign-in page: "${login}".`,
+        'Fix the credentials, then run Explore again.',
+      ],
+    },
+    'auth-required': {
+      title: `"${feature}" is behind a login`,
+      message: `The page at ${appUrl} is protected and no credentials were supplied, so only the login screen was captured.`,
+      checklist: [
+        'Enter a valid Username and Password.',
+        `Set the Login URL to the sign-in page (currently: ${login}).`,
+        'Run Explore again.',
+      ],
+    },
+    unreachable: {
+      title: 'The application page did not load',
+      message: `Nothing was returned from ${appUrl}. The URL may be wrong, the app may be down, or the network may be blocked.`,
+      checklist: [
+        `Verify the Application URL is correct (path + https://): "${appUrl}".`,
+        'Confirm the app is running and reachable from this machine.',
+        'Fix the URL, then run Explore again.',
+      ],
+    },
+    'feature-not-found': {
+      title: `Could not find "${feature}" on that page`,
+      message: `Sign-in worked and the page loaded, but nothing on it matches "${feature}". The feature name may be misspelled, or the Application URL points at a different screen. No test cases were invented.`,
+      checklist: [
+        `Check the spelling of the Feature / Widget name: "${feature}".`,
+        `Point the Application URL at the screen that actually contains "${feature}" (currently: ${appUrl}).`,
+        `If "${feature}" needs a pre-state (e.g. an item already in the cart), add a Flow Step URL or describe it in Notes.`,
+        'Adjust the inputs, then run Explore again.',
+      ],
+    },
+  };
+  const m = map[kind] || map.unreachable;
+  return {
+    kind,
+    title: m.title,
+    message: m.message,
+    checklist: m.checklist,
+    inputsReviewed: 'Application URL, Feature, Username/Password, Login URL, Flow Step URLs, Test types, Max cases, Scope hint/Notes, Acceptance criteria, Evidence',
+  };
+}
+
 /**
  * Autopilot entry: explore a feature headlessly (one or more flow URLs), build a deterministic
  * feature model, and have the LLM author cases grounded in that evidence — then apply the coverage
@@ -1246,8 +1397,8 @@ async function exploreAndAuthor(job, onLog, creds) {
     .map((u) => String(u || '').trim()).filter(Boolean);
   log(`[explore] Exploring "${job.feature}" across ${urls.length} URL(s) …`);
   let auth = null;
+  let loginUrl = (job.loginUrl && String(job.loginUrl).trim()) || '';
   if (creds && creds.username && creds.password) {
-    let loginUrl = (job.loginUrl && String(job.loginUrl).trim()) || '';
     if (!loginUrl) { try { loginUrl = new URL(urls[0]).origin; } catch { loginUrl = urls[0]; } }
     auth = { username: creds.username, password: creds.password, loginUrl };
     log(`[explore] Authenticated exploration enabled — logging in at ${loginUrl} (credentials are transient, never stored).`);
@@ -1273,6 +1424,15 @@ async function exploreAndAuthor(job, onLog, creds) {
   if (drive.observed.errors.length) log(`[explore] Observed validation message(s): ${drive.observed.errors.slice(0, 5).join(' | ')}`);
   if (drive.observed.success.length) log(`[explore] Observed success/confirmation: ${drive.observed.success.slice(0, 3).join(' | ')}`);
   const model = modelFromStates(drive.states, job.feature, drive.observed);
+  log(`[explore] Feature model: ${model.inputs.length} input(s), ${model.buttons.length} button(s), ${model.links.length} link(s); ${model.observed.errors.length} error + ${model.observed.success.length} success message(s) observed.`);
+  // Fail-fast diagnosis BEFORE the (slower) @playwright/cli evidence pass — if the intended screen
+  // was not captured, return a structured blocker and author NOTHING (anti-hallucination).
+  const diag = diagnoseExploration(job, drive, model, auth, loginUrl);
+  if (diag.kind !== 'ok') {
+    log(`[explore] Diagnosis: ${diag.kind} — returning a diagnostic message; no test cases authored.`);
+    try { if (stateFile) fs.rmSync(stateFile, { force: true }); } catch { /* ignore */ }
+    return { testCases: [], featureModel: model, snapshot: '', blocked: buildBlocked(diag.kind, job, loginUrl, creds, drive) };
+  }
   if (useCli) {
     log('[explore] Capturing authoritative locator evidence via @playwright/cli …');
     try {
@@ -1281,7 +1441,6 @@ async function exploreAndAuthor(job, onLog, creds) {
     } catch (e) { log(`[explore] @playwright/cli evidence skipped: ${String((e && e.message) || e)}`); }
     finally { try { if (stateFile) fs.rmSync(stateFile, { force: true }); } catch { /* ignore */ } }
   }
-  log(`[explore] Feature model: ${model.inputs.length} input(s), ${model.buttons.length} button(s), ${model.links.length} link(s); ${model.observed.errors.length} error + ${model.observed.success.length} success message(s) observed.`);
   const testCases = await authorCases(job, model, log);
   return { testCases, featureModel: model, snapshot: drive.states.length ? drive.states[0].snapshot : '' };
 }

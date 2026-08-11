@@ -227,8 +227,11 @@ router.post('/explore', auth, async (req, res) => {
     // then build the SAME reuse-first plan the classic flow uses. Credentials are never persisted.
     job = await persist(job);
     const exploreLogs = [];
+    let blocked = null;
     try {
-      const { testCases, featureModel } = await localAgent.explore(job, (m) => exploreLogs.push(m), exploreCreds);
+      const result = await localAgent.explore(job, (m) => exploreLogs.push(m), exploreCreds);
+      const { testCases, featureModel } = result;
+      blocked = result.blocked || null;
       job.testCases = testCases;
       job.logs = [...(job.logs || []), ...exploreLogs];
       job.featureSummary = featureModel
@@ -236,6 +239,29 @@ router.post('/explore', auth, async (req, res) => {
         : '';
     } catch (e) {
       job.logs = [...(job.logs || []), ...exploreLogs, `[explore] error: ${e.message}`];
+    }
+
+    // BLOCKED: exploration could not capture the requested screen (bad URL / login / feature).
+    // Return a precise message and NO test cases — the UI disables "Proceed & Generate".
+    if (blocked) {
+      job.blocked = blocked;
+      job.testCases = [];
+      job.missingInfo = [];
+      job.status = 'Blocked';
+      job.plan = [
+        `⛔ Exploration blocked — ${blocked.title}`,
+        '',
+        blocked.message,
+        '',
+        'What to check:',
+        ...blocked.checklist.map((c, i) => `  ${i + 1}. ${c}`),
+        '',
+        `Inputs reviewed: ${blocked.inputsReviewed}`,
+        '',
+        'No test cases were authored and nothing will be generated until this is resolved.',
+      ].join('\n');
+      job = await persist(job);
+      return res.json(job);
     }
 
     // Build the implementation plan from the authored cases (reuse analysis + file plan).

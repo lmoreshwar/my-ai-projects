@@ -374,6 +374,29 @@ export default function AutopilotExplorer({ apiBase }) {
                 {job.featureSummary ? <span>· {job.featureSummary}</span> : null}
               </div>
 
+              {/* Blocked: exploration could not capture the requested screen — show a precise
+                  message and NO test cases; the Proceed button stays hidden/disabled. */}
+              {job.blocked && (
+                <div className="mb-3 rounded-xl border border-app-red/40 bg-app-red/5 dark:bg-red-950/30 px-4 py-3">
+                  <div className="flex items-center gap-2 text-sm font-bold text-app-red">
+                    <span className="material-symbols-outlined text-[20px]">block</span>
+                    {job.blocked.title}
+                  </div>
+                  <p className="mt-1 text-xs text-on-surface-variant dark:text-slate-300">{job.blocked.message}</p>
+                  {Array.isArray(job.blocked.checklist) && job.blocked.checklist.length > 0 && (
+                    <>
+                      <div className="mt-2 text-[11px] font-semibold uppercase tracking-wide text-on-surface-variant dark:text-slate-400">What to check</div>
+                      <ol className="list-decimal ml-5 mt-1 space-y-0.5 text-xs text-on-surface dark:text-slate-200">
+                        {job.blocked.checklist.map((c, i) => <li key={i}>{c}</li>)}
+                      </ol>
+                    </>
+                  )}
+                  <p className="mt-2 text-[11px] text-on-surface-variant/80 dark:text-slate-500">
+                    No test cases were authored. Fix the input above and run <strong>Preview Plan</strong> again.
+                  </p>
+                </div>
+              )}
+
               {/* Authored cases */}
               {Array.isArray(job.testCases) && job.testCases.length > 0 && (
                 <div className="mb-3">
@@ -391,9 +414,11 @@ export default function AutopilotExplorer({ apiBase }) {
                 </div>
               )}
 
-              <pre className="text-xs whitespace-pre-wrap font-mono text-on-surface dark:text-slate-200 bg-surface-container dark:bg-slate-800/40 rounded-lg p-3 max-h-72 overflow-auto">
-                {job.plan}
-              </pre>
+              {!job.blocked && (
+                <pre className="text-xs whitespace-pre-wrap font-mono text-on-surface dark:text-slate-200 bg-surface-container dark:bg-slate-800/40 rounded-lg p-3 max-h-72 overflow-auto">
+                  {job.plan}
+                </pre>
+              )}
 
               {/* Missing info blocks Proceed */}
               {Array.isArray(job.missingInfo) && job.missingInfo.length > 0 && (
