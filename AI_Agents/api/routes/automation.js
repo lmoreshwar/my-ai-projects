@@ -94,7 +94,7 @@ router.get('/jobs/:jobId', auth, async (req, res) => {
 router.post('/generate', auth, async (req, res) => {
   try {
     const { project, environment, url, agent, skill, executionMode, comments, testCases,
-      browser, testScope, parallel } = req.body;
+      browser, testScope, parallel, level3 } = req.body;
     if (!Array.isArray(testCases) || testCases.length === 0) {
       return res.status(400).json({ msg: 'Select at least one automation-feasible test case.' });
     }
@@ -116,6 +116,7 @@ router.post('/generate', auth, async (req, res) => {
       browser: browser || 'Chrome',
       testScope: testScope || 'Generated only',
       parallel: parallel || 'Auto',
+      level3: level3 === true || String(level3).toLowerCase() === 'true',
       testCases: testCases.map((tc) => ({
         id: tc.id,
         title: tc.title || '',
@@ -171,7 +172,7 @@ router.post('/generate', auth, async (req, res) => {
 router.post('/explore', auth, async (req, res) => {
   try {
     const { project, environment, url, feature, testTypes, maxCases, scopeHint, notes,
-      browser, evidenceFiles, loginUrl, flowUrls } = req.body;
+      browser, evidenceFiles, loginUrl, flowUrls, level3 } = req.body;
     // SECURITY: username/password may arrive for the transient explore session. They are read into
     // LOCAL variables only, passed straight to the explore engine (child-process env), and are NEVER
     // written to the job, persisted, logged, or committed. loginUrl is not secret and may be stored.
@@ -203,6 +204,7 @@ router.post('/explore', auth, async (req, res) => {
       flowUrls: Array.isArray(flowUrls) ? flowUrls.map((u) => String(u).trim()).filter(Boolean) : [],
       evidenceFiles: Array.isArray(evidenceFiles) ? evidenceFiles : [],
       browser: browser || 'Chrome',
+      level3: level3 === true || String(level3).toLowerCase() === 'true',
       agent: 'AI Native Playwright Engineer',
       skill: 'New Automation',
       executionMode: 'GenerateAndExecute',

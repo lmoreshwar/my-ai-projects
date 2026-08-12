@@ -316,6 +316,7 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
     skill: 'New Automation',
     executionMode: 'GenerateAndExecute',
     comments: '',
+    level3: false,
   });
 
   const rows = useMemo(() => {
@@ -1189,6 +1190,15 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
                 <textarea value={form.comments} onChange={(e) => setF('comments', e.target.value)} rows={2}
                   className="w-full px-3 py-2 rounded-sm border border-outline-variant/40 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm" />
               </Field>
+
+              <label className="flex items-start gap-2 cursor-pointer select-none">
+                <input type="checkbox" checked={!!form.level3} onChange={(e) => setF('level3', e.target.checked)}
+                  className="mt-0.5 accent-app-red" />
+                <span className="text-sm">
+                  <span className="font-medium">Level 3 — verify locators live before writing</span>
+                  <span className="block text-xs text-secondary dark:text-slate-400">Drives the real app to confirm each locator (fewer heal rounds). Slower; non-prod only.</span>
+                </span>
+              </label>
             </div>
 
             <div className="flex justify-end gap-2 px-5 py-3 border-t border-outline-variant/30 dark:border-slate-700">

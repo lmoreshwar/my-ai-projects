@@ -33,6 +33,7 @@ export default function AutopilotExplorer({ apiBase }) {
     maxCases: 8,
     environment: 'QA',
     notes: '',
+    level3: false,
   });
   const [testTypes, setTestTypes] = useState(new Set(DEFAULT_TYPES));
   const [showPassword, setShowPassword] = useState(false);
@@ -90,6 +91,7 @@ export default function AutopilotExplorer({ apiBase }) {
           flowUrls: (form.flowUrls || '').split(/\r?\n/).map((u) => u.trim()).filter(Boolean),
           scopeHint: form.scopeHint || '',
           notes: form.notes || '',
+          level3: !!form.level3,
           evidenceFiles: files.map((f) => f.name),
         }),
       });
@@ -293,6 +295,14 @@ export default function AutopilotExplorer({ apiBase }) {
                 <textarea className={inputCls} rows={3} value={form.notes}
                   onChange={(e) => set('notes', e.target.value)} placeholder="Any intent the AI should factor into case design…" />
               </div>
+              <label className="flex items-start gap-2 cursor-pointer select-none">
+                <input type="checkbox" checked={!!form.level3} onChange={(e) => set('level3', e.target.checked)}
+                  className="mt-0.5 accent-app-red" />
+                <span className="text-sm">
+                  <span className="font-medium">Level 3 — verify locators live before writing</span>
+                  <span className="block text-xs text-secondary dark:text-slate-400">Drives the real app to confirm each locator (fewer heal rounds). Slower; non-prod only.</span>
+                </span>
+              </label>
             </div>
           )}
 
