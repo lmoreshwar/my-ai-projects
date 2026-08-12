@@ -351,6 +351,37 @@ function normId(id) {
 }
 
 /**
+ * Compact cross-domain reuse API: every existing Page/Module class and its method NAMES
+ * across ALL shards (bounded). The matched domain shard alone hides helpers from OTHER
+ * domains — e.g. the add-to-cart method needed to set up a cart/checkout precondition lives
+ * in the Inventory shard, not the Cart shard. Surfacing the whole API lets the model reuse a
+ * real setup helper instead of re-implementing the interaction with a fragile locator.
+ * Generic: works for ANY app ("to establish precondition X, is there already a method for it?").
+ */
+function crossDomainApi(fw, man, budget = 2500) {
+  if (!man || !Array.isArray(man.domains)) return '';
+  const modules = [];
+  const pages = [];
+  for (const d of man.domains) {
+    let shard;
+    try { shard = JSON.parse(fs.readFileSync(path.join(fw, d.shard), 'utf-8')); } catch { continue; }
+    for (const m of (shard.modules || [])) {
+      if (m && m.class && (m.methods || []).length) modules.push(`${m.class} (${m.file}): ${m.methods.join(', ')}`);
+    }
+    for (const p of (shard.pages || [])) {
+      if (p && p.class && (p.methods || []).length) pages.push(`${p.class} (${p.file}): ${p.methods.join(', ')}`);
+    }
+  }
+  if (!modules.length && !pages.length) return '';
+  // Modules first — they hold the reusable WORKFLOWS that establish preconditions.
+  const lines = ['Modules (reusable workflows — PREFER these to set up preconditions):', ...modules,
+    'Pages (locators/getters):', ...pages];
+  let text = lines.join('\n');
+  if (text.length > budget) text = text.slice(0, budget) + '\n… (truncated)';
+  return text;
+}
+
+/**
  * Grounding payload for the reuse index. With the v2 sharded manifest this injects a
  * lightweight OVERVIEW of every domain PLUS only the shard for the domain in play
  * (bounded tokens at thousands of tests). Falls back to the raw file for a legacy index.
@@ -370,6 +401,10 @@ function groundingIndex(fw, job, budget) {
   };
   let text = '### Reuse manifest (all domains — READ FIRST, reuse before creating)\n'
     + JSON.stringify(overview, null, 2);
+  const api = crossDomainApi(fw, man, Math.min(2500, Math.max(1200, budget)));
+  if (api) {
+    text += '\n\n### Reusable API across ALL domains (existing Page/Module methods — REUSE these for setup/preconditions; do NOT re-implement an interaction that already has a method)\n' + api;
+  }
   // Find the shard that owns the resolved spec/page/module (shards are grouped by domain,
   // so a spec may live in a shard named after its Page/Module, not its own basename).
   const dom = resolveDomain(fw, job);
@@ -1688,7 +1723,8 @@ function buildGeneratePrompt(job, g, snapshot, existing) {
     '- Locators: ONE semantic strategy per element by default (getByRole/getByLabel/getByPlaceholder; data-test only when no role/label). A SmartLocator fallback chain is allowed ONLY for a fragile element and MUST carry a `// reason:` note (max 3 strategies). No stacked speculative locators.',
     '- Data: use credentials(\'app\') for valid login and src/testdata/testData.json for other data. If new data is needed, emit an EXTENDED testData.json (config layer) preserving all existing keys.',
     '- Authenticated flows: if the target page is only reachable AFTER login (anything past the login screen), the spec MUST authenticate FIRST — in a test.beforeEach that calls the framework login module (navigate to the login page, e.g. loginModule.goto(), THEN loginModule.login(credentials(\'app\').username, credentials(\'app\').password)) and asserts the post-login landing — BEFORE any page-specific steps, exactly like the spec exemplar. NEVER call login() without navigating to the login page first, and never assume an already-authenticated session.',
-    '- Preconditions/state: NEVER assume the target page is already in the required state (e.g. an item already in the cart, a record already selected). Establish every precondition through the app UI FIRST, reusing existing Page/Module methods — e.g. if the case acts on a cart/checkout, add the required item(s) via the existing inventory/product module, THEN open the cart. Reach the target page by the real user journey in the case steps above; do NOT deep-link to a page whose content depends on prior actions and then assert that content exists. A Module navigation helper (goto) must wait only for a STABLE page landmark (title/header/container) that exists regardless of data — never for data-dependent content like a specific row.',
+    '- Preconditions/state: NEVER assume the target page is already in the required state (e.g. an item already in the cart, a record already selected). Establish every precondition through the app UI FIRST. Search the "Reusable API across ALL domains" list above for a method that performs that setup — even if it lives in a DIFFERENT domain (e.g. an add-to-cart / create-record / login method) — and CALL it; only write new interaction code when NO existing method covers the need. Reach the target page by the real user journey in the case steps above; do NOT deep-link to a page whose content depends on prior actions and then assert that content exists. A Module navigation helper (goto) must wait only for a STABLE page landmark (title/header/container) that exists regardless of data — never for data-dependent content like a specific row.',
+    '- Ambiguous controls: when several identical controls exist (e.g. N identical "Add"/"Remove"/"Delete" buttons in a list), NEVER use a bare text/role locator that matches many — Playwright strict mode WILL fail. Prefer an existing Module method that already resolves the right element (e.g. a product-detail add method), or scope to a unique parent/row (by the record/product name), or use an explicit .filter()/.nth() with a `// reason:` note. One unambiguous target per action.',
     '- NEVER truncate, abbreviate, or elide any file. Do not emit placeholders like `/* …trimmed… */`, `// ...`, or `…`. Every emitted file (especially JSON) MUST be its COMPLETE, valid content. JSON must parse (no comments) and keep every existing top-level key.',
     '- If you create a NEW Page/Module, also emit an updated src/fixtures/index.ts (fixture layer) that keeps existing fixtures and registers the new ones.',
     '- Modules use Actions/WaitHelper/WorkflowActions and Logger.step(); specs hold all expect() assertions and import { test, expect } from ../fixtures.',
