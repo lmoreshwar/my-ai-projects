@@ -654,7 +654,7 @@ then a PR opening on pass/partial. If the live walk captures 0 states, tighten `
   (Level 3)" ran & succeeded (proves the toggle threaded through). PENDING: read the "Generate + run" log for `[L3]`
   step lines + the "Verified live actions (LEVEL 3)" evidence block, and confirm the spec used proven locators.
 
-## Settled decisions (SECOND Level-3 cloud run diagnosed + fixed) — commit `<pending>`
+## Settled decisions (SECOND Level-3 cloud run diagnosed + fixed) — commit `28f66c7`
 - **Run 31630445338** (job `L3-TEST-1786561189494`) **SUCCEEDED end-to-end**: the case was generated, compiled, and
   **PASSED** (`✓ TC_L3_CART Add a backpack to the cart @smoke`, `3 passed`). The pipeline works. Level 3 ran cleanly
   (no crash — the `tc.steps` string/array fix `0175142` held). TWO cosmetic issues, both ROOT-CAUSED and now fixed:
