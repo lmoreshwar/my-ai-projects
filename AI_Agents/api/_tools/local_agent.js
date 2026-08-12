@@ -202,7 +202,13 @@ function readGrounding(fw, job) {
 
 function testCaseBlock(job) {
   return (job.testCases || [])
-    .map((tc) => `- [${tc.id}] ${tc.title || ''}${tc.tags ? ` (tags: ${tc.tags})` : ''}`)
+    .map((tc) => {
+      const head = `- [${tc.id}] ${tc.title || ''}${tc.tags ? ` (tags: ${tc.tags})` : ''}`;
+      const steps = String(tc.steps || '').trim();
+      if (!steps) return head;
+      const body = steps.split('\n').map((s) => `    ${s}`).join('\n');
+      return `${head}\n  Journey/steps (follow IN ORDER; establish every precondition these imply through the app UI):\n${body}`;
+    })
     .join('\n');
 }
 
@@ -551,10 +557,17 @@ function captureSnapshot(fw, url, opts = {}) {
         "      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});",
         '      await page.waitForTimeout(800);',
         '    }',
+        '    let out = "";',
+        '    if (loginUrl && user && pass) {',
+        '      // Post-login landing (home/inventory) — evidence for setup steps like adding an item before the target page.',
+        "      const landing = await page.locator('body').ariaSnapshot().catch(() => '');",
+        '      if (landing) out += "### POST-LOGIN LANDING (" + page.url() + ") — use this to set up preconditions\\n" + landing.slice(0, 3500) + "\\n\\n";',
+        '    }',
         "    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });",
         '    await page.waitForTimeout(1000);',
-        "    const snap = await page.locator('body').ariaSnapshot();",
-        '    process.stdout.write(snap);',
+        "    const target = await page.locator('body').ariaSnapshot();",
+        '    out += "### TARGET PAGE (" + targetUrl + ")\\n" + target;',
+        '    process.stdout.write(out);',
         '  } finally { await browser.close(); }',
         '})().catch((e) => { process.stderr.write(String(e)); process.exit(1); });',
       ].join('\n'), 'utf8');
@@ -576,7 +589,7 @@ function captureSnapshot(fw, url, opts = {}) {
     child.on('close', () => {
       clearTimeout(timer);
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* ignore */ }
-      resolve(out.trim().slice(0, 6000));
+      resolve(out.trim().slice(0, 9000));
     });
     child.on('error', () => { clearTimeout(timer); resolve(''); });
   });
@@ -1675,6 +1688,7 @@ function buildGeneratePrompt(job, g, snapshot, existing) {
     '- Locators: ONE semantic strategy per element by default (getByRole/getByLabel/getByPlaceholder; data-test only when no role/label). A SmartLocator fallback chain is allowed ONLY for a fragile element and MUST carry a `// reason:` note (max 3 strategies). No stacked speculative locators.',
     '- Data: use credentials(\'app\') for valid login and src/testdata/testData.json for other data. If new data is needed, emit an EXTENDED testData.json (config layer) preserving all existing keys.',
     '- Authenticated flows: if the target page is only reachable AFTER login (anything past the login screen), the spec MUST authenticate FIRST — in a test.beforeEach that calls the framework login module (navigate to the login page, e.g. loginModule.goto(), THEN loginModule.login(credentials(\'app\').username, credentials(\'app\').password)) and asserts the post-login landing — BEFORE any page-specific steps, exactly like the spec exemplar. NEVER call login() without navigating to the login page first, and never assume an already-authenticated session.',
+    '- Preconditions/state: NEVER assume the target page is already in the required state (e.g. an item already in the cart, a record already selected). Establish every precondition through the app UI FIRST, reusing existing Page/Module methods — e.g. if the case acts on a cart/checkout, add the required item(s) via the existing inventory/product module, THEN open the cart. Reach the target page by the real user journey in the case steps above; do NOT deep-link to a page whose content depends on prior actions and then assert that content exists. A Module navigation helper (goto) must wait only for a STABLE page landmark (title/header/container) that exists regardless of data — never for data-dependent content like a specific row.',
     '- NEVER truncate, abbreviate, or elide any file. Do not emit placeholders like `/* …trimmed… */`, `// ...`, or `…`. Every emitted file (especially JSON) MUST be its COMPLETE, valid content. JSON must parse (no comments) and keep every existing top-level key.',
     '- If you create a NEW Page/Module, also emit an updated src/fixtures/index.ts (fixture layer) that keeps existing fixtures and registers the new ones.',
     '- Modules use Actions/WaitHelper/WorkflowActions and Logger.step(); specs hold all expect() assertions and import { test, expect } from ../fixtures.',
@@ -2807,30 +2821,28 @@ async function coreGenerate(fw, job, log, logs) {
   let run = await runPlaywright(fw, specPaths(), job, { applyScope: true });
   log(run.passed ? '[local] Run PASSED.' : '[local] Run FAILED — attempting one self-heal round.');
 
-  // 3) Self-heal once
-  if (!run.passed) {
+  // 3) Self-heal up to MAX_HEAL_ROUNDS times — each round re-reads the failure and re-runs.
+  const MAX_HEAL_ROUNDS = 2;
+  for (let heal = 1; !run.passed && heal <= MAX_HEAL_ROUNDS; heal++) {
     const errorContext = readErrorContext(fw);
     const healInput = findDomainFiles(fw, job); // heal against the full spec on disk
     const healText = await llmGenerate(buildHealPrompt(job, healInput.length ? healInput : files, run.output, errorContext), buildSystemPrompt());
     const healed = sanitizeFiles(parseFiles(healText));
-    if (healed.length) {
-      const hr = writeFiles(fw, healed);
-      hr.written.forEach((w) => { recordWrite(w); logWrite(w); });
-      allBackups.push(...hr.backups);
-      files = healed;
-      // Register any Page/Module the heal introduced, same additive guarantee as the first pass.
-      const fxHeal = ensureFixturesRegistered(fw, hr.written);
-      if (fxHeal.changed) {
-        if (fxHeal.backup) allBackups.push(fxHeal.backup);
-        log(`[local]   ＋ registered ${fxHeal.added.length} new fixture(s) during heal: ${fxHeal.added.join(', ')}`);
-        recordWrite({ path: 'src/fixtures/index.ts', layer: 'fixture', reused: false, action: 'overwritten' });
-      }
-      log(`[local] Applied heal to ${hr.written.length} file(s). Re-running…`);
-      run = await runPlaywright(fw, specPaths(), job, { applyScope: true });
-      log(run.passed ? '[local] Re-run PASSED after heal.' : '[local] Re-run still FAILED.');
-    } else {
-      log('[local] Heal produced no parseable files.');
+    if (!healed.length) { log('[local] Heal produced no parseable files.'); break; }
+    const hr = writeFiles(fw, healed);
+    hr.written.forEach((w) => { recordWrite(w); logWrite(w); });
+    allBackups.push(...hr.backups);
+    files = healed;
+    // Register any Page/Module the heal introduced, same additive guarantee as the first pass.
+    const fxHeal = ensureFixturesRegistered(fw, hr.written);
+    if (fxHeal.changed) {
+      if (fxHeal.backup) allBackups.push(fxHeal.backup);
+      log(`[local]   ＋ registered ${fxHeal.added.length} new fixture(s) during heal: ${fxHeal.added.join(', ')}`);
+      recordWrite({ path: 'src/fixtures/index.ts', layer: 'fixture', reused: false, action: 'overwritten' });
     }
+    log(`[local] Applied heal ${heal}/${MAX_HEAL_ROUNDS} to ${hr.written.length} file(s). Re-running…`);
+    run = await runPlaywright(fw, specPaths(), job, { applyScope: true });
+    log(run.passed ? `[local] Re-run PASSED after heal ${heal}.` : `[local] Re-run ${heal} still FAILED.`);
   }
 
   // 4) Refresh the reuse index so the next job sees the new/updated assets.
