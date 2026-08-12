@@ -636,10 +636,16 @@ then a PR opening on pass/partial. If the live walk captures 0 states, tighten `
   REAL captured CLI output (refs correct, `generic` excluded, locator + URL extracted), and the full
   open/goto/snapshot/fill-by-ref/click-by-ref/close choreography verified live against saucedemo (login → refs
   e11/e13/e15 → filled/clicked by ref → landed on `/inventory.html`). Generic — BASE_URL + creds only.
-- **NOT YET DONE (next session):** wire the Generate CI (`blast-runner.yml` in the framework repo) to
-  `npm install -g @playwright/cli@latest` + `npx playwright install --with-deps chromium` + run the generate step
-  under `xvfb-run -a` (proven pattern from smoke run 31627800092), gated by `BLAST_LEVEL3=1` env. Then a cloud run
-  with the flag on to confirm the "Verified live actions (LEVEL 3)" block appears and the FIRST-attempt spec uses
-  proven locators (fewer/no heal rounds). v1 drives the PRIMARY journey ONCE (feature-level); v2 = per-case drive;
-  v2.5 = the LLM also writes each step live and re-picks on a miss without a full re-run.
+- **CI WIRED (framework main `d3e5265`):** `blast-runner.yml` gained a `level3` boolean `workflow_dispatch` input
+  (default false). When ON: a gated step runs `npm install -g @playwright/cli@latest` + `sudo apt-get install -y
+  xvfb`; the "Generate + run" step gets `BLAST_LEVEL3: ${{ inputs.level3 && '1' || '' }}` and is prefixed with
+  `xvfb-run -a ` (via `${{ inputs.level3 && 'xvfb-run -a ' || '' }}`) so child `playwright-cli` spawns have a
+  display. `.blast-l3-state.json` added to framework `.gitignore`; the PR step's `add-paths: src/** .ai-memory/**`
+  already prevents any CLI/state artifact from landing in the PR (and `driveFeatureLive` deletes the state file in
+  `finally`). OFF by default → zero impact on normal runs.
+- **NOT YET DONE (next session):** trigger a cloud run with the `level3` toggle ON (Actions → BLAST Runner → Run
+  workflow, or have the API forward `level3: 'true'` in the dispatch `inputs`) and confirm the log shows `[L3]`
+  steps + the "Verified live actions (LEVEL 3)" block, and the FIRST-attempt spec uses proven locators (fewer/no
+  heal rounds). v1 drives the PRIMARY journey ONCE (feature-level); v2 = per-case drive; v2.5 = the LLM also writes
+  each step live and re-picks on a miss without a full re-run.
 
