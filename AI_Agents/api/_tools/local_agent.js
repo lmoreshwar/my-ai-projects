@@ -178,6 +178,53 @@ function resolveSkill(job) {
 const LOW_TPM_PLATFORMS = new Set(['groq']);
 
 /** Read framework grounding: rules, persona, skills, reuse index, and real exemplars. */
+/**
+ * The AUTHORITATIVE public-method contract of the framework's shared action wrappers
+ * (Actions/WaitHelper/WorkflowActions). The LLM otherwise sees only ONE page + ONE module
+ * exemplar and GUESSES wrapper methods that don't exist (e.g. `waitHelper.waitForURL`) or passes
+ * the wrong argument type (e.g. `actions.press(object)` — press takes a string) → runtime crashes
+ * the heal cannot recover. Surfacing the exact method set makes "call only methods that exist"
+ * enforceable. Generic: reads whatever wrappers the framework ships under src/utils; skips any absent.
+ */
+function wrapperApi(fw, budget = 2200) {
+  const wrappers = [
+    ['Actions', 'this.actions', 'src/utils/Actions.ts'],
+    ['WaitHelper', 'this.waitHelper', 'src/utils/WaitHelper.ts'],
+    ['WorkflowActions', 'this.workflowActions', 'src/utils/WorkflowActions.ts'],
+  ];
+  const SKIP = new Set(['constructor', 'if', 'for', 'while', 'switch', 'catch', 'return', 'await', 'function']);
+  const blocks = [];
+  for (const [cls, inst, rel] of wrappers) {
+    let src;
+    try { src = fs.readFileSync(path.join(fw, rel), 'utf-8'); } catch { continue; }
+    const sigs = [];
+    const re = /(^|\n)[ \t]*(public\s+|private\s+|protected\s+)?(async\s+)?([a-zA-Z_]\w*)\s*\(/g;
+    let m;
+    while ((m = re.exec(src))) {
+      if (m[2] && m[2].trim() !== 'public') continue; // skip private/protected helpers
+      const name = m[4];
+      if (SKIP.has(name)) continue;
+      // Balanced-paren scan of the parameter list (handles nested parens like `() => Promise`).
+      let i = re.lastIndex - 1, depth = 0, params = '';
+      for (; i < src.length; i++) {
+        const ch = src[i];
+        if (ch === '(') { depth++; if (depth === 1) continue; }
+        else if (ch === ')') { depth--; if (depth === 0) { i++; break; } }
+        params += ch;
+      }
+      // Confirm it is a method DECLARATION — the param list is followed by an opening body
+      // brace, optionally with a `: ReturnType` annotation. A method CALL is followed by
+      // `;`/`)`/`,`/`.` instead, so this excludes calls inside bodies. (if/for/while are SKIPped.)
+      if (!/^\s*(:\s*[^\n{;]+)?\{/.test(src.slice(i))) continue;
+      sigs.push(`${name}(${params.replace(/\s+/g, ' ').replace(/,\s*$/, '').trim()})`);
+    }
+    if (sigs.length) blocks.push(`${cls} — call as \`${inst}.<method>()\`:\n  ${[...new Set(sigs)].join('\n  ')}`);
+  }
+  let text = blocks.join('\n');
+  if (text.length > budget) text = text.slice(0, budget) + '\n… (truncated)';
+  return text;
+}
+
 function readGrounding(fw, job) {
   const active = resolveSkill(job);
   const lean = LOW_TPM_PLATFORMS.has(config().platform);
@@ -191,6 +238,7 @@ function readGrounding(fw, job) {
     skillActive: safeRead(path.join(fw, '.github', 'skills', active.dir, 'SKILL.md'), b.skill),
     skillHeal: b.heal ? safeRead(path.join(fw, '.github', 'skills', 'pw-self-healing', 'SKILL.md'), b.heal) : '',
     capabilities: groundingIndex(fw, job, b.caps),
+    wrapperApi: wrapperApi(fw, lean ? 1200 : 2200),
     pageEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'pages'), 'Page.ts'), b.ex),
     moduleEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'modules'), 'Module.ts'), b.ex),
     specEx: safeRead(pickSpecExemplar(path.join(fw, 'src', 'tests')), b.spec),
@@ -1783,6 +1831,7 @@ function buildGeneratePrompt(job, g, snapshot, existing, liveWalk) {
         + '\n## Style exemplar — Spec (custom fixtures, credentials(), testData)\n' + g.specEx,
     '\n## Test data (src/testdata/testData.json — reuse keys; extend, never shrink)\n' + (g.testData || '{}'),
     '\n## Fixtures (src/fixtures/index.ts — register any NEW Page/Module here)\n' + (g.fixtures || ''),
+    g.wrapperApi ? '\n## Wrapper API contract (AUTHORITATIVE — the shared wrappers expose ONLY these methods. Call them with these EXACT signatures and argument types. NEVER invent a wrapper method (e.g. there is NO waitForURL — use waitForUrlContains/waitForUrlMatch, or `await this.page.waitForURL(...)`). Respect argument types (e.g. press(key) takes a STRING; to press a key ON an element use pressOn(target, key)). For anything not covered here, use the framework `page` object directly.)\n' + g.wrapperApi : '',
     g.smartLocator ? '\n## SmartLocator API (use only for a justified fallback)\n' + g.smartLocator : '',
     '\n## Requirements',
     '- Reuse existing pages/modules/locators/fixtures from the index and exemplars before adding anything new.',
@@ -1798,7 +1847,8 @@ function buildGeneratePrompt(job, g, snapshot, existing, liveWalk) {
     '- If you create a NEW Page/Module, also emit an updated src/fixtures/index.ts (fixture layer) that keeps existing fixtures and registers the new ones.',
     '- Modules use Actions/WaitHelper/WorkflowActions and Logger.step(); specs hold all expect() assertions and import { test, expect } from ../fixtures.',
     '- Module wiring (prevents "Cannot read properties of undefined"): a Module MUST create EVERY collaborator it calls in its CONSTRUCTOR from the injected `page` — its own Page object, its Actions/WaitHelper/WorkflowActions, AND any OTHER Module it delegates to (assign `this.<collaborator> = new <CollaboratorClass>(page)`). NEVER call `this.<x>.method()` unless `this.<x> = new <Class>(page)` is assigned in that class constructor. Do NOT rely on dependency injection between modules — each module self-initializes what it uses.',
-    '- Wrapper/collaborator methods MUST EXIST (prevents "TypeError: <obj>.<method> is not a function"): the shared wrappers (Actions/WaitHelper/WorkflowActions) and every Page/Module expose a FIXED set of methods. Call ONLY methods you can SEE in the exemplars, the existing domain files, or the Reusable API above. NEVER invent a wrapper method (e.g. a `.goBack()` on the Actions wrapper). If a step needs browser navigation, use the framework `page` object directly (`await this.page.goBack()`); for any other action reuse an existing wrapper/Module method. If NO real method/control matches a step\'s intent, DROP that step rather than call a method that does not exist.',
+    '- Wrapper/collaborator methods MUST EXIST (prevents "TypeError: <obj>.<method> is not a function"): the shared wrappers (Actions/WaitHelper/WorkflowActions) and every Page/Module expose a FIXED set of methods. Call ONLY methods listed in the Wrapper API contract above, the exemplars, the existing domain files, or the Reusable API. NEVER invent a wrapper method (e.g. a `.goBack()` or `.waitForURL()` on a wrapper) and NEVER pass the wrong argument type (e.g. an object to `press(key: string)`). If a step needs browser navigation, use the framework `page` object directly (`await this.page.goBack()`, `await this.page.waitForURL(...)`); for any other action reuse an existing wrapper/Module method. If NO real method/control matches a step\'s intent, DROP that step rather than call a method that does not exist.',
+    '- NEVER modify the body or signature of an EXISTING Page/Module method — existing tests depend on it verbatim, and changing it (e.g. adding a wait/navigation to an existing navigate method) will BREAK already-passing tests. Only ADD new methods/locators. If a new case needs different behavior, write a NEW method; leave every existing method exactly as-is.',
     '- Test-data keys: every key the spec reads from testData.json MUST exist in the testData.json you emit — read `testData.<a>.<b>` ONLY if you also add `<a>.<b>` with a concrete valid value (a missing key throws "Cannot read properties of undefined"). Keep every existing key.',
     snapshot ? '- Base locators on the live snapshot above; do not invent selectors it does not support.' : '',
     '- If a file you emit already exists, return its FULL content — keep ALL existing tests/locators/methods and ADD the new ones. Never delete existing functionality.',
@@ -1818,9 +1868,11 @@ function buildHealPrompt(job, files, runOutput, errorContext, g) {
       : '',
     'If the error is a ReferenceError (e.g. "beforeAll is not defined") or "No tests found", the code used a bare test-runner global. Replace bare beforeAll/afterAll/beforeEach/afterEach with test.beforeAll/test.afterAll/test.beforeEach/test.afterEach and ensure test/expect are imported from the same fixture the exemplar spec uses.',
     'If the error is "TypeError: Cannot read properties of undefined (reading \'<x>\')", a collaborator or data key was used but never initialized — fix the ROOT cause, never silence it with optional chaining. When <x> is a METHOD, a Module called `this.<obj>.<x>()` but never assigned `this.<obj> = new <Class>(page)` in its constructor — add that assignment in the constructor of the class that owns the call. When <x> is a string/array op (e.g. repeat, length, split) on testData, the spec reads a testData.json key that is missing — add that key with a concrete valid value and return the full testData.json.',
-    'If the error is "TypeError: <obj>.<method> is not a function", the code called a method that does NOT exist on that object — an invented wrapper/collaborator method (e.g. a `.goBack()` on the Actions wrapper). Do NOT define the missing method on a shared wrapper. Replace the call with a REAL method that already exists: a wrapper method used in the exemplars/existing modules, or a Page/Module method from the Reusable API. For browser navigation use the framework `page` object directly (`await this.page.goBack()`). If the step\'s whole intent is a fabricated/nonsensical action (a control or behavior that does not exist in the evidence), REMOVE that step instead of inventing a method for it.',
+    'If the error is "TypeError: <obj>.<method> is not a function", the code called a method that does NOT exist on that object — an invented wrapper/collaborator method (e.g. a `.goBack()` or `.waitForURL()` on a wrapper). Do NOT define the missing method on a shared wrapper. Replace the call with a REAL method from the Wrapper API contract below, the exemplars/existing modules, or a Page/Module method from the Reusable API. For browser navigation use the framework `page` object directly (`await this.page.goBack()`, `await this.page.waitForURL(...)`). If the step\'s whole intent is a fabricated/nonsensical action (a control or behavior that does not exist in the evidence), REMOVE that step instead of inventing a method for it.',
+    'If the error is an argument-type error like "keyboard.press: key: expected string, got object" (or any "expected string, got object"), a string-only wrapper method was called with an object/locator. Fix the CALL to match the Wrapper API contract: pass a plain string key to `press(key)`; to press a key ON a specific element use `pressOn(target, key)` (or the locator\'s own `.press(key)`). Never wrap the argument to silence it — pass the correct type.',
     journeyBlock ? '\n## Discovered journey (the REAL page order + controls — use this to add any missing precondition steps to reach the target page)\n' + journeyBlock : '',
     g && g.capabilities ? '\n## Reusable API across ALL domains — CALL an existing setup/navigation method instead of re-implementing it\n' + g.capabilities : '',
+    g && g.wrapperApi ? '\n## Wrapper API contract (the ONLY methods on the shared wrappers — replace any invented/mis-typed wrapper call with one of these EXACT signatures; use the `page` object for anything not listed)\n' + g.wrapperApi : '',
     '\n## Current files\n' + current,
     '\n## Test run output (tail)\n' + runOutput.slice(-6000),
     errorContext ? '\n## error-context.md (page snapshot AT FAILURE — diagnose which page the browser is actually on from this)\n' + errorContext.slice(-3000) : '',
