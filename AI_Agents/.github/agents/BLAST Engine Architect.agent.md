@@ -719,3 +719,19 @@ then a PR opening on pass/partial. If the live walk captures 0 states, tighten `
   re-navigates + re-snapshots once, and on still-empty logs a 200-char preview — so any future 0-steps is diagnosable
   from the log, not guesswork. Landing-url start (`28f66c7`) + numeric-id (`TC_501`) fixes remain in force.
 
+## Settled decisions (FULL WEBSITE→AUTOPILOT→LEVEL 3→PR proven — the product goal) — run 31635752482, keep it
+- **THE MILESTONE the whole effort targeted:** a job launched from the BLAST WEBSITE (Autopilot, Level 3 box) ran
+  end-to-end in the cloud, zero manual dispatch script. Log (job AUTO-1786564896589) confirms every stage green:
+  Explore ran on the laptop tunnel (`Snapshot captured (5230 chars, authenticated)` → Render's refreshed
+  `EXPLORE_WORKER_URL` works); Level 2 verified 8 states; **Level 3 drove 12 PROVEN live steps** (`[L3] ✓ step 1:
+  click "Add to cart"` … `Captured 12 PROVEN action(s)`); codegen → 1 self-heal → `Re-run PASSED after heal 1` →
+  `3 passed` → `Verification passed … TC_025` → **`PR=true`**. The website checkbox path (`888cb0f`) + the
+  frame-scoped-ref fix (`ee9e873`) both proven in production.
+- **Website deploy note:** the UI is served by RENDER (`blast-test-agent.onrender.com` serves BOTH the SPA and the
+  API; verified `level3` IS in the deployed bundle `/assets/index-*.js`). A code change to `client/` needs a Render
+  redeploy of that service to appear; the Level 3 checkbox lives in the Autopilot **Advanced** section.
+- **v2 polish (NOT blocking — v1 shipped green):** Level 3 v1 drives the primary journey ONCE and can WANDER — this
+  run took 12 steps incl. bouncing in/out of the item page and Open/Close Menu (exploratory, not goal-directed). The
+  proven actions still fed codegen and the test passed. v2 = per-case, goal-directed drive (stop as soon as the
+  case's target state is reached; prefer the shortest verified path). Generic — BASE_URL + creds only.
+
