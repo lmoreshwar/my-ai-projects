@@ -345,8 +345,24 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   key the spec reads must be emitted in testData.json). `buildHealPrompt` now maps
   `Cannot read properties of undefined (reading '<x>')` to its root cause (wire the constructor when <x> is a
   method; add the missing testData key when <x> is a string/array op) instead of silencing with `?.`. Generic.
+- **Test skipped the precondition journey → target form never appeared** (job AUTO run 31596483339, all 8
+  checkout cases: `getByLabel('First Name')` visible timeout at `Actions.ts:24`; TC_030 also read a missing
+  `negativeZipCodeCheckoutInfo` key). Root cause = the JOURNEY GAP: codegen only had a 2-page snapshot, so it
+  wrote code that jumped straight to the checkout form without login → add item → cart → checkout, and the form
+  fields never rendered. Fix (commit `3333b9c`) = **journey pipe**: `compactJourney(featureModel)` persists the
+  crawl's bounded per-page real-control map on `job.journey` (`automation.js /explore`); `dispatchWorkflow`
+  carries it in the CI payload; `buildGeneratePrompt` renders it under "Discovered journey (EVIDENCE …)" telling
+  codegen to reach the target by walking those pages and NOT deep-link. Generic — BASE_URL + creds still the
+  only app-specific inputs.
 
-## Open work (the priority)
-Implement the **journey pipe** (persist `featureModel` → include compact `journey` in payload → feed it to
-`buildGeneratePrompt` as evidence) so the engine self-establishes preconditions on ANY app — closing the
-"it should do it by itself" gap. Then verify with a cloud run and a passing PR.
+## Settled decisions (journey pipe) — DONE, keep it
+- `compactJourney` caps to ≤8 steps, names only, ≤12 items/page — safe for `workflow_dispatch` input size.
+- Empty journey (e.g. AI Native mode with no explore) renders nothing → no regression.
+- The journey is EVIDENCE, not code — the LLM still authors the walk from the real control names.
+
+## Open work (the next priority)
+Journey pipe is implemented (`3333b9c`). VERIFY it with a fresh Autopilot run: the generate log should show the
+"Discovered journey" evidence taking effect (the spec now logs in, adds the item, opens the cart, then reaches
+checkout) and a PR opening on pass/partial. If a run still skips a precondition, tighten the evidence rendering
+(order/labels), not the app-specific wiring.
+
