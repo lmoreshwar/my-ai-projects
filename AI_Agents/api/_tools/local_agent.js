@@ -2290,7 +2290,20 @@ function runPlaywright(fw, specRelPaths, job, opts = {}) {
     const proj = browserProject(job);
     if (proj) args.push(`--project=${proj}`);
     if (smoke) args.push('--grep=@Smoke');
-    if (job && job.parallel === 'Serial') args.push('--workers=1');
+    // Parallelism: default to MAX practical parallel for fast feedback — one worker per selected
+    // case, capped (BLAST_MAX_WORKERS, default 8), which overrides the framework's conservative CI
+    // default. 'Serial' forces one worker; a numeric job.parallel is honored verbatim.
+    if (job && job.parallel === 'Serial') {
+      args.push('--workers=1');
+    } else {
+      const cap = parseInt(process.env.BLAST_MAX_WORKERS, 10) || 8;
+      const explicit = parseInt(job && job.parallel, 10);
+      const caseCount = job && Array.isArray(job.testCases) ? job.testCases.length : 0;
+      const workers = Number.isFinite(explicit) && explicit > 0
+        ? explicit
+        : Math.min(Math.max(caseCount, 2), cap);
+      args.push(`--workers=${workers}`);
+    }
     args.push(`--reporter=${reporters}`);
     const env = { ...envForRun(job), PLAYWRIGHT_JSON_OUTPUT_NAME: 'test-results/results.json' };
     const child = spawn('npx', args, { cwd: fw, env, shell: true });
