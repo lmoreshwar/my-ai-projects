@@ -480,6 +480,30 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   full Playwright suite, the main time sink; Generate runs in CI, NOT the user's laptop). OPERATIONAL: the wrong-spec
   placement + `getByRole('combobox',{name:'Sort'})` sort-locator misses are STALE-worker authoring (`360389c` not
   live) — only a laptop worker restart on current `main` fixes those.
+- **Append-only made members added THIS run un-fixable → Logger-static + Page-methods + phantom `this.waitHelper`
+  couldn't heal** (job AUTO-1786555998913, run 31623396334, feature "Product sorting"). GOOD NEWS FIRST: the worker
+  restart activated authoring (`360389c`) — correct spec, correct feature scope — and the append-only merge
+  (`9a9aa12`) prevented the constructor regression (`➕ merged`, no existing test broke). But the LLM's NEW sort code
+  had 3 architecture violations: (1) called `Logger.step(...)` **statically** (`TypeError: _Logger.Logger.step is not
+  a function`; `Logger` has a static `create()` but INSTANCE `step`/`info` — must be
+  `private readonly logger = Logger.create('<Module>')` then `this.logger.step`); (2) referenced `this.waitHelper` in
+  `InventoryModule`, which its constructor never declares → TS2339; (3) put WORKFLOW methods **inside `InventoryPage`**
+  (locators-only) using `this.logger`/`this.actions`/`this.inventoryPage` that a Page doesn't have. Root cause of the
+  STUCK state: my own `9a9aa12` append-only was TOO absolute — it treated ALL current members as immutable, so once a
+  broken NEW member was merged in, compile-fix/heal got `🛡 kept` and could NOT correct it (2 rounds, no progress).
+  The regression guard became a fixability trap. Fix (commit `d0710d8`, CI Generate → effective next run WITHOUT a
+  worker restart): **baseline-aware merge.** `captureBaselines(fw)` snapshots the member NAMES of every existing
+  `src/pages`/`src/modules` file at JOB START (via `memberBlocks`); `coreGenerate` captures it once and threads a
+  `baselines` map into all 3 `writeFiles` call sites (main gen, compile-fix, heal). New `mergeExisting(current, next,
+  layer, baseNames)` replaces `additiveMerge` in the append-only branch: **baseline members stay VERBATIM (immutable
+  — no existing-test regression)**, but members ADDED this run are still correctable — if `next` re-emits one its
+  block is swapped in (`out.replace(cb.text, nb.text)`), and brand-new members are appended. No `baselines` arg =
+  pure append-only (safe fallback). ALSO hardened the shared system prompt: pages = LOCATORS ONLY (no methods, no
+  this.actions/this.logger/this.waitHelper, no collaborators — all workflow logic goes in the module); when extending
+  an existing module use ONLY constructor-declared collaborators (never a phantom `this.waitHelper`); call step()/info()
+  ONLY on `this.logger`, NEVER `Logger.step()` statically. Generic — framework util/Logger names are framework-universal,
+  only BASE_URL + creds stay app-specific. Verified: baseline member preserved verbatim, broken new member corrected,
+  brand-new member appended, no duplicates.
 - Empty journey (e.g. AI Native mode with no explore) renders nothing → no regression.
 - The journey is EVIDENCE, not code — the LLM still authors the walk from the real control names.
 
