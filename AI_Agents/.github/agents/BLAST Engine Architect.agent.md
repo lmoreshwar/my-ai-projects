@@ -329,6 +329,16 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   "Suppressing PR" without the actual Playwright error, though `parseRunSummary` captured it. Fix (commit
   `3313913`): surface `failureReasons` in the log, the returned object, the CI result, and the heal context.
   Now every red run states exactly what/where/why. Applies to ANY app.
+- **Generated modules not wired → "Cannot read properties of undefined"** (job AUTO-1786536147936, all 8 cases:
+  `CheckoutModule` called `this.cartModule.navigateToCart()` and `CartModule.navigateToCart()` used an
+  uninitialized page/actions; TC_025 read `testData.checkoutInfo.boundaryPostalCodeCharacter` which was never
+  emitted). Root cause: the LLM composed modules but forgot to instantiate collaborators in the constructor,
+  and read a testData key it never wrote; self-heal didn't reliably fix it. Fix: `buildGeneratePrompt` now has
+  a **Module-wiring rule** (every collaborator — own Page, Actions, and any other Module — MUST be
+  `new`-assigned in the constructor from `page`; no DI between modules) and a **Test-data-keys rule** (every
+  key the spec reads must be emitted in testData.json). `buildHealPrompt` now maps
+  `Cannot read properties of undefined (reading '<x>')` to its root cause (wire the constructor when <x> is a
+  method; add the missing testData key when <x> is a string/array op) instead of silencing with `?.`. Generic.
 
 ## Open work (the priority)
 Implement the **journey pipe** (persist `featureModel` → include compact `journey` in payload → feed it to

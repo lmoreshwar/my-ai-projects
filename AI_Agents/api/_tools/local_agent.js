@@ -1728,6 +1728,8 @@ function buildGeneratePrompt(job, g, snapshot, existing) {
     '- NEVER truncate, abbreviate, or elide any file. Do not emit placeholders like `/* …trimmed… */`, `// ...`, or `…`. Every emitted file (especially JSON) MUST be its COMPLETE, valid content. JSON must parse (no comments) and keep every existing top-level key.',
     '- If you create a NEW Page/Module, also emit an updated src/fixtures/index.ts (fixture layer) that keeps existing fixtures and registers the new ones.',
     '- Modules use Actions/WaitHelper/WorkflowActions and Logger.step(); specs hold all expect() assertions and import { test, expect } from ../fixtures.',
+    '- Module wiring (prevents "Cannot read properties of undefined"): a Module MUST create EVERY collaborator it calls in its CONSTRUCTOR from the injected `page` — its own Page object, its Actions/WaitHelper/WorkflowActions, AND any OTHER Module it delegates to (e.g. `this.cartModule = new CartModule(page)`). NEVER call `this.<x>.method()` unless `this.<x> = new <Class>(page)` is assigned in that class constructor. Do NOT rely on dependency injection between modules — each module self-initializes what it uses.',
+    '- Test-data keys: every key the spec reads from testData.json MUST exist in the testData.json you emit — read `testData.<a>.<b>` ONLY if you also add `<a>.<b>` with a concrete valid value (a missing key throws "Cannot read properties of undefined"). Keep every existing key.',
     snapshot ? '- Base locators on the live snapshot above; do not invent selectors it does not support.' : '',
     '- If a file you emit already exists, return its FULL content — keep ALL existing tests/locators/methods and ADD the new ones. Never delete existing functionality.',
   ].filter(Boolean).join('\n');
@@ -1742,6 +1744,7 @@ function buildHealPrompt(job, files, runOutput, errorContext) {
       ? 'DEBUG MODE: first classify the failure (Locator Change / Script Issue / UI/App Bug / Environment / Unknown) as a top-of-file `// [DEBUG] <category>: <reason>` comment. If it is a genuine UI/App Bug, DO NOT mask it — keep the assertion honest and annotate `// [DEBUG] APP BUG:`. Never weaken an assertion just to go green.'
       : '',
     'If the error is a ReferenceError (e.g. "beforeAll is not defined") or "No tests found", the code used a bare test-runner global. Replace bare beforeAll/afterAll/beforeEach/afterEach with test.beforeAll/test.afterAll/test.beforeEach/test.afterEach and ensure test/expect are imported from the same fixture the exemplar spec uses.',
+    'If the error is "TypeError: Cannot read properties of undefined (reading \'<x>\')", a collaborator or data key was used but never initialized — fix the ROOT cause, never silence it with optional chaining. When <x> is a METHOD (e.g. navigateToCart, click), a Module called `this.<obj>.<x>()` but never assigned `this.<obj> = new <Class>(page)` in its constructor — add that assignment in the constructor of the class that owns the call. When <x> is a string/array op (repeat, length, split) on testData, the spec reads a testData.json key that is missing — add that key with a concrete valid value and return the full testData.json.',
     '\n## Current files\n' + current,
     '\n## Test run output (tail)\n' + runOutput.slice(-6000),
     errorContext ? '\n## error-context.md\n' + errorContext.slice(-3000) : '',
