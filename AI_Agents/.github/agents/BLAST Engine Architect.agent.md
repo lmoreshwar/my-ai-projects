@@ -589,3 +589,25 @@ should reproduce that proven walk (login → add item → cart → checkout) on 
 then a PR opening on pass/partial. If the live walk captures 0 states, tighten `driveFlow` autoDiscover heuristics
 (clickForward primaryRe / cart nav) — NOT app-specific wiring. Then consider Level 2.5 (LLM drives the CLI live).
 
+## Settled decisions (Level 3 feasibility PROVEN — @playwright/cli runs on GitHub Actions)
+- **PROVEN (run 31627800092, framework repo):** Microsoft's `@playwright/cli` (the `playwright-cli` binary, NOT the
+  standard `playwright test` CLI) runs HEADLESS on `ubuntu-latest` GitHub Actions with NO laptop/tunnel. Install =
+  `npm install -g @playwright/cli@latest` + `npx playwright install --with-deps chromium`; run under `xvfb-run -a` so
+  the browser can start on the display-less runner. The smoke workflow
+  `.github/workflows/playwright-cli-smoke.yml` (framework repo, `workflow_dispatch`) opened a browser → `goto`
+  saucedemo → `snapshot` and returned REAL refs: `textbox "Username" [ref=e11]`, `textbox "Password" [ref=e13]`,
+  `button "Login" [ref=e15]`. This is the SAME open→snapshot→build-locators loop the local `pw-new-automation` skill
+  uses — now confirmed cloud-capable. So Level 3 (LLM drives `playwright-cli` live during Generate) is feasible fully
+  in the cloud; the laptop is needed ONLY for Explore today, and ONLY if the app is on laptop-localhost (public URLs
+  reach the runner directly). RECONCILIATION of the earlier "CLI won't work on Actions": that referred to the
+  INTERACTIVE shared browser / `open_browser_page` MCP + the `show --annotate` command (needs a human to approve a
+  share prompt) — NOT the terminal `playwright-cli` open/goto/snapshot/click/fill/generate-locator commands, which are
+  `Bash(playwright-cli:*)` and run non-interactively on Actions. Level 3 uses the terminal path only.
+- **Level 3 plan (agentic codegen — the whack-a-mole ender):** the engine's LLM becomes the "brain" that drives
+  `playwright-cli` step-by-step during Generate — snapshot the REAL page → pick a locator that provably EXISTS →
+  verify the action → only THEN write that step to the Page/Module/Spec; on a miss, re-pick from the live snapshot
+  immediately (not after a full suite run). This eliminates the whole CLASS of blind-guessing failures (invented
+  method, wrong locator, missing precondition) instead of patching them one runtime crash at a time. Build behind a
+  flag (`BLAST_LEVEL3=1`) with the current static-snapshot path as a SAFE fallback; prove it on one feature, then
+  default it. Generic — BASE_URL + creds only.
+
