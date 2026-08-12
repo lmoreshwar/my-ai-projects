@@ -2394,24 +2394,31 @@ function countMembers(content, layer) {
 }
 
 /**
- * Structural guard for JSON data files (e.g. src/testdata/testData.json). The
- * length-only guard is too weak here — an LLM can emit a truncated object (a
- * "…trimmed…" placeholder) that still clears the 60% length bar. Returns a reason
- * string when the overwrite is UNSAFE (keep the existing file), or '' when safe.
- *   - new content must be strict, parseable JSON (rejects comments/placeholders)
- *   - must not DROP any top-level key that already exists (never shrink data)
+ * DEEP-MERGE two JSON data files (e.g. src/testdata/testData.json). The LLM usually re-emits
+ * testData.json with only the SUBSET of keys the new case needs; the old guard treated the
+ * omitted keys as "dropped" and protected the file wholesale — so the genuinely-NEW keys the
+ * case reads were lost (→ `undefined` at runtime, e.g. missing `messages.lastNameRequired`).
+ * Instead, UNION the two objects: keep every existing key/value VERBATIM (existing tests depend
+ * on them), recurse into nested objects, and ADD only keys that are new in `next`. Purely
+ * additive — never drops or overrides an existing value. Returns the merged JSON string, or
+ * null when either side isn't a parseable JSON object (caller should protect the file then).
  */
-function jsonOverwriteViolation(current, next) {
-  let cur;
-  try { cur = JSON.parse(current); } catch { return ''; } // current isn't strict JSON — nothing to protect
-  let nxt;
-  try { nxt = JSON.parse(next); } catch { return 'new content is not valid JSON (truncated or contains comments/placeholders)'; }
+function mergeJsonData(current, next) {
+  let cur; let nxt;
+  try { cur = JSON.parse(current); } catch { return null; } // current isn't strict JSON — nothing to merge into
+  try { nxt = JSON.parse(next); } catch { return null; }    // next truncated/placeholder — protect the working file
   const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
-  if (isObj(cur) && isObj(nxt)) {
-    const dropped = Object.keys(cur).filter((k) => !(k in nxt));
-    if (dropped.length) return `would drop existing top-level key(s): ${dropped.join(', ')}`;
-  }
-  return '';
+  if (!isObj(cur) || !isObj(nxt)) return null;
+  const merge = (a, b) => {
+    const out = { ...a };
+    for (const k of Object.keys(b)) {
+      if (!(k in out)) out[k] = b[k];                                  // new key → add
+      else if (isObj(out[k]) && isObj(b[k])) out[k] = merge(out[k], b[k]); // both objects → recurse
+      // else: existing scalar/array — keep existing (reuse-first; never override live data)
+    }
+    return out;
+  };
+  return JSON.stringify(merge(cur, nxt), null, 2);
 }
 
 /**
@@ -2658,6 +2665,34 @@ function writeFiles(fw, files, baselines = null) {
         written.push({ path: relFromRoot, layer: f.layer, reused: true, action: 'reused' });
         continue; // identical — leave existing file untouched
       }
+      // DEEP-MERGE for an existing JSON data file (e.g. testData.json): the LLM re-emits only
+      // the keys the new case needs, so a whole-file overwrite would drop existing keys and a
+      // whole-file protect would drop the NEW keys the case reads. Union both — keep every
+      // existing key/value, add only the new ones — so new cases get their data AND existing
+      // tests keep theirs. Handled BEFORE the length guard so a shorter subset never trips it.
+      if (relFromRoot.endsWith('.json')) {
+        const merged = mergeJsonData(current, next);
+        if (merged === null) {
+          // next isn't a parseable JSON object (truncated/placeholder) — keep the working file.
+          report.protected += 1;
+          written.push({ path: relFromRoot, layer: f.layer, reused: true, action: 'protected', reason: 'new content is not valid JSON' });
+          continue;
+        }
+        const mergedOut = merged.endsWith('\n') ? merged : merged + '\n';
+        if (mergedOut.trim() === current.trim()) {
+          report.reused += 1;
+          written.push({ path: relFromRoot, layer: f.layer, reused: true, action: 'protected' });
+          continue;
+        }
+        const bak = path.join(root, '.blast-backups', `${relFromRoot}.bak-${ts}`);
+        fs.mkdirSync(path.dirname(bak), { recursive: true });
+        fs.copyFileSync(abs, bak);
+        backups.push(path.relative(root, bak).replace(/\\/g, '/'));
+        fs.writeFileSync(abs, mergedOut, 'utf8');
+        report.overwritten += 1;
+        written.push({ path: relFromRoot, layer: f.layer, reused: false, action: 'merged' });
+        continue;
+      }
       // APPEND-ONLY for an existing Page/Module: the LLM must NEVER rewrite an existing
       // method/getter/constructor — existing tests depend on them. A new-case regen that
       // rewrote InventoryModule dropped its constructor wiring and broke 5 passing tests
@@ -2701,15 +2736,6 @@ function writeFiles(fw, files, baselines = null) {
         report.protected += 1;
         written.push({ path: relFromRoot, layer: f.layer, reused: true, action: 'protected' });
         continue;
-      }
-      if (relFromRoot.endsWith('.json')) {
-        const bad = jsonOverwriteViolation(current, next);
-        if (bad) {
-          // Data-file guard: invalid JSON or dropped keys — keep the working file.
-          report.protected += 1;
-          written.push({ path: relFromRoot, layer: f.layer, reused: true, action: 'protected', reason: bad });
-          continue;
-        }
       }
       const bak = path.join(root, '.blast-backups', `${relFromRoot}.bak-${ts}`);
       fs.mkdirSync(path.dirname(bak), { recursive: true });
