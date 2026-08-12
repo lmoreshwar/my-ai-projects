@@ -119,6 +119,43 @@ function firstMatchingFile(dir, suffix) {
 }
 
 /**
+ * Pick the most instructive spec exemplar. Prefer one that demonstrates an
+ * authenticated flow (a test.beforeEach that logs in via the framework login
+ * module) so the generator copies the "log in FIRST" pattern for auth-gated
+ * pages; fall back to the first spec otherwise. App-agnostic — it matches the
+ * framework's own login convention, not any specific site.
+ */
+function pickSpecExemplar(dir) {
+  try {
+    const specs = fs.readdirSync(dir).filter((f) => f.endsWith('.spec.ts'));
+    if (!specs.length) return '';
+    const authFirst = specs.find((f) => {
+      const t = safeRead(path.join(dir, f), 20000);
+      return /beforeEach/.test(t) && /\.login\s*\(/.test(t);
+    });
+    return path.join(dir, authFirst || specs[0]);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Build heuristic-login auth for the generate-time snapshot from non-transient
+ * sources only: APP_USERNAME/APP_PASSWORD (each app sets its own creds) plus
+ * job.loginUrl/BASE_URL. Returns null when creds or a login target are missing
+ * (snapshot then stays anonymous). App-agnostic — no site-specific values.
+ */
+function snapshotAuth(job) {
+  const username = process.env.APP_USERNAME || process.env.EXPLORE_USER || '';
+  const password = process.env.APP_PASSWORD || process.env.EXPLORE_PASS || '';
+  if (!username || !password) return null;
+  let loginUrl = (job && job.loginUrl && String(job.loginUrl).trim()) || process.env.BASE_URL || '';
+  if (!loginUrl && job && job.url) { try { loginUrl = new URL(job.url).origin; } catch { loginUrl = ''; } }
+  if (!loginUrl) return null;
+  return { loginUrl, username, password };
+}
+
+/**
  * Map a UI skill label to its framework skill folder + a short tag. Selecting a
  * skill in the UI now actually drives which SKILL.md grounds the agent AND which
  * behavior mode it runs in (new / modify / debug / heal / visual).
@@ -156,7 +193,7 @@ function readGrounding(fw, job) {
     capabilities: groundingIndex(fw, job, b.caps),
     pageEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'pages'), 'Page.ts'), b.ex),
     moduleEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'modules'), 'Module.ts'), b.ex),
-    specEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'tests'), '.spec.ts'), b.spec),
+    specEx: safeRead(pickSpecExemplar(path.join(fw, 'src', 'tests')), b.spec),
     testData: safeRead(path.join(fw, 'src', 'testdata', 'testData.json'), b.data),
     fixtures: safeRead(path.join(fw, 'src', 'fixtures', 'index.ts'), b.fix),
     smartLocator: b.smart ? safeRead(path.join(fw, 'src', 'utils', 'SmartLocator.ts'), b.smart) : '',
@@ -1637,6 +1674,7 @@ function buildGeneratePrompt(job, g, snapshot, existing) {
     '- APPEND-ONLY: NEVER renumber, reorder, or change the id or title of any EXISTING test. Add the new case using EXACTLY the TC id given in the task, appended AFTER the existing tests. Every existing test keeps its exact id and title verbatim.',
     '- Locators: ONE semantic strategy per element by default (getByRole/getByLabel/getByPlaceholder; data-test only when no role/label). A SmartLocator fallback chain is allowed ONLY for a fragile element and MUST carry a `// reason:` note (max 3 strategies). No stacked speculative locators.',
     '- Data: use credentials(\'app\') for valid login and src/testdata/testData.json for other data. If new data is needed, emit an EXTENDED testData.json (config layer) preserving all existing keys.',
+    '- Authenticated flows: if the target page is only reachable AFTER login (anything past the login screen), the spec MUST authenticate FIRST — in a test.beforeEach that calls the framework login module (navigate to the login page, e.g. loginModule.goto(), THEN loginModule.login(credentials(\'app\').username, credentials(\'app\').password)) and asserts the post-login landing — BEFORE any page-specific steps, exactly like the spec exemplar. NEVER call login() without navigating to the login page first, and never assume an already-authenticated session.',
     '- NEVER truncate, abbreviate, or elide any file. Do not emit placeholders like `/* …trimmed… */`, `// ...`, or `…`. Every emitted file (especially JSON) MUST be its COMPLETE, valid content. JSON must parse (no comments) and keep every existing top-level key.',
     '- If you create a NEW Page/Module, also emit an updated src/fixtures/index.ts (fixture layer) that keeps existing fixtures and registers the new ones.',
     '- Modules use Actions/WaitHelper/WorkflowActions and Logger.step(); specs hold all expect() assertions and import { test, expect } from ../fixtures.',
@@ -2519,8 +2557,9 @@ async function coreGenerate(fw, job, log, logs) {
   const jobFile = writeJobFile(fw, job);
   if (jobFile) log(`[local] Job brief written: ${jobFile}`);
   log('[local] Capturing live page snapshot for evidence-based locators…');
-  const snapshot = await captureSnapshot(fw, job.url);
-  log(snapshot ? `[local] Snapshot captured (${snapshot.length} chars).` : '[local] Snapshot unavailable — falling back to exemplars.');
+  const snapAuth = snapshotAuth(job);
+  const snapshot = await captureSnapshot(fw, job.url, snapAuth ? { auth: snapAuth } : {});
+  log(snapshot ? `[local] Snapshot captured (${snapshot.length} chars${snapAuth ? ', authenticated' : ''}).` : '[local] Snapshot unavailable — falling back to exemplars.');
   const existing = findDomainFiles(fw, job);
   if (existing.length) log(`[local] Extending existing domain files: ${existing.map((e) => e.rel).join(', ')}`);
 
