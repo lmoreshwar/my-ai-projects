@@ -1041,10 +1041,11 @@ function buildAuthorPrompt(job, model) {
   return [
     `You are a senior QA architect (15+ years, manual + automation). Design up to ${max} high-value test cases for the "${job.feature}" feature of the web app at ${job.url}.`,
     'Use ONLY the widgets that actually exist in the evidence below — NEVER invent fields, buttons, or links that are not present.',
+    `STAY SCOPED to "${job.feature}": design cases about the controls and outcomes of the feature's OWN screen (${job.url}). The evidence may include earlier pages (e.g. login) and pages further along the flow — those are only the PATH to reach the feature (setup/navigation), NOT extra test surface. Do NOT author a case whose primary purpose is validating a different page's form (e.g. a downstream address/checkout form) unless the feature under test IS that form.`,
     'VERBATIM control names: every button/link/field you name in steps, testData, or expectedResults MUST be an EXACT single observed label copied character-for-character from the evidence. NEVER merge, concatenate, or paraphrase two labels into one — e.g. do NOT combine a generic action word ("Go back", "Cancel") with a real label ("Continue Shopping") into "Go back Continue Shopping". If a case is about a secondary/back/cancel action, use that ONE control\'s exact observed label and nothing else. If no single observed control matches the behavior, do not write the case.',
     `Cover these test types: ${types}. Add a type ONLY if it appears in that list. Each case must map to exactly ONE type via its "type" field.`,
     'Prioritise by value: one strong positive, then the most likely real defects. Every case must be a DISTINCT behavior — no two cases with the same action + data. Do not pad to reach the max.',
-    multiStep ? `This feature spans ${model.steps.length} pages/steps — include at least ONE end-to-end positive that traverses every step in order to the final success/confirmation state.` : '',
+    multiStep ? `The evidence spans ${model.steps.length} pages, but only the ones belonging to "${job.feature}" are the test target. Include ONE end-to-end positive that reaches the feature's real success/confirmation state, walking any earlier pages only as setup — do NOT turn each downstream page into its own case.` : '',
     'Coverage floor: always include one positive happy path; if Negative is selected, include one required-field negative for EACH input. (These are added automatically if you omit them — so spend your budget on higher-value cases.)',
     'When the evidence lists OBSERVED error/success messages, assert those EXACT strings verbatim — never invent message text the app did not produce.',
     '',
@@ -1237,6 +1238,29 @@ const coversSecondary = (cases, btn) => {
 };
 
 /**
+ * The feature's OWN screen — the walked step whose URL matches job.url — as a shallow model view
+ * with that screen's inputs/buttons/links/controls. Keeps the deterministic coverage floor scoped
+ * to the requested feature: pages reached only while navigating there are the PATH to the feature
+ * (setup), not extra test surface. Falls back to the full union when there is no per-step data or no
+ * URL match, so single-page explores keep their current behavior (no regression).
+ */
+function featureScreen(job, model) {
+  const steps = Array.isArray(model.steps) ? model.steps : [];
+  if (steps.length < 2) return model;
+  const norm = (u) => { try { return new URL(u).pathname.replace(/\/+$/, '') || '/'; } catch { return String(u || '').trim(); } };
+  const want = norm(job.url);
+  const hit = steps.find((s) => norm(s.url) === want);
+  if (!hit) return model;
+  return {
+    ...model,
+    inputs: Array.isArray(hit.inputs) ? hit.inputs : [],
+    buttons: Array.isArray(hit.buttons) ? hit.buttons : [],
+    links: Array.isArray(hit.links) ? hit.links : [],
+    controls: Array.isArray(hit.controls) ? hit.controls : [],
+  };
+}
+
+/**
  * Guarantee a minimum coverage floor regardless of what the LLM returned: one positive happy path,
  * and (when Negative is selected) one required-field negative per named input. Floor cases are
  * grounded in real widgets and always survive the maxCases cap.
@@ -1244,25 +1268,29 @@ const coversSecondary = (cases, btn) => {
 function ensureCoverageFloor(cases, job, model, feature) {
   const max = Number(job.maxCases) > 0 ? Number(job.maxCases) : 8;
   const selected = new Set((job.testTypes && job.testTypes.length ? job.testTypes : ['Positive', 'Negative']).map(canonicalCaseType));
-  const named = model.inputs.filter((i) => i.name);
+  // Scope the floor to the feature's own screen so a focused feature is not padded with form fields
+  // or buttons discovered elsewhere on the multi-page walk (which are only the path to reach it).
+  const fm = featureScreen(job, model);
+  const named = fm.inputs.filter((i) => i.name);
   const additions = [];
   if (selected.has('Positive') && named.length && !cases.some((c) => caseType(c) === 'Positive')) {
-    additions.push(shapeCase(synthHappyPath(job, model), feature, true));
+    additions.push(shapeCase(synthHappyPath(job, fm), feature, true));
   }
   if (selected.has('Negative') && named.length) {
     for (const inp of named) {
-      if (!coversRequiredNeg(cases, inp.name)) additions.push(shapeCase(synthRequiredNeg(job, model, inp), feature, true));
+      if (!coversRequiredNeg(cases, inp.name)) additions.push(shapeCase(synthRequiredNeg(job, fm, inp), feature, true));
     }
   }
   if (selected.has('Boundary') && named.length) {
     for (const inp of named) {
-      if (!coversBoundary(cases, inp.name)) additions.push(shapeCase(synthBoundary(job, model, inp), feature, true));
+      if (!coversBoundary(cases, inp.name)) additions.push(shapeCase(synthBoundary(job, fm, inp), feature, true));
     }
   }
-  // Secondary/abort action (Cancel/Back/Reset) — guaranteed when the control is actually on screen.
-  const secondary = secondaryButton(model);
+  // Secondary/abort action (Cancel/Back/Reset) — guaranteed when the control is actually on the
+  // feature's OWN screen (not a downstream page reached only while navigating).
+  const secondary = secondaryButton(fm);
   if ((selected.has('Negative') || selected.has('Positive')) && secondary && !coversSecondary(cases, secondary)) {
-    additions.push(shapeCase(synthSecondaryAction(job, model, secondary), feature, true));
+    additions.push(shapeCase(synthSecondaryAction(job, fm, secondary), feature, true));
   }
   // Merge + de-dup by normalized title (LLM cases win ties, keeping their richer wording).
   const seen = new Set();
