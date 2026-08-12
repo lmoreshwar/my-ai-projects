@@ -438,7 +438,29 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   value or use the no-arg navigation. Generic; runs in CI Generate → effective next run without a worker restart.
   OPERATIONAL: the checkout/sort over-reach cases (TC_025/029) persist until the laptop worker is restarted on
   current engine code (authoring fix `360389c`).
-- `compactJourney` caps to ≤8 steps, names only, ≤12 items/page — safe for `workflow_dispatch` input size.
+- **Logger called statically + new Page locator getter never landed → 2 fixable failures on the FIRST PR run**
+  (job AUTO-1786551894338 — MILESTONE: the compile gate `9f90ee9` caught 21 TS errors, auto-fixed testData keys,
+  and a PR finally OPENED: PARTIAL, verified=true, 4 cases passed). Two remaining issues. (1) The LLM called
+  `Logger.step(...)`/`Logger.info(...)` STATICALLY → TS2339; the compile gate oscillated step↔info and never
+  converged because the engine never SHOWED it the Logger API. Root cause = same class as the wrapper bug: the LLM
+  guesses methods on a framework class whose shape it's never shown. `Logger` has a STATIC factory `create(context)`
+  but INSTANCE `step`/`info` — it must be `private logger = Logger.create('<Ctx>')` then `this.logger.step(...)`.
+  (2) `TypeError: <page>.productSortDropdown is not a function` — the new locator getter never landed because the
+  reuse guard `isDestructiveOverwrite` REJECTED the whole InventoryPage overwrite (log `🛡 kept … InventoryPage.ts`):
+  the LLM's regenerated Page added `productSortDropdown` but DROPPED other existing getters, so the guard protected
+  the old file and the new getter was lost; heal couldn't recover (it kept editing the spec). Fix (commit `77872ba`,
+  runs in CI Generate → effective next run WITHOUT a worker restart): (a) `wrapperApi(fw)` now ALSO reads
+  `src/utils/Logger.ts`, tags static-vs-instance methods (`sigsOf` gained a `static` capture group), and renders a
+  Logger block with an explicit note — "CREATE ONCE via the STATIC factory `Logger.create('<Context>')` stored as
+  `this.logger`, then call INSTANCE methods; NEVER call step()/info() statically". Flows automatically into
+  buildGeneratePrompt/buildHealPrompt/buildCompilePrompt (all render `g.wrapperApi`). (b) `writeFiles` now, when a
+  Page/Module overwrite would be destructive, tries `additiveMerge(current, next, layer)` FIRST: `memberBlocks`
+  parses both real methods/getters AND this framework's arrow-function property locators (`name = (): Locator => …`),
+  and the merge keeps the working file intact and APPENDS only the genuinely-new members before the class's closing
+  brace (new log tag `➕ merged`). Existing coverage preserved AND the new getter lands. Only when nothing new can be
+  added does it protect as before. Generic — framework util/Logger names are framework-universal, not app names; only
+  BASE_URL + creds stay app-specific. (3) Off-topic checkout cases (TC_029–032) appended to the wrong spec =
+  STALE-worker authoring (fix `360389c` not live) — resolved by a worker restart, NOT code.
 - Empty journey (e.g. AI Native mode with no explore) renders nothing → no regression.
 - The journey is EVIDENCE, not code — the LLM still authors the walk from the real control names.
 
