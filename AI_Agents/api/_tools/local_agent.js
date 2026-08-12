@@ -1039,10 +1039,16 @@ async function llmNextAction(job, tc, trace, snapshotYaml, refs) {
   const done = trace.length
     ? trace.map((t, i) => `${i + 1}. ${t.action} "${t.name}"${t.value ? ` = "${t.value}"` : ''}${t.navigated ? ` → ${t.url}` : ''}`).join('\n')
     : '(none yet)';
-  const steps = (tc.steps || []).map((s, i) => {
-    const txt = typeof s === 'string' ? s : (s.action || s.step || s.description || JSON.stringify(s));
-    return `${i + 1}. ${txt}`;
-  }).join('\n');
+  // tc.steps may be an array (authored) OR a single string (UI/job payload) — handle both.
+  let steps = '';
+  if (Array.isArray(tc.steps)) {
+    steps = tc.steps.map((s, i) => {
+      const txt = typeof s === 'string' ? s : (s.action || s.step || s.description || JSON.stringify(s));
+      return `${i + 1}. ${txt}`;
+    }).join('\n');
+  } else if (tc.steps) {
+    steps = String(tc.steps);
+  }
   const expected = Array.isArray(tc.expectedResults) ? tc.expectedResults.join('; ') : (tc.expectedResults || '');
   const prompt = [
     'You are driving a REAL browser to reproduce ONE test case, choosing ONE next action at a time from the LIVE page.',
