@@ -1772,20 +1772,24 @@ function buildGeneratePrompt(job, g, snapshot, existing) {
   ].filter(Boolean).join('\n');
 }
 
-function buildHealPrompt(job, files, runOutput, errorContext) {
+function buildHealPrompt(job, files, runOutput, errorContext, g) {
   const current = files.map((f) => `===FILE:${f.rel}|${f.layer}===\n${f.content}\n===ENDFILE===`).join('\n');
+  const journeyBlock = renderJourney(job.journey);
   return [
-    'The generated Playwright test FAILED. Fix the locators/logic and return the corrected files in the same ===FILE=== format.',
-    'Prefer semantic locators. Only change what is needed to make the test pass. Keep the 3-layer split.',
+    'The generated Playwright test FAILED. Fix the ROOT cause and return the corrected files in the same ===FILE=== format.',
+    'Only change what is needed to make the test pass. Keep the 3-layer split (pages = locators, modules = workflows, specs = assertions).',
+    'DIAGNOSE THE PAGE FIRST (most important). The error-context.md below is a snapshot of the page AT THE MOMENT OF FAILURE. Before editing ANY locator, compare that snapshot to the page the failing step expected. If it shows a DIFFERENT page — e.g. the step waited for a form field / detail element but the snapshot shows a list, landing, cart, or login page — then the test SKIPPED A PRECONDITION and never navigated there. The correct fix is to ADD the missing setup/navigation steps to REACH that page (follow the Discovered journey below IN ORDER and CALL existing setup methods from the Reusable API), NOT to change the locator or extend the Page object. A "waiting for X to be visible" timeout is almost NEVER a locator problem when X\'s page was never reached. Only treat it as a locator problem when the snapshot shows the CORRECT page but the element name/role differs.',
     resolveSkill(job).key === 'debug'
       ? 'DEBUG MODE: first classify the failure (Locator Change / Script Issue / UI/App Bug / Environment / Unknown) as a top-of-file `// [DEBUG] <category>: <reason>` comment. If it is a genuine UI/App Bug, DO NOT mask it — keep the assertion honest and annotate `// [DEBUG] APP BUG:`. Never weaken an assertion just to go green.'
       : '',
     'If the error is a ReferenceError (e.g. "beforeAll is not defined") or "No tests found", the code used a bare test-runner global. Replace bare beforeAll/afterAll/beforeEach/afterEach with test.beforeAll/test.afterAll/test.beforeEach/test.afterEach and ensure test/expect are imported from the same fixture the exemplar spec uses.',
     'If the error is "TypeError: Cannot read properties of undefined (reading \'<x>\')", a collaborator or data key was used but never initialized — fix the ROOT cause, never silence it with optional chaining. When <x> is a METHOD, a Module called `this.<obj>.<x>()` but never assigned `this.<obj> = new <Class>(page)` in its constructor — add that assignment in the constructor of the class that owns the call. When <x> is a string/array op (e.g. repeat, length, split) on testData, the spec reads a testData.json key that is missing — add that key with a concrete valid value and return the full testData.json.',
+    journeyBlock ? '\n## Discovered journey (the REAL page order + controls — use this to add any missing precondition steps to reach the target page)\n' + journeyBlock : '',
+    g && g.capabilities ? '\n## Reusable API across ALL domains — CALL an existing setup/navigation method instead of re-implementing it\n' + g.capabilities : '',
     '\n## Current files\n' + current,
     '\n## Test run output (tail)\n' + runOutput.slice(-6000),
-    errorContext ? '\n## error-context.md\n' + errorContext.slice(-3000) : '',
-  ].join('\n');
+    errorContext ? '\n## error-context.md (page snapshot AT FAILURE — diagnose which page the browser is actually on from this)\n' + errorContext.slice(-3000) : '',
+  ].filter(Boolean).join('\n');
 }
 
 /** Parse the ===FILE=== blocks into {rel, layer, content}. */
@@ -2923,7 +2927,7 @@ async function coreGenerate(fw, job, log, logs) {
   log(run.passed ? '[local] Run PASSED.' : '[local] Run FAILED — attempting one self-heal round.');
 
   // 3) Self-heal up to MAX_HEAL_ROUNDS times — each round re-reads the failure and re-runs.
-  const MAX_HEAL_ROUNDS = 2;
+  const MAX_HEAL_ROUNDS = 3;
   for (let heal = 1; !run.passed && heal <= MAX_HEAL_ROUNDS; heal++) {
     const errorContext = readErrorContext(fw);
     // The exact per-test error from the JSON report — guarantees the heal sees the real
@@ -2935,7 +2939,7 @@ async function coreGenerate(fw, job, log, logs) {
       .join('\n\n');
     const healContext = [failText, errorContext].filter(Boolean).join('\n\n');
     const healInput = findDomainFiles(fw, job); // heal against the full spec on disk
-    const healText = await llmGenerate(buildHealPrompt(job, healInput.length ? healInput : files, run.output, healContext), buildSystemPrompt());
+    const healText = await llmGenerate(buildHealPrompt(job, healInput.length ? healInput : files, run.output, healContext, grounding), buildSystemPrompt());
     const healed = sanitizeFiles(parseFiles(healText));
     if (!healed.length) { log('[local] Heal produced no parseable files.'); break; }
     const hr = writeFiles(fw, healed);
