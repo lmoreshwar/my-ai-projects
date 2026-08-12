@@ -378,8 +378,26 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   function` mapping → replace with a real method or `this.page.goBack()`, or remove a fabricated step. Generic.
   OPERATIONAL: the merged-label case will keep being authored until the laptop Explore worker is restarted on
   current engine code.
-
-## Settled decisions (journey pipe) — DONE, keep it
+- **Invented wrapper method + wrong arg type + MODIFIED an existing method → broke passing tests** (job
+  AUTO-1786547864698: 12 failed / 1 passed). Three distinct failures, one root cause. (1)
+  `TypeError: this.waitHelper.waitForURL is not a function` at `InventoryModule.ts:21` — the LLM invented
+  `waitForURL` (the real methods are `waitForUrlContains`/`waitForUrlMatch`) AND injected it into the EXISTING
+  `navigateToProductDetailPage`, breaking the already-passing TC_001–005 that depend on that method. (2)
+  `Error: keyboard.press: key: expected string, got object` at `Actions.ts:230` (TC_029/030) — the LLM called the
+  string-only `press(key)` with an object. (3) off-topic checkout cases persisted (STALE worker, not the codegen
+  bug). Root cause of (1)+(2): the earlier `9ee3c59` rule TOLD the LLM "call only methods that exist" but the engine
+  NEVER SHOWED it the wrapper method list — grounding surfaced Page/Module methods (`crossDomainApi`) but not the
+  Actions/WaitHelper/WorkflowActions signatures — so the LLM guessed a plausible-but-wrong name/arg-type. 3 heal
+  rounds couldn't recover because heal was equally blind to the real contract. Fix (commit `37712a0`):
+  `wrapperApi(fw)` reads `src/utils/{Actions,WaitHelper,WorkflowActions}.ts` and extracts the EXACT public method
+  signatures (balanced-paren scan; skips private/missing files); `readGrounding` returns it as `g.wrapperApi`;
+  `buildGeneratePrompt` + `buildHealPrompt` render it as an AUTHORITATIVE "Wrapper API contract" block. Added a
+  `buildGeneratePrompt` rule: NEVER modify the body/signature of an EXISTING Page/Module method (existing tests
+  depend on it) — only APPEND new methods. Added a `buildHealPrompt` mapping for "expected string, got object" →
+  pass a string key or use `pressOn(target, key)`. Generic: framework wrapper names are framework-universal (not
+  app-under-test names); only BASE_URL + creds stay app-specific. Runs in the CI Generate phase → effective on the
+  next cloud run WITHOUT a worker restart (unlike authoring fixes). Correct partial success: pruned the 12, opened a
+  PR for the 1 passing case (TC_031).
 - `compactJourney` caps to ≤8 steps, names only, ≤12 items/page — safe for `workflow_dispatch` input size.
 - Empty journey (e.g. AI Native mode with no explore) renders nothing → no regression.
 - The journey is EVIDENCE, not code — the LLM still authors the walk from the real control names.
