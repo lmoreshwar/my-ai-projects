@@ -1075,7 +1075,7 @@ async function llmNextAction(job, tc, trace, snapshotYaml, refs) {
  * to steer the walk. Secure auth: an env-cred library login saves a storage state which the CLI
  * `state-load`s — credentials NEVER touch the CLI argv/logs. Best-effort; returns '' on any issue.
  */
-async function driveFeatureLive(fw, job, tc, auth, log) {
+async function driveFeatureLive(fw, job, tc, auth, log, opts = {}) {
   if (process.env.BLAST_LEVEL3 !== '1') return '';
   if (!auth || !auth.username || !auth.password) return '';
   if (String(job.environment || '').toLowerCase().startsWith('prod')) return '';
@@ -1089,14 +1089,16 @@ async function driveFeatureLive(fw, job, tc, auth, log) {
   const authed = fs.existsSync(stateFile);
   log(authed ? '[L3] Storage state captured ✓ — the CLI session will be authenticated with no secrets in argv.' : '[L3] No storage state captured — continuing without auth (public pages only).');
 
+  // Start on the authenticated landing page (not the login root) so the agent has real controls.
+  const startUrl = (opts && opts.startUrl) || job.url;
   const session = `l3-${Date.now().toString(36)}`;
   const trace = [];
   const maxSteps = Number(process.env.BLAST_LEVEL3_STEPS) > 0 ? Number(process.env.BLAST_LEVEL3_STEPS) : 12;
   try {
     await runCli(fw, session, ['open']);
     if (authed) await runCli(fw, session, ['state-load', stateFile]);
-    await runCli(fw, session, ['goto', job.url]);
-    log(`[L3] Driving the live app for "${tc.title || tc.id || job.feature}" — verifying up to ${maxSteps} action(s)…`);
+    await runCli(fw, session, ['goto', startUrl]);
+    log(`[L3] Driving the live app for "${tc.title || tc.id || job.feature}" from ${startUrl} — verifying up to ${maxSteps} action(s)…`);
     for (let step = 1; step <= maxSteps; step++) {
       const rawSnap = await runCli(fw, session, ['snapshot']);
       const yaml = (rawSnap.match(/```yaml\n([\s\S]*?)```/) || [, ''])[1] || rawSnap;
@@ -1110,7 +1112,7 @@ async function driveFeatureLive(fw, job, tc, auth, log) {
       const target = refs.find((r) => r.ref === decision.ref);
       if (!target) { log(`[L3] LLM picked ref ${decision.ref} not present live — stopping (anti-hallucination guard).`); break; }
       const act = String(decision.action || 'click').toLowerCase();
-      const beforeUrl = extractPageUrl(rawSnap) || job.url;
+      const beforeUrl = extractPageUrl(rawSnap) || startUrl;
       let cliOut = '';
       if (act === 'fill' || act === 'type') {
         const val = String(decision.value == null ? '' : decision.value);
@@ -3206,6 +3208,10 @@ async function coreGenerate(fw, job, log, logs) {
   const snapAuth = snapshotAuth(job);
   const snapshot = await captureSnapshot(fw, job.url, snapAuth ? { auth: snapAuth } : {});
   log(snapshot ? `[local] Snapshot captured (${snapshot.length} chars${snapAuth ? ', authenticated' : ''}).` : '[local] Snapshot unavailable — falling back to exemplars.');
+  // The authenticated landing URL captureSnapshot reached after login — Level 3 starts HERE (not the
+  // login root) so the live drive begins on a real in-app page with actionable controls.
+  const landingM = String(snapshot || '').match(/POST-LOGIN LANDING \(([^)]+)\)/);
+  const l3StartUrl = landingM ? landingM[1].trim() : '';
   // LEVEL 2 — verified live walk: drive the REAL app on the runner (login → auto-discover the
   // journey → capture the real controls + success/validation messages at each state) so codegen
   // writes from a PROVEN walk instead of guessing. Non-prod only; safe fallback to the static snapshot.
@@ -3278,7 +3284,7 @@ async function coreGenerate(fw, job, log, logs) {
   let liveTrace = '';
   if (process.env.BLAST_LEVEL3 === '1' && snapAuth && !isProdEnv && newCases.length) {
     try {
-      liveTrace = await driveFeatureLive(fw, job, newCases[0], snapAuth, log);
+      liveTrace = await driveFeatureLive(fw, job, newCases[0], snapAuth, log, { startUrl: l3StartUrl });
     } catch (e) {
       log(`[local] Level 3: live drive skipped (${e.message}) — using standard evidence.`);
     }

@@ -654,3 +654,24 @@ then a PR opening on pass/partial. If the live walk captures 0 states, tighten `
   (Level 3)" ran & succeeded (proves the toggle threaded through). PENDING: read the "Generate + run" log for `[L3]`
   step lines + the "Verified live actions (LEVEL 3)" evidence block, and confirm the spec used proven locators.
 
+## Settled decisions (SECOND Level-3 cloud run diagnosed + fixed) — commit `<pending>`
+- **Run 31630445338** (job `L3-TEST-1786561189494`) **SUCCEEDED end-to-end**: the case was generated, compiled, and
+  **PASSED** (`✓ TC_L3_CART Add a backpack to the cart @smoke`, `3 passed`). The pipeline works. Level 3 ran cleanly
+  (no crash — the `tc.steps` string/array fix `0175142` held). TWO cosmetic issues, both ROOT-CAUSED and now fixed:
+- **Issue A — false "VERIFICATION FAILED → no PR" (TEST-DATA bug, not engine):** the framework's id detectors
+  (`normId` `/TC[_-]?0*(\d+)/`, `specTestIds` `/TC[_-]?\d+[A-Za-z_]*/`, `idsInTitle` same) ALL require a **digit**
+  right after `TC_`. The dispatch used a LETTER id `TC_L3_CART` (no digit) → undetectable → verifier wrongly said
+  "not present" → suppressed the PR even though the test was added and passed. FIX: use NUMERIC ids (`TC_\d+`, e.g.
+  `TC_501`) in dispatch payloads. Framework convention is numeric; not hardening the detectors for letter-ids.
+- **Issue B — Level 3 drove 0 live steps:** the LLM returned `done` on the first snapshot because the CLI started on
+  the SauceDemo **login ROOT** (`/`), which stays the login page even when authenticated, and the agent is (correctly)
+  forbidden from typing credentials → nothing valid to click. **FIX (engine, generic):** `coreGenerate` now extracts
+  the authenticated landing URL from the snapshot (`/POST-LOGIN LANDING \(([^)]+)\)/` → `l3StartUrl`) and passes it as
+  `driveFeatureLive(..., { startUrl })`; `driveFeatureLive` `goto`s that in-app page (falls back to `job.url`). So the
+  live drive begins on a real page with actionable controls. Re-dispatch with a NUMERIC id to see `[L3] ✓ step N…`
+  and the "Verified live actions (LEVEL 3)" block. Both times Level 3 fell back SAFELY — the safety net works.
+- **STILL PENDING (user's stated priority):** wire the Level 3 toggle into the BLAST website — API `automation.js`
+  `/generate` + Autopilot route destructure `level3` from `req.body` → `job.level3`; optional `AutomationJob` field;
+  a "Level 3 — verify live before writing" checkbox on the classic form + `AutopilotExplorer.jsx`. `dispatchWorkflow`
+  already forwards `job.level3`. Keep opt-in until a few clean green Level 3 runs, then default on.
+
