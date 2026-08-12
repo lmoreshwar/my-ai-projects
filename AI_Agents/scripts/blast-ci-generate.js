@@ -78,7 +78,9 @@ async function main() {
   const missingCases = result.missingCases || [];
   const verified = result.verified !== false;
   if (!verified) {
-    console.error(`[blast-ci] VERIFICATION FAILED — requested case(s) not automated: ${missingCases.join(', ')}. Suppressing PR (has_changes=false).`);
+    console.error(`[blast-ci] VERIFICATION FAILED — no requested case was automated${missingCases.length ? ` (pending: ${missingCases.join(', ')})` : ''}. Suppressing PR (has_changes=false).`);
+  } else if (missingCases.length) {
+    console.log(`[blast-ci] Partial success — opening a PR for the passing case(s); deferred to the next run: ${missingCases.join(', ')}.`);
   }
   const openPr = verified && changed.length > 0;
 

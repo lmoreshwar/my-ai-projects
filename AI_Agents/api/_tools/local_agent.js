@@ -2510,8 +2510,18 @@ async function generateAndRun(job, onLog) {
     if (typeof onLog === 'function') { try { onLog(m); } catch { /* streaming best-effort */ } }
   };
   log(`[local] Provider active — framework at ${fw}.`);
-  // Phase 1: run the WHOLE generation inside a git transaction so dev is never mutated in place.
   const requested = (job.testCases || []).map((tc) => normId(tc.id)).filter(Boolean);
+  // In CI (GitHub Actions) the WORKFLOW owns the branch + PR: it checks out a clean tree and its
+  // create-pull-request step commits the working-tree changes. Running the local git transaction
+  // here would commit to a side branch and then RESTORE the tree — wiping the very changes the PR
+  // step needs. So in CI we generate directly in the working tree; locally we keep the isolate-
+  // on-a-branch transaction that protects the dev tree.
+  const keepWorktree = process.env.GITHUB_ACTIONS === 'true' || process.env.BLAST_KEEP_WORKTREE === '1';
+  if (keepWorktree) {
+    log('[local] CI mode — generating in the working tree; the pipeline opens the PR from these changes (no local branch/restore).');
+    return await coreGenerate(fw, job, log, logs);
+  }
+  // Phase 1: run the WHOLE generation inside a git transaction so dev is never mutated in place.
   const txn = await beginGenerationTxn(fw, job, log);
   if (!txn.ok) {
     log(`[local] ⛔ Cannot start a clean generation: ${txn.reason}`);
@@ -2890,7 +2900,10 @@ async function coreGenerate(fw, job, log, logs) {
     automatedCases,
     failedCases,
     missingCases: [...new Set([...missingCases, ...failedCases])],
-    verified: missingCases.length === 0 && failedCases.length === 0,
+    // Ship green work: a PR opens when at least one requested case was automated AND passed.
+    // Present-but-failing cases were pruned above and are deferred to the next run, so the
+    // committed spec is always all-green; only a total miss (zero automated) suppresses the PR.
+    verified: requestedIds.length === 0 ? true : automatedCases.length > 0,
     logs,
   };
 }
@@ -2976,7 +2989,12 @@ async function commitGenerationTxn(fw, job, log) {
   await git(fw, ['add', '--', ...TXN_PATHS]);
   const ids = (job.testCases || []).map((tc) => tc.id).filter(Boolean).join(', ');
   const msg = `test(automation): ${job.jobId} — ${job.project || job.feature || 'suite'} (${ids || 'cases'})`;
-  const commit = await git(fw, ['commit', '-m', `"${msg.replace(/"/g, "'")}"`]);
+  // Inline identity so the commit never fails on a bare runner with no global git user set.
+  const commit = await git(fw, [
+    '-c', 'user.name=BLAST Automation',
+    '-c', 'user.email=blast-automation@users.noreply.github.com',
+    'commit', '-m', `"${msg.replace(/"/g, "'")}"`,
+  ]);
   if (commit.code !== 0 && !/nothing to commit/i.test(commit.output)) {
     if (log) log(`[txn] commit warning: ${commit.output.slice(-160)}`);
     return '';
