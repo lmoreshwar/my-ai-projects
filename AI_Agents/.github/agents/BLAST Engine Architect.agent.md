@@ -307,12 +307,28 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   reuse-first precondition rule and an ambiguous-multi-match-locator rule in `buildGeneratePrompt`. Generic.
 - ID ledger reassigns new cases to the next free ID (TC_001→TC_023 is NOT a bug).
 - Do not delete modules/pages/capabilities; do not force a visual run.
+- **Failure observability + plan step transparency** (commit `3313913`) — DONE, keep it. `coreGenerate` now
+  builds `failureReasons` from `run.summary.tests` (title + exact Playwright error), logs them under
+  `✖ FAILURE REASON(S)`, returns them, and folds them into the heal context so heal sees the real error even
+  when `error-context.md` is missing. `blast-ci-generate.js` prints them + adds `failureReasons` to the result.
+  `buildPlan` now renders each new case's authored steps/testData/expected via `renderCaseSteps`, and flags a
+  title-only case (⚠ no steps) so the reviewer sees the gap. Generic (no app specifics).
+- **Autopilot cases ALWAYS carry steps** — verified. Author prompt requires numbered `steps`/`testData`/
+  `expectedResults` in strict JSON; the deterministic coverage-floor (`synthHappyPath`/`synthRequiredNeg`/
+  `synthBoundary`) also emits numbered steps. `testCaseBlock` feeds them to the LLM; `dispatchWorkflow` carries
+  them in the CI payload. The plan UI is a summary view — steps exist on the case objects regardless. Do not
+  re-investigate "does the LLM get steps" — it does.
 
 ## Fix ledger (failures diagnosed → generalized so they never recur)
 - **Precondition re-implemented instead of reused → strict-mode locator fail** (job AUTO-1786530943847,
   `CheckoutModule.prepareCart`). Root cause: grounding hid cross-domain module methods. Fix: `crossDomainApi`
   surfaces all Page/Module methods; prompt now says "search the Reusable API for a setup method in ANY domain
   and CALL it" + "never use a bare locator that matches N identical controls." Applies to ANY app/precondition.
+- **Real failure reason never printed → could only guess the fix** (jobs AUTO-1786530943847 &
+  AUTO-1786533794761, both precondition-setup throws). Root cause: the CI log jumped from the stack trace to
+  "Suppressing PR" without the actual Playwright error, though `parseRunSummary` captured it. Fix (commit
+  `3313913`): surface `failureReasons` in the log, the returned object, the CI result, and the heal context.
+  Now every red run states exactly what/where/why. Applies to ANY app.
 
 ## Open work (the priority)
 Implement the **journey pipe** (persist `featureModel` → include compact `journey` in payload → feed it to
