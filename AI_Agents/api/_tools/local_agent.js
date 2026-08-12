@@ -2288,6 +2288,7 @@ function memberBlocks(src) {
 function additiveMerge(current, next, layer) {
   if (layer !== 'page' && layer !== 'module') return null;
   const have = new Set(memberBlocks(current).map((b) => b.name));
+  if (!have.size) return null; // couldn't parse current's members — bail so we never duplicate them
   const additions = memberBlocks(next).filter((b) => !have.has(b.name));
   if (!additions.length) return null;
   const idx = current.lastIndexOf('}'); // the class body's closing brace
@@ -2414,6 +2415,27 @@ function writeFiles(fw, files) {
         report.reused += 1;
         written.push({ path: relFromRoot, layer: f.layer, reused: true, action: 'reused' });
         continue; // identical — leave existing file untouched
+      }
+      // APPEND-ONLY for an existing Page/Module: the LLM must NEVER rewrite an existing
+      // method/getter/constructor — existing tests depend on them. A new-case regen that
+      // rewrote InventoryModule dropped its constructor wiring and broke 5 passing tests
+      // (`Cannot read properties of undefined`). So keep the working file VERBATIM and append
+      // only genuinely-new members; if there's nothing new, reuse it untouched. Generic.
+      if (f.layer === 'page' || f.layer === 'module') {
+        const merged = additiveMerge(current, next, f.layer);
+        if (merged && merged.trim() !== current.trim()) {
+          const bak = path.join(root, '.blast-backups', `${relFromRoot}.bak-${ts}`);
+          fs.mkdirSync(path.dirname(bak), { recursive: true });
+          fs.copyFileSync(abs, bak);
+          backups.push(path.relative(root, bak).replace(/\\/g, '/'));
+          fs.writeFileSync(abs, merged.endsWith('\n') ? merged : merged + '\n', 'utf8');
+          report.overwritten += 1;
+          written.push({ path: relFromRoot, layer: f.layer, reused: false, action: 'merged' });
+        } else {
+          report.reused += 1;
+          written.push({ path: relFromRoot, layer: f.layer, reused: true, action: 'protected' });
+        }
+        continue;
       }
       if (isDestructiveOverwrite(current, next, f.layer)) {
         // The regenerated file would drop existing coverage. Before protecting it wholesale,
@@ -3216,7 +3238,7 @@ async function coreGenerate(fw, job, log, logs) {
   // missing keys ALL surface at once with exact file:line, and one heal fixes them together —
   // instead of discovering them one runtime crash at a time. Generic; skipped when TS is absent.
   if (hasTypeScript(fw)) {
-    const MAX_TS_ROUNDS = 3;
+    const MAX_TS_ROUNDS = 2;
     for (let tsr = 0; tsr <= MAX_TS_ROUNDS; tsr++) {
       const tsc = await typeCheck(fw);
       const ourErrors = tscErrorsForFiles(tsc.output, written.map((w) => w.path));
@@ -3254,7 +3276,9 @@ async function coreGenerate(fw, job, log, logs) {
   log(run.passed ? '[local] Run PASSED.' : '[local] Run FAILED — attempting one self-heal round.');
 
   // 3) Self-heal up to MAX_HEAL_ROUNDS times — each round re-reads the failure and re-runs.
-  const MAX_HEAL_ROUNDS = 3;
+  // Capped at 2: each round re-runs the full Playwright suite (slow), and beyond 2 rounds the
+  // LLM rarely converges — better to open a partial PR for what passes and defer the rest.
+  const MAX_HEAL_ROUNDS = 2;
   for (let heal = 1; !run.passed && heal <= MAX_HEAL_ROUNDS; heal++) {
     const errorContext = readErrorContext(fw);
     // The exact per-test error from the JSON report — guarantees the heal sees the real
