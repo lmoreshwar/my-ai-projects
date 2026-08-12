@@ -354,6 +354,16 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   carries it in the CI payload; `buildGeneratePrompt` renders it under "Discovered journey (EVIDENCE …)" telling
   codegen to reach the target by walking those pages and NOT deep-link. Generic — BASE_URL + creds still the
   only app-specific inputs.
+- **Hallucinated control name (two labels merged) → heal waits forever** (job AUTO-1786539601674 run
+  31599301126: TC_023 "Add Backpack and complete checkout" PASSED and a PR opened — journey pipe WORKED; but
+  TC_024 waited for `getByRole('button', { name: 'Go back Continue Shopping' })`, a button that exists on NO
+  page). Root cause: the author merged the rule-#3 secondary-action word ("Go back"/"Cancel") with the real
+  "Continue Shopping" label into one fabricated control; heal then kept polishing the Page, waiting for a control
+  that can never appear. A "visible" timeout is NOT healable when the control is invented. Fix (commit `97b6255`):
+  `buildAuthorPrompt` now forbids merging/concatenating labels — every control named in steps/testData must be an
+  EXACT single observed label copied verbatim; if none matches, don't write the case. `buildHealPrompt` now has an
+  INVENTED-CONTROL rule: if the failing control's name appears nowhere in the snapshot/journey, replace it with the
+  SINGLE closest REAL control, or remove the invalid step — never keep waiting for a fabricated name. Generic.
 
 ## Settled decisions (journey pipe) — DONE, keep it
 - `compactJourney` caps to ≤8 steps, names only, ≤12 items/page — safe for `workflow_dispatch` input size.
@@ -374,9 +384,27 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   the runner (Playwright CLI), navigating/snapshotting/acting and writing each step only AFTER it verifies — exactly
   like the local "AI Native Playwright Engineer". Build Level 2 only after a green PR proves Level 1.
 
+## Settled decisions (Level 2 v1 — verified live-walk codegen) — DONE, keep it (commit `fb109d7`)
+- Root insight (user's "why doesn't the cloud behave like local?"): LOCAL Copilot writes each step against a LIVE
+  browser (snapshot→act→verify→write) so it never guesses; the CLOUD did a BLIND one-shot generate from a static
+  2-page snapshot on a runner that never saw the app live. `driveFlow` — the existing live walker — already logs in
+  ONCE and AUTO-DISCOVERS the multi-page journey (add-to-cart → cart → checkout via primary-action heuristics),
+  capturing the REAL controls + real success/validation messages per state — but codegen ignored it.
+- Fix (v1, reuse existing infra, no reinvent): in `coreGenerate`, after the static snapshot, when creds present AND
+  non-prod, run `driveFlow(fw, [job.url], { auth: snapAuth, allowSubmit: true, maxDepth: 10 })`, build a featureModel
+  via `modelFromStates(drive.states, job.feature||job.url, drive.observed)`, render it with `featureModelSummary` and
+  feed it to `buildGeneratePrompt` as a NEW AUTHORITATIVE "## Verified live walk" block (real controls per page IN
+  ORDER + real messages; reproduce this exact walk, prefer over any guess/static snapshot). New 5th param `liveWalk`.
+- SAFE FALLBACK (no regression to the working TC_023 path): empty walk / prod / `BLAST_LIVE_WALK=0` / any throw →
+  `liveWalk=''` → current static-snapshot behavior. Generate + heal still run. Generic — BASE_URL + creds only.
+- Level 2.5/3 (future, only after a green v1 PR): the LLM itself drives the Playwright CLI step-by-step, choosing
+  each locator from the live snapshot and writing a step ONLY after verifying it — the full local-Copilot loop.
+  driveFlow's deterministic walk is actually more reliable than LLM free-clicking, so v1 ships first.
+
 ## Open work (the next priority)
-Journey pipe is implemented (`3333b9c`). VERIFY it with a fresh Autopilot run: the generate log should show the
-"Discovered journey" evidence taking effect (the spec now logs in, adds the item, opens the cart, then reaches
-checkout) and a PR opening on pass/partial. If a run still skips a precondition, tighten the evidence rendering
-(order/labels), not the app-specific wiring.
+Level 2 v1 (`fb109d7`) is implemented. VERIFY with a fresh Autopilot run (URL + feature + creds, non-prod): the
+generate log should show "Level 2: driving the live app…" and "Level 2: verified N live state(s)", and the spec
+should reproduce that proven walk (login → add item → cart → checkout) on the FIRST attempt (fewer/no heal rounds),
+then a PR opening on pass/partial. If the live walk captures 0 states, tighten `driveFlow` autoDiscover heuristics
+(clickForward primaryRe / cart nav) — NOT app-specific wiring. Then consider Level 2.5 (LLM drives the CLI live).
 
