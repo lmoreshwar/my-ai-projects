@@ -991,7 +991,8 @@ function modelFromStates(states, feature, observed) {
 /** Parse `- role "name" [ref=eNN]` rows from a @playwright/cli snapshot → interactable refs. */
 function parseCliRefs(snapshot) {
   const out = [];
-  const re = /^\s*-?\s*([a-zA-Z]+)(?:\s+"([^"]*)")?[^\n]*\[ref=(e\d+)\]/;
+  // Refs may be plain (`e15`) or frame-scoped (`f3e3`) — accept any alphanumeric ref token.
+  const re = /^\s*-?\s*([a-zA-Z]+)(?:\s+"([^"]*)")?[^\n]*\[ref=([a-z0-9]+)\]/;
   const keep = new Set(['textbox', 'searchbox', 'spinbutton', 'button', 'link', 'checkbox',
     'combobox', 'radio', 'switch', 'slider', 'menuitem', 'menuitemcheckbox', 'tab', 'option', 'listitem']);
   for (const line of String(snapshot || '').split('\n')) {
