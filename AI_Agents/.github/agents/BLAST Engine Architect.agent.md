@@ -461,6 +461,25 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   added does it protect as before. Generic — framework util/Logger names are framework-universal, not app names; only
   BASE_URL + creds stay app-specific. (3) Off-topic checkout cases (TC_029–032) appended to the wrong spec =
   STALE-worker authoring (fix `360389c` not live) — resolved by a worker restart, NOT code.
+- **Regen of an existing Module BROKE its constructor wiring → 5 previously-passing tests regressed, then got
+  PRUNED out of the committed spec** (job run 31621371299, feature "Product sorting"). CONFIDENCE-KILLER: TC_001–005
+  (product detail) passed on `main`; this run rewrote the shared `InventoryModule.ts` to add sort methods and dropped
+  the constructor's collaborator wiring → `TypeError: Cannot read properties of undefined (reading 'productItemByName')`
+  at `InventoryModule.ts:21` in the EXISTING `navigateToProductDetailPage`. Those 5 existing tests then failed and the
+  partial-success pruner REMOVED them from `product-detail.spec.ts` before committing — i.e. the engine damaged working
+  committed code. Root cause: `writeFiles` allowed a WHOLESALE overwrite of an existing Page/Module whenever the new
+  file wasn't "destructive" by member-count (adding sort methods made it BIGGER, so the guard passed and it clobbered
+  the constructor). The "NEVER modify existing method" prompt rule was hope, not enforcement. Fix (commit `9a9aa12`,
+  CI Generate → effective next run WITHOUT a worker restart): existing Page/Module files are now **APPEND-ONLY** at the
+  write layer — for an existing `page`/`module`, `writeFiles` keeps the working file VERBATIM and uses `additiveMerge`
+  to append only genuinely-new methods/getters (matched by name); an attempted rewrite of an existing member is
+  DISCARDED (the existing one is kept), and if there's nothing new the file is reused untouched. `additiveMerge` now
+  bails (returns null) when it can't parse the current file's members, so it never duplicate-appends. The constructor
+  and every existing method are therefore immutable → existing tests can't regress from a new-case run. Generic.
+  Also: `MAX_HEAL_ROUNDS` 3→2 and `MAX_TS_ROUNDS` 3→2 (user: "just do it twice not thrice" — each heal re-runs the
+  full Playwright suite, the main time sink; Generate runs in CI, NOT the user's laptop). OPERATIONAL: the wrong-spec
+  placement + `getByRole('combobox',{name:'Sort'})` sort-locator misses are STALE-worker authoring (`360389c` not
+  live) — only a laptop worker restart on current `main` fixes those.
 - Empty journey (e.g. AI Native mode with no explore) renders nothing → no regression.
 - The journey is EVIDENCE, not code — the LLM still authors the walk from the real control names.
 
