@@ -364,6 +364,20 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   EXACT single observed label copied verbatim; if none matches, don't write the case. `buildHealPrompt` now has an
   INVENTED-CONTROL rule: if the failing control's name appears nowhere in the snapshot/journey, replace it with the
   SINGLE closest REAL control, or remove the invalid step — never keep waiting for a fabricated name. Generic.
+- **Invented wrapper method → `TypeError: <obj>.<method> is not a function`** (job AUTO-1786542627706 run
+  31603647961: Level 2 live walk WORKED — verified 8 states; TC_023 PASSED and a PR opened. TC_024, the same
+  merged-label "Go back Continue Shopping" case, failed with `this.actions.goBack is not a function` at
+  `CheckoutModule.goBackAndContinueShopping`; 3 heal rounds couldn't recover). Root cause: the LLM invented a
+  method on the shared Actions wrapper (`.goBack()`), which has a FIXED API; heal had no rule for
+  "is not a function" so it kept editing locators/Page instead of the bad call. The case itself was authored by the
+  STALE laptop Explore worker (the `97b6255` verbatim-label rule is on main but the worker process was not
+  restarted onto it). Engine correctly did partial success: pruned TC_024, opened a PR for TC_023. Fix (commit
+  `9ee3c59`): `buildGeneratePrompt` adds a "wrapper/collaborator methods MUST EXIST" rule (call only methods seen
+  in exemplars/existing files/Reusable API; never fabricate a wrapper method; use the `page` object for navigation;
+  drop a step whose intent has no real method/control). `buildHealPrompt` adds a `TypeError: <obj>.<method> is not a
+  function` mapping → replace with a real method or `this.page.goBack()`, or remove a fabricated step. Generic.
+  OPERATIONAL: the merged-label case will keep being authored until the laptop Explore worker is restarted on
+  current engine code.
 
 ## Settled decisions (journey pipe) — DONE, keep it
 - `compactJourney` caps to ≤8 steps, names only, ≤12 items/page — safe for `workflow_dispatch` input size.
