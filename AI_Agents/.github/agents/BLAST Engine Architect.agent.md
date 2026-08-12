@@ -675,3 +675,13 @@ then a PR opening on pass/partial. If the live walk captures 0 states, tighten `
   a "Level 3 — verify live before writing" checkbox on the classic form + `AutopilotExplorer.jsx`. `dispatchWorkflow`
   already forwards `job.level3`. Keep opt-in until a few clean green Level 3 runs, then default on.
 
+## Settled decisions (WEBSITE toggle wired) — commit `888cb0f`
+- **Full path now live:** website checkbox → `req.body.level3` → `job.level3` → `dispatchWorkflow` `inputs.level3='true'`
+  → workflow `BLAST_LEVEL3=1` + xvfb. Changes: `automation.js` `/generate` and `/explore` both destructure `level3`
+  and set `job.level3` (coerced from bool/'true'); `AutomationJob.js` gained `level3: { type: Boolean, default: false }`;
+  `AINativePlaywright.jsx` (classic form) added `level3:false` to form state + a checkbox after Comments (payload is
+  `{...form}` so it flows automatically); `AutopilotExplorer.jsx` added `level3:false` to form state, `level3:!!form.level3`
+  to the explore POST body, and a checkbox in the Advanced section. OPT-IN (default OFF) → zero impact on normal runs.
+- **NEXT:** run a real job from the website with the box CHECKED and a NUMERIC id, confirm the run log shows `[L3]` live
+  steps + the "Verified live actions (LEVEL 3)" block, then after a few clean green runs flip the default to ON.
+
