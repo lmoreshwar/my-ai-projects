@@ -398,6 +398,26 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   app-under-test names); only BASE_URL + creds stay app-specific. Runs in the CI Generate phase → effective on the
   next cloud run WITHOUT a worker restart (unlike authoring fixes). Correct partial success: pruned the 12, opened a
   PR for the 1 passing case (TC_031).
+- **Invented DOMAIN method (never emitted the module) + required-arg omitted → all 5 red** (job
+  AUTO-1786550510142, run on the still-stale worker). GOOD: the `37712a0` wrapper fix WORKED — zero
+  `waitForURL`/`press(object)` crashes this run. New failures, two buckets. (1) The 3 legit sort cases
+  (TC_026/027/028) threw `TypeError: inventoryModule.sortProductsByNameDescending / sortProductsByPriceAscending /
+  sortProductsByPriceDescending is not a function`. Root cause: per-case generation — TC_025's iteration added ONE
+  sort method to the Module, then TC_026-028 iterations emitted ONLY the spec and called DIFFERENTLY-named sort
+  methods that were never defined. The old "methods MUST EXIST" rule lumped util wrappers (fixed API) with domain
+  Pages/Modules and said "DROP the step if no method exists" — wrong for a domain Module, where the fix is to ADD
+  the method. Heal spun 3× on the spec and never added the method. (2) TC_025 "…and complete checkout" + TC_029
+  "Go back Continue Shopping aborts" threw `page.goto: url: expected string, got undefined` at `CartModule.ts:22`
+  (`goto(url)` called with no arg) — both are STALE-worker authoring OVER-REACH (checkout/cart cases for a SORT
+  feature; the `360389c` featureScreen fix removes them once the worker is restarted). Fix (commit `41de6a3`):
+  `buildGeneratePrompt` now SPLITS the rule — util wrappers stay fixed (never extend), but DOMAIN Pages/Modules MAY
+  gain new methods PROVIDED the spec's response also emits the FULL extended Page/Module file defining them; prefer
+  ONE parameterized method (`sortBy(option)`) over near-duplicates; plus a new "pass every REQUIRED argument"
+  rule (no `goto()` with undefined). `buildHealPrompt` now, for a missing DOMAIN method, tells heal to DEFINE it in
+  the Page/Module file (not keep editing the spec), and maps `expected string, got undefined` → pass a concrete
+  value or use the no-arg navigation. Generic; runs in CI Generate → effective next run without a worker restart.
+  OPERATIONAL: the checkout/sort over-reach cases (TC_025/029) persist until the laptop worker is restarted on
+  current engine code (authoring fix `360389c`).
 - `compactJourney` caps to ≤8 steps, names only, ≤12 items/page — safe for `workflow_dispatch` input size.
 - Empty journey (e.g. AI Native mode with no explore) renders nothing → no regression.
 - The journey is EVIDENCE, not code — the LLM still authors the walk from the real control names.
