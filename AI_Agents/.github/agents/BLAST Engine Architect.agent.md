@@ -360,6 +360,20 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
 - Empty journey (e.g. AI Native mode with no explore) renders nothing → no regression.
 - The journey is EVIDENCE, not code — the LLM still authors the walk from the real control names.
 
+## Settled decisions (heal diagnoses the page first — Level 1) — DONE, keep it (commit `969ef4d`)
+- Root insight (user's question "why doesn't cloud heal like local?"): local Copilot heals with a LIVE browser +
+  interactive snapshot→act→verify loop; the cloud is a BLIND one-shot generator + 2 text-edit heals. In job run
+  31596483339 both heal rounds just `⚠ extended CheckoutPage.ts` — heal narrowed on the LOCATOR (`First Name`)
+  and never noticed the browser was still on the inventory page (precondition skipped).
+- Fix: `buildHealPrompt` now takes `g` (grounding) and (1) tells heal the error-context.md is the page AT FAILURE
+  and to DIAGNOSE THE PAGE FIRST — a "waiting for X to be visible" timeout on an UNREACHED page is a missing
+  PRECONDITION (add setup/navigation steps), NOT a locator bug; (2) includes the Discovered journey so heal knows
+  the correct precondition order; (3) includes the cross-domain Reusable API so heal CALLS an existing setup method
+  instead of re-implementing it. `coreGenerate` passes `grounding` to heal and raised `MAX_HEAL_ROUNDS` 2→3. Generic.
+- This is Level 1 (the 80/20). Level 2 (the destination) = full agentic codegen: the LLM drives a live browser on
+  the runner (Playwright CLI), navigating/snapshotting/acting and writing each step only AFTER it verifies — exactly
+  like the local "AI Native Playwright Engineer". Build Level 2 only after a green PR proves Level 1.
+
 ## Open work (the next priority)
 Journey pipe is implemented (`3333b9c`). VERIFY it with a fresh Autopilot run: the generate log should show the
 "Discovered journey" evidence taking effect (the spec now logs in, adds the item, opens the cart, then reaches
