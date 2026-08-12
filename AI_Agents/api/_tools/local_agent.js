@@ -977,6 +977,171 @@ function modelFromStates(states, feature, observed) {
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
+ * LEVEL 3 — agentic live codegen evidence. The LLM DRIVES the real app via
+ * @playwright/cli one action at a time (snapshot → pick a REAL ref → act →
+ * verify the result), and each action that works yields the EXACT Playwright
+ * locator the CLI actually executed. The ordered list of PROVEN locators is fed
+ * to codegen as the highest-priority evidence, so the writer reuses locators
+ * that provably exist instead of guessing — killing the invented-locator /
+ * wrong-control failure class. Flag-gated (BLAST_LEVEL3=1); any failure or empty
+ * result falls back cleanly to the existing static/live-walk evidence. Generic:
+ * BASE_URL + creds are the only app-specific inputs.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+/** Parse `- role "name" [ref=eNN]` rows from a @playwright/cli snapshot → interactable refs. */
+function parseCliRefs(snapshot) {
+  const out = [];
+  const re = /^\s*-?\s*([a-zA-Z]+)(?:\s+"([^"]*)")?[^\n]*\[ref=(e\d+)\]/;
+  const keep = new Set(['textbox', 'searchbox', 'spinbutton', 'button', 'link', 'checkbox',
+    'combobox', 'radio', 'switch', 'slider', 'menuitem', 'menuitemcheckbox', 'tab', 'option', 'listitem']);
+  for (const line of String(snapshot || '').split('\n')) {
+    const m = line.match(re);
+    if (!m) continue;
+    const role = m[1].toLowerCase();
+    if (!keep.has(role)) continue;
+    const name = (m[2] || '').trim();
+    if (out.some((r) => r.ref === m[3])) continue;
+    out.push({ role, name, ref: m[3] });
+  }
+  return out;
+}
+
+/** @playwright/cli echoes the REAL locator it ran inside a ```js …``` block — capture it. */
+function extractRanLocator(cliOutput) {
+  const m = String(cliOutput || '').match(/```js\n([\s\S]*?)```/);
+  if (!m) return '';
+  // Keep only the page.locator/getBy call line(s); drop the action (.click()/.fill()) so the
+  // Page layer stores the LOCATOR, and strip any filled value so a secret can never leak.
+  return m[1].trim();
+}
+
+/** Pull the current Page URL @playwright/cli reports after an action (to detect navigation). */
+function extractPageUrl(cliOutput) {
+  const m = String(cliOutput || '').match(/Page URL:\s*(\S+)/);
+  return m ? m[1] : '';
+}
+
+/** Render a verified action trace as authoritative codegen evidence. */
+function renderLiveTrace(trace) {
+  if (!trace || !trace.length) return '';
+  return trace.map((t, i) => {
+    const loc = t.locator ? t.locator.replace(/\s*\n\s*/g, ' ').slice(0, 220) : '(locator not captured)';
+    const bits = [`${i + 1}. ${t.intent}`, `   proven Playwright code: ${loc}`];
+    if (t.value) bits.push(`   value used: "${t.value}"`);
+    if (t.navigated) bits.push(`   → navigated to ${t.url}`);
+    return bits.join('\n');
+  }).join('\n');
+}
+
+/** Ask the LLM for the SINGLE next live action, constrained to refs that exist on the page NOW. */
+async function llmNextAction(job, tc, trace, snapshotYaml, refs) {
+  const refList = refs.map((r) => `- ref=${r.ref} ${r.role} "${r.name}"`).join('\n');
+  const done = trace.length
+    ? trace.map((t, i) => `${i + 1}. ${t.action} "${t.name}"${t.value ? ` = "${t.value}"` : ''}${t.navigated ? ` → ${t.url}` : ''}`).join('\n')
+    : '(none yet)';
+  const steps = (tc.steps || []).map((s, i) => {
+    const txt = typeof s === 'string' ? s : (s.action || s.step || s.description || JSON.stringify(s));
+    return `${i + 1}. ${txt}`;
+  }).join('\n');
+  const expected = Array.isArray(tc.expectedResults) ? tc.expectedResults.join('; ') : (tc.expectedResults || '');
+  const prompt = [
+    'You are driving a REAL browser to reproduce ONE test case, choosing ONE next action at a time from the LIVE page.',
+    `\n# Test case: ${tc.id || ''} ${tc.title || ''}`,
+    steps ? `\n# Intended steps\n${steps}` : '',
+    expected ? `\n# Expected result\n${expected}` : '',
+    `\n# Steps already performed (verified live)\n${done}`,
+    `\n# The LIVE page RIGHT NOW — interactable elements. Choose a ref from THIS list ONLY:\n${refList}`,
+    `\n# Full page snapshot (context)\n${String(snapshotYaml || '').slice(0, 2500)}`,
+    '\n# Return the SINGLE next action as STRICT JSON (no prose):',
+    '{"action":"click|fill|select|check|done","ref":"eNN from the list above (empty when done)","value":"text for fill/select, else empty","note":"short human-readable intent"}',
+    'Rules: pick ONLY a ref that appears in the list above (never invent one). Do the MINIMUM to advance this case toward its expected result. Login is ALREADY done — NEVER type a username or password. When the case goal is reached or no useful action remains, return {"action":"done"}. Reply with JSON only.',
+  ].filter(Boolean).join('\n');
+  const raw = await llmGenerate(prompt, 'You are a precise browser-automation agent. Reply with STRICT JSON only.');
+  try {
+    const m = String(raw || '').match(/\{[\s\S]*\}/);
+    return m ? JSON.parse(m[0]) : null;
+  } catch { return null; }
+}
+
+/**
+ * Drive the PRIMARY journey of a feature LIVE via @playwright/cli and return a verified
+ * action trace (proven locators, in order) as codegen evidence. Uses the representative case
+ * to steer the walk. Secure auth: an env-cred library login saves a storage state which the CLI
+ * `state-load`s — credentials NEVER touch the CLI argv/logs. Best-effort; returns '' on any issue.
+ */
+async function driveFeatureLive(fw, job, tc, auth, log) {
+  if (process.env.BLAST_LEVEL3 !== '1') return '';
+  if (!auth || !auth.username || !auth.password) return '';
+  if (String(job.environment || '').toLowerCase().startsWith('prod')) return '';
+  const ver = await runCli(fw, 'l3-probe', ['--version'], 8000).catch(() => '');
+  if (!ver || !/\d/.test(ver)) { log('[L3] @playwright/cli not available on this runner — skipping Level 3 (using standard evidence).'); return ''; }
+
+  const stateFile = path.join(fw, '.blast-l3-state.json');
+  try { fs.rmSync(stateFile, { force: true }); } catch { /* ignore */ }
+  log('[L3] Authenticating headlessly to capture a storage state (no credentials pass through the CLI)…');
+  try { await driveFlow(fw, [job.loginUrl || job.url], { auth, allowSubmit: false, stateFile }); } catch { /* best-effort */ }
+  const authed = fs.existsSync(stateFile);
+  log(authed ? '[L3] Storage state captured ✓ — the CLI session will be authenticated with no secrets in argv.' : '[L3] No storage state captured — continuing without auth (public pages only).');
+
+  const session = `l3-${Date.now().toString(36)}`;
+  const trace = [];
+  const maxSteps = Number(process.env.BLAST_LEVEL3_STEPS) > 0 ? Number(process.env.BLAST_LEVEL3_STEPS) : 12;
+  try {
+    await runCli(fw, session, ['open']);
+    if (authed) await runCli(fw, session, ['state-load', stateFile]);
+    await runCli(fw, session, ['goto', job.url]);
+    log(`[L3] Driving the live app for "${tc.title || tc.id || job.feature}" — verifying up to ${maxSteps} action(s)…`);
+    for (let step = 1; step <= maxSteps; step++) {
+      const rawSnap = await runCli(fw, session, ['snapshot']);
+      const yaml = (rawSnap.match(/```yaml\n([\s\S]*?)```/) || [, ''])[1] || rawSnap;
+      const refs = parseCliRefs(yaml).slice(0, 60);
+      if (!refs.length) { log('[L3] No interactable elements in the live snapshot — stopping the walk.'); break; }
+      const decision = await llmNextAction(job, tc, trace, yaml, refs);
+      if (!decision || String(decision.action || '').toLowerCase() === 'done' || !decision.ref) {
+        log(`[L3] Journey complete after ${trace.length} verified step(s).`);
+        break;
+      }
+      const target = refs.find((r) => r.ref === decision.ref);
+      if (!target) { log(`[L3] LLM picked ref ${decision.ref} not present live — stopping (anti-hallucination guard).`); break; }
+      const act = String(decision.action || 'click').toLowerCase();
+      const beforeUrl = extractPageUrl(rawSnap) || job.url;
+      let cliOut = '';
+      if (act === 'fill' || act === 'type') {
+        const val = String(decision.value == null ? '' : decision.value);
+        if (auth.password && val === auth.password) { log('[L3] Refusing to type the password via the CLI (already authenticated) — skipping this action.'); continue; }
+        cliOut = await runCli(fw, session, ['fill', target.ref, val]);
+      } else if (act === 'select') {
+        cliOut = await runCli(fw, session, ['select', target.ref, String(decision.value == null ? '' : decision.value)]);
+      } else if (act === 'check') {
+        cliOut = await runCli(fw, session, ['check', target.ref]);
+      } else {
+        cliOut = await runCli(fw, session, ['click', target.ref]);
+      }
+      const locator = extractRanLocator(cliOut);
+      const afterUrl = extractPageUrl(cliOut) || beforeUrl;
+      trace.push({
+        intent: decision.note || `${act} ${target.role} "${target.name}"`,
+        action: act,
+        role: target.role,
+        name: target.name,
+        value: (act === 'fill' || act === 'type' || act === 'select') ? String(decision.value == null ? '' : decision.value) : '',
+        locator,
+        url: afterUrl,
+        navigated: !!(afterUrl && afterUrl !== beforeUrl),
+      });
+      log(`[L3] ✓ step ${trace.length}: ${act} "${target.name}"${afterUrl !== beforeUrl ? ` (→ ${afterUrl})` : ''}`);
+    }
+  } catch (e) {
+    log(`[L3] Live drive stopped (${e.message}) — using ${trace.length} verified step(s) as evidence.`);
+  } finally {
+    await runCli(fw, session, ['close']).catch(() => {});
+    try { fs.rmSync(stateFile, { force: true }); } catch { /* ignore */ }
+  }
+  if (trace.length) log(`[L3] Captured ${trace.length} PROVEN action(s) with real locators — feeding to codegen as top evidence.`);
+  return renderLiveTrace(trace);
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
  * Autopilot (explore mode) engine — turn a URL + feature into authored cases.
  * Explore (@playwright/cli snapshot) → deterministic feature model → LLM authors
  * positive/negative cases grounded in that evidence → hand to the SAME
@@ -1829,7 +1994,7 @@ function renderJourney(journey) {
   }).join('\n');
 }
 
-function buildGeneratePrompt(job, g, snapshot, existing, liveWalk) {
+function buildGeneratePrompt(job, g, snapshot, existing, liveWalk, liveTrace) {
   const existingBlock = (existing && existing.length)
     ? existing.map((f) => `===FILE:${f.rel}|${f.layer}===\n${f.content}\n===ENDFILE===`).join('\n')
     : '';
@@ -1844,6 +2009,9 @@ function buildGeneratePrompt(job, g, snapshot, existing, liveWalk) {
     g.skillHeal && (!g.activeSkill || g.activeSkill.key !== 'heal') ? '\n## Skill: pw-self-healing (SmartLocator fallback chain — apply only to genuinely fragile locators)\n' + g.skillHeal : '',
     skillModeDirective(job),
     '\n## Reuse index — READ FIRST (sharded manifest + the relevant domain shard). Every asset listed here ALREADY EXISTS — reuse locators/methods/tests; do NOT recreate them.\n' + g.capabilities,
+    liveTrace
+      ? '\n## Verified live actions (LEVEL 3 — HIGHEST-PRIORITY EVIDENCE. The runner JUST performed these exact actions on the REAL app, IN ORDER, and each "proven Playwright code" line is the ACTUAL locator that executed SUCCESSFULLY against the live page. Build the Page objects from these EXACT locators (copy them verbatim), and reproduce this journey in this order. Do NOT invent, guess, or alter any locator that appears here — these are ground truth.)\n' + liveTrace
+      : '',
     snapshot ? '\n## Live page snapshot (EVIDENCE — derive real locators from these roles/names)\n' + snapshot : '',
     liveWalk
       ? '\n## Verified live walk (AUTHORITATIVE — the runner JUST drove the real app through this journey. These are the REAL controls per page, IN ORDER, that actually worked, plus the real success/validation messages. Write the spec to REPRODUCE this exact walk: same page order, same control labels copied verbatim, assert these exact messages. Prefer these locators/messages over any guess or static snapshot.)\n' + liveWalk
@@ -3097,6 +3265,19 @@ async function coreGenerate(fw, job, log, logs) {
   const collapsedSpecs = new Set(); // specs that requested cases turned out to duplicate (reuse targets)
   if (newCases.length) log(`[local] ${newCases.length} new case(s) to add: ${newCases.map((c) => c.id).join(', ')} (existing tests are preserved).`);
 
+  // LEVEL 3 — agentic live drive: let the LLM drive the REAL app one action at a time via
+  // @playwright/cli (snapshot → pick a real ref → act → verify), capturing the EXACT locators
+  // that provably worked. Fed to codegen as top evidence so the writer reuses proven locators
+  // instead of guessing. Flag-gated (BLAST_LEVEL3=1); '' on any issue → existing path unchanged.
+  let liveTrace = '';
+  if (process.env.BLAST_LEVEL3 === '1' && snapAuth && !isProdEnv && newCases.length) {
+    try {
+      liveTrace = await driveFeatureLive(fw, job, newCases[0], snapAuth, log);
+    } catch (e) {
+      log(`[local] Level 3: live drive skipped (${e.message}) — using standard evidence.`);
+    }
+  }
+
   // 1) Generate — ONE case per LLM call so each response stays small enough to
   //    complete on rate-limited free tiers (Groq 8K TPM) and can't truncate
   //    mid-file. Each iteration re-reads the domain so it extends the spec that
@@ -3151,7 +3332,7 @@ async function coreGenerate(fw, job, log, logs) {
     // RETRY on unparseable output: LLMs occasionally answer with prose (no ===FILE=== block),
     // most often when a case overlaps existing coverage. Retry with a stricter "code only"
     // directive so the behavioral dedup below gets real code to judge instead of a false miss.
-    const basePrompt = buildGeneratePrompt({ ...job, testCases: [tc] }, grounding, snapshot, existNow, liveWalk);
+    const basePrompt = buildGeneratePrompt({ ...job, testCases: [tc] }, grounding, snapshot, existNow, liveWalk, liveTrace);
     let batch = [];
     for (let attempt = 1; attempt <= GEN_ATTEMPTS; attempt++) {
       const prompt = attempt === 1 ? basePrompt : basePrompt
