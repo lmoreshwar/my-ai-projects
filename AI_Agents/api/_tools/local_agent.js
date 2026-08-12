@@ -184,11 +184,12 @@ const LOW_TPM_PLATFORMS = new Set(['groq']);
 /** Read framework grounding: rules, persona, skills, reuse index, and real exemplars. */
 /**
  * The AUTHORITATIVE public-method contract of the framework's shared action wrappers
- * (Actions/WaitHelper/WorkflowActions). The LLM otherwise sees only ONE page + ONE module
- * exemplar and GUESSES wrapper methods that don't exist (e.g. `waitHelper.waitForURL`) or passes
- * the wrong argument type (e.g. `actions.press(object)` — press takes a string) → runtime crashes
- * the heal cannot recover. Surfacing the exact method set makes "call only methods that exist"
- * enforceable. Generic: reads whatever wrappers the framework ships under src/utils; skips any absent.
+ * (Actions/WaitHelper/WorkflowActions) plus the Logger. The LLM otherwise sees only ONE page + ONE
+ * module exemplar and GUESSES methods that don't exist (e.g. `waitHelper.waitForURL`, or `Logger.step`
+ * called statically) or passes the wrong argument type (e.g. `actions.press(object)` — press takes a
+ * string) → runtime crashes the heal cannot recover. Surfacing the exact method set (and the static-vs-
+ * instance shape of Logger) makes "call only methods that exist" enforceable. Generic: reads whatever
+ * wrappers the framework ships under src/utils; skips any absent.
  */
 function wrapperApi(fw, budget = 2200) {
   const wrappers = [
@@ -197,16 +198,16 @@ function wrapperApi(fw, budget = 2200) {
     ['WorkflowActions', 'this.workflowActions', 'src/utils/WorkflowActions.ts'],
   ];
   const SKIP = new Set(['constructor', 'if', 'for', 'while', 'switch', 'catch', 'return', 'await', 'function']);
-  const blocks = [];
-  for (const [cls, inst, rel] of wrappers) {
-    let src;
-    try { src = fs.readFileSync(path.join(fw, rel), 'utf-8'); } catch { continue; }
-    const sigs = [];
-    const re = /(^|\n)[ \t]*(public\s+|private\s+|protected\s+)?(async\s+)?([a-zA-Z_]\w*)\s*\(/g;
+  // Extract public method signatures, tagging static ones (matters for classes like Logger whose
+  // step()/info() are INSTANCE methods but create() is static — calling them statically fails).
+  const sigsOf = (src) => {
+    const out = [];
+    const re = /(^|\n)[ \t]*(public\s+|private\s+|protected\s+)?(static\s+)?(async\s+)?([a-zA-Z_]\w*)\s*\(/g;
     let m;
     while ((m = re.exec(src))) {
       if (m[2] && m[2].trim() !== 'public') continue; // skip private/protected helpers
-      const name = m[4];
+      const isStatic = !!m[3];
+      const name = m[5];
       if (SKIP.has(name)) continue;
       // Balanced-paren scan of the parameter list (handles nested parens like `() => Promise`).
       let i = re.lastIndex - 1, depth = 0, params = '';
@@ -220,10 +221,31 @@ function wrapperApi(fw, budget = 2200) {
       // brace, optionally with a `: ReturnType` annotation. A method CALL is followed by
       // `;`/`)`/`,`/`.` instead, so this excludes calls inside bodies. (if/for/while are SKIPped.)
       if (!/^\s*(:\s*[^\n{;]+)?\{/.test(src.slice(i))) continue;
-      sigs.push(`${name}(${params.replace(/\s+/g, ' ').replace(/,\s*$/, '').trim()})`);
+      out.push({ name, isStatic, sig: `${name}(${params.replace(/\s+/g, ' ').replace(/,\s*$/, '').trim()})` });
     }
-    if (sigs.length) blocks.push(`${cls} — call as \`${inst}.<method>()\`:\n  ${[...new Set(sigs)].join('\n  ')}`);
+    return out;
+  };
+  const blocks = [];
+  for (const [cls, inst, rel] of wrappers) {
+    let src;
+    try { src = fs.readFileSync(path.join(fw, rel), 'utf-8'); } catch { continue; }
+    const sigs = [...new Set(sigsOf(src).map((s) => s.sig))];
+    if (sigs.length) blocks.push(`${cls} — call as \`${inst}.<method>()\`:\n  ${sigs.join('\n  ')}`);
   }
+  // Logger: created via a STATIC factory, then used as an INSTANCE — the exact shape the LLM keeps
+  // getting wrong (it calls Logger.step()/Logger.info() statically, which do not exist on the class).
+  try {
+    const logSrc = fs.readFileSync(path.join(fw, 'src', 'utils', 'Logger.ts'), 'utf-8');
+    const all = sigsOf(logSrc);
+    const statics = [...new Set(all.filter((s) => s.isStatic).map((s) => s.sig))];
+    const instance = [...new Set(all.filter((s) => !s.isStatic).map((s) => s.sig))];
+    if (instance.length) {
+      const factory = statics.find((s) => /^create\b/.test(s)) || 'create(context)';
+      blocks.push(
+        `Logger — CREATE ONCE via the STATIC factory \`Logger.${factory}\` and store it (e.g. \`private logger = Logger.${factory.replace(/\(.*/, '')}('<Context>')\`), then call these INSTANCE methods on \`this.logger\`. NEVER call step()/info() statically on \`Logger\` (Logger.step / Logger.info do NOT exist):\n  ` + instance.join('\n  '),
+      );
+    }
+  } catch { /* no Logger in this framework — skip */ }
   let text = blocks.join('\n');
   if (text.length > budget) text = text.slice(0, budget) + '\n… (truncated)';
   return text;
@@ -2210,6 +2232,70 @@ function isDestructiveOverwrite(current, next, layer) {
   return next.trim().length < current.trim().length * 0.6;
 }
 
+/** Extract class-body member blocks {name, text} from TS source: real methods/getters AND the
+ * arrow-function property locators this framework's Page objects use (`name = (): Locator => …`). */
+function memberBlocks(src) {
+  const out = [];
+  const seen = new Set();
+  const SKIP = new Set(['constructor', 'if', 'for', 'while', 'switch', 'catch', 'return', 'await', 'const', 'let', 'var', 'this']);
+  const re = /\n([ \t]+)(?:public\s+|private\s+|protected\s+|readonly\s+|static\s+|async\s+|get\s+|set\s+)*([a-zA-Z_]\w*)\s*(\(|=)/g;
+  let m;
+  while ((m = re.exec(src))) {
+    const name = m[2];
+    const kind = m[3];
+    if (SKIP.has(name) || seen.has(name)) continue;
+    const lineStart = m.index + 1; // char after the matched '\n' (keeps indentation)
+    let text = null;
+    if (kind === '(') {
+      // Real method/getter: balance the parameter parens, then the body braces.
+      let i = re.lastIndex - 1, depth = 0;
+      for (; i < src.length; i++) { const ch = src[i]; if (ch === '(') depth++; else if (ch === ')') { depth--; if (depth === 0) { i++; break; } } }
+      const bm = src.slice(i).match(/^\s*(?::[^\n{;]+)?\{/); // optional ': ReturnType' then body '{'
+      if (!bm) continue;
+      let j = i + bm[0].length - 1, bd = 0;
+      for (; j < src.length; j++) { const ch = src[j]; if (ch === '{') bd++; else if (ch === '}') { bd--; if (bd === 0) { j++; break; } } }
+      text = src.slice(lineStart, j);
+    } else {
+      // Property assignment — only accept arrow-function locators (`= (…) => …;`) to avoid
+      // mistaking an object-literal key inside a method body for a member. Balance ()[]{} and
+      // stop at the statement-terminating ';' at depth 0.
+      let i = re.lastIndex, p = 0, b = 0, c = 0, end = -1;
+      for (; i < src.length; i++) {
+        const ch = src[i];
+        if (ch === '(') p++; else if (ch === ')') p--;
+        else if (ch === '{') b++; else if (ch === '}') b--;
+        else if (ch === '[') c++; else if (ch === ']') c--;
+        else if (ch === ';' && p <= 0 && b <= 0 && c <= 0) { end = i + 1; break; }
+      }
+      if (end < 0) continue;
+      const seg = src.slice(lineStart, end);
+      if (!seg.includes('=>')) continue; // require an arrow function (a locator), skip plain fields
+      text = seg;
+    }
+    if (text) { out.push({ name, text }); seen.add(name); }
+  }
+  return out;
+}
+
+/**
+ * Best-effort ADDITIVE merge for a code file (page/module). When the regenerated file would DROP
+ * existing members (so the reuse guard would protect it) but also ADDS new methods/getters, keep the
+ * current file intact and APPEND only the genuinely-new members before the class's closing brace.
+ * Preserves existing coverage AND lands the new method — e.g. a new Page locator getter the module
+ * calls (`productSortDropdown`) that would otherwise be lost. Returns merged text, or null when it
+ * can't merge safely (the caller then protects the file as before). Generic.
+ */
+function additiveMerge(current, next, layer) {
+  if (layer !== 'page' && layer !== 'module') return null;
+  const have = new Set(memberBlocks(current).map((b) => b.name));
+  const additions = memberBlocks(next).filter((b) => !have.has(b.name));
+  if (!additions.length) return null;
+  const idx = current.lastIndexOf('}'); // the class body's closing brace
+  if (idx < 0) return null;
+  const inject = '\n' + additions.map((b) => b.text.replace(/\s+$/, '')).join('\n\n') + '\n';
+  return current.slice(0, idx) + inject + current.slice(idx);
+}
+
 /**
  * DETERMINISTIC fixture registrar — guarantees every newly-created Page/Module gets a
  * fixture entry in src/fixtures/index.ts, WITHOUT trusting the LLM to regenerate that
@@ -2330,8 +2416,22 @@ function writeFiles(fw, files) {
         continue; // identical — leave existing file untouched
       }
       if (isDestructiveOverwrite(current, next, f.layer)) {
-        // Reuse-first guard: the regenerated file would drop existing coverage.
-        // Keep the working file untouched instead of clobbering it.
+        // The regenerated file would drop existing coverage. Before protecting it wholesale,
+        // try an ADDITIVE merge: keep the working file and append only the genuinely-new
+        // methods/getters (e.g. a new Page locator the module needs). This preserves existing
+        // coverage AND lands the new member. Only when merge isn't possible do we protect.
+        const merged = additiveMerge(current, next, f.layer);
+        if (merged && merged !== current && merged.trim() !== current.trim()) {
+          const bak = path.join(root, '.blast-backups', `${relFromRoot}.bak-${ts}`);
+          fs.mkdirSync(path.dirname(bak), { recursive: true });
+          fs.copyFileSync(abs, bak);
+          backups.push(path.relative(root, bak).replace(/\\/g, '/'));
+          fs.writeFileSync(abs, merged.endsWith('\n') ? merged : merged + '\n', 'utf8');
+          report.overwritten += 1;
+          written.push({ path: relFromRoot, layer: f.layer, reused: false, action: 'merged' });
+          continue;
+        }
+        // Reuse-first guard: nothing new to add — keep the working file untouched instead of clobbering it.
         report.protected += 1;
         written.push({ path: relFromRoot, layer: f.layer, reused: true, action: 'protected' });
         continue;
@@ -2934,6 +3034,7 @@ async function coreGenerate(fw, job, log, logs) {
   const logWrite = (w) => {
     const tag = w.action === 'reused' ? '♻ reused   '
       : w.action === 'protected' ? '🛡 kept (existing coverage preserved)'
+      : w.action === 'merged' ? '➕ merged (existing kept + new members added)'
       : w.action === 'overwritten' ? '⚠ extended '
       : '＋ created  ';
     log(`[local]   ${tag} ${w.path}${w.reason ? ` — ${w.reason}` : ''}`);
