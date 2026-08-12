@@ -325,6 +325,26 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   them in the CI payload. The plan UI is a summary view — steps exist on the case objects regardless. Do not
   re-investigate "does the LLM get steps" — it does.
 
+## Settled decisions (compile gate — the whack-a-mole ender) — DONE, keep it (commit `9f90ee9`)
+- Root insight (user's "you keep fixing one failure and get another — we need ALL fixes already there"): EVERY
+  codegen failure class we hit (`waitForURL is not a function`, `press(object)`, `sortProductsByX is not a
+  function`, `goto(undefined)`, missing testData key) is a TypeScript COMPILE error. The cloud engine was a BLIND
+  one-shot writer that only discovered them ONE runtime crash at a time. The TypeScript compiler already encodes
+  the WHOLE framework API contract (every wrapper/Page/Module method + argument type), so it lists ALL violations
+  at once — it IS "all the fixes already there," deterministically, not via per-failure prompt rules.
+- Fix: `coreGenerate` now runs a TYPE-CHECK GATE (`tsc --noEmit -p tsconfig.json`) AFTER writing files and BEFORE
+  the Playwright run. `typeCheck(fw)` + `tscErrorsForFiles(output, ourPaths)` (filters to files WE wrote so a stray
+  pre-existing project error never blocks) + `buildCompilePrompt(job, files, tscErrors, g)` (authoritative
+  error→fix mapping: Property-does-not-exist → real/defined method; Expected-N-args → pass required arg;
+  not-assignable → correct type; missing import/testData key) feed one heal that fixes them ALL together. Loops up
+  to 3 compile-fix rounds, then proceeds to run (Playwright surfaces genuine behavior/locator/timing failures only).
+  `hasTypeScript(fw)` skips the gate when TS/tsconfig absent (generic — no regression for non-TS frameworks).
+- Effect: collapses the invented/misused-method whack-a-mole into ONE deterministic gate. Runs in CI Generate →
+  effective next run WITHOUT a worker restart. `TSC_TIMEOUT_MS` (default 120s) env-overridable.
+- NEXT robustness layer (not yet built, same pattern): add an ESLint gate after the compile gate (catches unused
+  vars, no-undef, floating promises), and — the true destination — Level 3 agentic codegen where the LLM drives
+  the Playwright CLI live and writes each step only after verifying, like local Copilot.
+
 ## Fix ledger (failures diagnosed → generalized so they never recur)
 - **Precondition re-implemented instead of reused → strict-mode locator fail** (job AUTO-1786530943847,
   `CheckoutModule.prepareCart`). Root cause: grounding hid cross-domain module methods. Fix: `crossDomainApi`
