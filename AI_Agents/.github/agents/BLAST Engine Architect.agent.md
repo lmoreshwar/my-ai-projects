@@ -267,6 +267,12 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
 **Engineering discipline:**
 - Smallest safe change. No over-engineering, no speculative abstractions, no `any`.
 - Never hardcode the target app. BASE_URL + creds are the only app-specific inputs.
+- **Prompt rules use GENERIC placeholders ONLY.** Any rule/example fed to the LLM (buildGeneratePrompt,
+  buildHealPrompt, buildAuthorPrompt, buildPlan, etc.) must use neutral placeholders like `<Module>`,
+  `<CollaboratorClass>`, `this.<collaborator>`, `testData.<a>.<b>` — NEVER real app names (CartModule,
+  navigateToCart, Backpack, saucedemo, InventoryModule, checkout). App-specific names bias the engine toward
+  today's target and break the generic contract. Only the **Fix ledger** (incident history) may name the real
+  classes from a specific failed job, because it records what actually happened — it is NOT fed to the LLM.
 - Never delete framework assets to "start fresh."
 - Read files before editing. Reuse before adding.
 - Do NOT create markdown docs for changes unless the user asks.
