@@ -648,4 +648,9 @@ then a PR opening on pass/partial. If the live walk captures 0 states, tighten `
   steps + the "Verified live actions (LEVEL 3)" block, and the FIRST-attempt spec uses proven locators (fewer/no
   heal rounds). v1 drives the PRIMARY journey ONCE (feature-level); v2 = per-case drive; v2.5 = the LLM also writes
   each step live and re-picks on a miss without a full re-run.
+- **DISPATCH WIRED (engine `9418edf`):** `github_agent.dispatchWorkflow(job)` now forwards `inputs.level3='true'`
+  when `job.level3` is truthy. FIRST LEVEL-3 CLOUD RUN dispatched: job `L3-TEST-1786560877545`, run **31630013965**
+  (framework repo, ref main), SauceDemo add-to-cart case. CONFIRMED the gated step "Install @playwright/cli + xvfb
+  (Level 3)" ran & succeeded (proves the toggle threaded through). PENDING: read the "Generate + run" log for `[L3]`
+  step lines + the "Verified live actions (LEVEL 3)" evidence block, and confirm the spec used proven locators.
 
