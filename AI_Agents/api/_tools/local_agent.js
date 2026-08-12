@@ -1726,7 +1726,7 @@ function renderJourney(journey) {
   }).join('\n');
 }
 
-function buildGeneratePrompt(job, g, snapshot, existing) {
+function buildGeneratePrompt(job, g, snapshot, existing, liveWalk) {
   const existingBlock = (existing && existing.length)
     ? existing.map((f) => `===FILE:${f.rel}|${f.layer}===\n${f.content}\n===ENDFILE===`).join('\n')
     : '';
@@ -1742,6 +1742,9 @@ function buildGeneratePrompt(job, g, snapshot, existing) {
     skillModeDirective(job),
     '\n## Reuse index — READ FIRST (sharded manifest + the relevant domain shard). Every asset listed here ALREADY EXISTS — reuse locators/methods/tests; do NOT recreate them.\n' + g.capabilities,
     snapshot ? '\n## Live page snapshot (EVIDENCE — derive real locators from these roles/names)\n' + snapshot : '',
+    liveWalk
+      ? '\n## Verified live walk (AUTHORITATIVE — the runner JUST drove the real app through this journey. These are the REAL controls per page, IN ORDER, that actually worked, plus the real success/validation messages. Write the spec to REPRODUCE this exact walk: same page order, same control labels copied verbatim, assert these exact messages. Prefer these locators/messages over any guess or static snapshot.)\n' + liveWalk
+      : '',
     journeyBlock
       ? '\n## Discovered journey (EVIDENCE from the crawl — each page IN ORDER with its REAL controls). Reach the target page by walking THESE pages through the app UI, and establish every precondition the earlier pages create (add an item, create a record, open a sub-page). Do NOT deep-link to a later page and assume its fields exist — the earlier pages produce the state that makes them appear.\n' + journeyBlock
       : '',
@@ -2704,6 +2707,26 @@ async function coreGenerate(fw, job, log, logs) {
   const snapAuth = snapshotAuth(job);
   const snapshot = await captureSnapshot(fw, job.url, snapAuth ? { auth: snapAuth } : {});
   log(snapshot ? `[local] Snapshot captured (${snapshot.length} chars${snapAuth ? ', authenticated' : ''}).` : '[local] Snapshot unavailable — falling back to exemplars.');
+  // LEVEL 2 — verified live walk: drive the REAL app on the runner (login → auto-discover the
+  // journey → capture the real controls + success/validation messages at each state) so codegen
+  // writes from a PROVEN walk instead of guessing. Non-prod only; safe fallback to the static snapshot.
+  let liveWalk = '';
+  const isProdEnv = String(job.environment || '').toLowerCase().startsWith('prod');
+  if (snapAuth && !isProdEnv && process.env.BLAST_LIVE_WALK !== '0') {
+    log('[local] Level 2: driving the live app to VERIFY the journey (login → walk → capture real states)…');
+    try {
+      const drive = await driveFlow(fw, [job.url], { auth: snapAuth, allowSubmit: true, maxDepth: 10 });
+      if (drive && Array.isArray(drive.states) && drive.states.length) {
+        const liveModel = modelFromStates(drive.states, job.feature || job.url, drive.observed);
+        liveWalk = featureModelSummary(liveModel);
+        log(`[local] Level 2: verified ${drive.states.length} live state(s) — codegen will write from the proven walk.`);
+      } else {
+        log('[local] Level 2: live walk captured no states — using the static snapshot evidence.');
+      }
+    } catch (e) {
+      log(`[local] Level 2: live walk skipped (${e.message}) — using the static snapshot evidence.`);
+    }
+  }
   const existing = findDomainFiles(fw, job);
   if (existing.length) log(`[local] Extending existing domain files: ${existing.map((e) => e.rel).join(', ')}`);
 
@@ -2798,7 +2821,7 @@ async function coreGenerate(fw, job, log, logs) {
     // RETRY on unparseable output: LLMs occasionally answer with prose (no ===FILE=== block),
     // most often when a case overlaps existing coverage. Retry with a stricter "code only"
     // directive so the behavioral dedup below gets real code to judge instead of a false miss.
-    const basePrompt = buildGeneratePrompt({ ...job, testCases: [tc] }, grounding, snapshot, existNow);
+    const basePrompt = buildGeneratePrompt({ ...job, testCases: [tc] }, grounding, snapshot, existNow, liveWalk);
     let batch = [];
     for (let attempt = 1; attempt <= GEN_ATTEMPTS; attempt++) {
       const prompt = attempt === 1 ? basePrompt : basePrompt
