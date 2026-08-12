@@ -685,3 +685,22 @@ then a PR opening on pass/partial. If the live walk captures 0 states, tighten `
 - **NEXT:** run a real job from the website with the box CHECKED and a NUMERIC id, confirm the run log shows `[L3]` live
   steps + the "Verified live actions (LEVEL 3)" block, then after a few clean green runs flip the default to ON.
 
+## Settled decisions (THIRD Level-3 cloud run — both fixes CONFIRMED, PR opened) — run 31632659461 (#68)
+- Dispatched via a temp script (`scripts/_dispatch-l3-cart.js`, untracked) with `level3:true` + NUMERIC id `TC_501`,
+  add-to-cart case, `loginUrl` set. Bypassed the website UI + the DEAD explore tunnel entirely (Autopilot explore is
+  blocked because Render's `EXPLORE_WORKER_URL` points to a stale `trycloudflare` tunnel — `getaddrinfo ENOTFOUND`;
+  the laptop worker/tunnel must be restarted + the URL refreshed in Render to use Autopilot; NOT needed for GENERATE).
+- **BOTH FIXES CONFIRMED from the log:** (1) landing-url fix WORKS — `[L3] Driving the live app … from …inventory.html`
+  (starts on the authed in-app page, not the login root); (2) numeric-id fix WORKS — `✅ Verification passed — all 1
+  requested case(s) present: TC_501`, and **`PR=true`** (`[BLAST] L3-CART-… — automated tests (PASSED)`). `3 passed`.
+  All 15 workflow steps green incl. step 7 "Install @playwright/cli + xvfb (Level 3)" and step 15 "Open Pull Request".
+- **REMAINING (v2 polish, NOT blocking):** `[L3] No interactable elements in the live snapshot — stopping the walk.`
+  Level 3 reached inventory.html but its FIRST `playwright-cli snapshot` returned zero interactable refs → 0 live
+  steps → safe fallback (which passed). LIKELY CAUSE: the CLI session isn't actually authenticated by `state-load`
+  (so `goto /inventory.html` hits SauceDemo's "you can only access … when logged in" ERROR page, which has no
+  inputs/buttons → 0 refs). NEXT DEBUG: on `refs.length===0`, log the snapshot length + first ~200 chars (and the
+  post-`state-load` URL) to confirm whether the page is the error page (auth not applied to the CLI context) vs a
+  timing/parse issue. If auth: verify `state-load` targets the same context the `goto` uses, or add a short settle/wait
+  before the first snapshot. Then re-dispatch to see `[L3] ✓ step N…` + the "Verified live actions (LEVEL 3)" block.
+- Temp diagnostic scripts added (untracked, gitignored `scripts/_*.js`): `_dispatch-l3-cart.js`, `_run-log.js`.
+
