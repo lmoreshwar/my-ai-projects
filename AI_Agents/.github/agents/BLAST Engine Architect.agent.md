@@ -734,4 +734,19 @@ then a PR opening on pass/partial. If the live walk captures 0 states, tighten `
   run took 12 steps incl. bouncing in/out of the item page and Open/Close Menu (exploratory, not goal-directed). The
   proven actions still fed codegen and the test passed. v2 = per-case, goal-directed drive (stop as soon as the
   case's target state is reached; prefer the shortest verified path). Generic — BASE_URL + creds only.
+- **testData.json protect-guard dropped NEW keys → 2 negative cases failed with `undefined` message** (job
+  AUTO after the checkout-form Autopilot run: 8/10 passed, PR opened partial; TC_032 "empty Last Name" + TC_033
+  "empty Zip" failed `toHaveText(undefined)` because `messages.lastNameRequired`/`postalCodeRequired` were never
+  written). Root cause: `writeFiles` guarded `testData.json` with `jsonOverwriteViolation` = "if the LLM's re-emitted
+  JSON DROPS any existing top-level key, protect the whole file". The LLM re-emits only the SUBSET of keys the new
+  case needs, so every testData write that ADDED the new message/`tcNNCheckoutInfo` keys ALSO omitted older keys →
+  guard `🛡 kept` the old file → the genuinely-NEW keys never landed → compile gate saw `Property does not exist`
+  but couldn't fix it (guard kept re-blocking) → runtime `undefined`. Same class as the `77872ba` Page-getter
+  guard-trap, but for JSON. Fix (commit `6e389e1`, CI Generate → effective next run WITHOUT a worker restart):
+  `mergeJsonData(current, next)` DEEP-MERGES data files — UNION of both objects: every existing key/value kept
+  VERBATIM (existing tests depend on them), nested objects recursed (so `messages` gains `lastNameRequired` while
+  keeping `firstNameRequired`), only genuinely-new keys added; a truncated/invalid `next` returns null → protect the
+  working file. `writeFiles` now handles `*.json` FIRST (before the length/destructive guard) so a shorter subset
+  never trips the 60%-length bar. `jsonOverwriteViolation` removed. Unit-tested (existing keys kept, new nested +
+  top-level keys added, bad JSON → protect). Generic — no app specifics.
 
