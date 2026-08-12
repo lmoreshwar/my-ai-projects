@@ -2478,6 +2478,42 @@ function memberBlocks(src) {
   return out;
 }
 
+/** Extract each top-level test() block from a spec as {name: title, text: full block}. Lets a spec
+ * be merged the SAME baseline-aware way as Page/Module members: keep baseline tests verbatim, let
+ * compile-fix/heal correct this-run tests, append genuinely-new ones. Balances the test(...) call
+ * parens while skipping strings and comments so a brace inside the body never ends the block early. */
+function specBlocks(src) {
+  const out = [];
+  const seen = new Set();
+  // Only real test() calls (and test.only/skip/fixme/fail) — NOT test.describe or hooks, whose
+  // body would otherwise swallow every inner test into one block.
+  const re = /\btest\s*(?:\.(?:only|skip|fixme|fail))?\s*\(\s*(['"`])((?:\\.|(?!\1)[^\\])*)\1/g;
+  let m;
+  while ((m = re.exec(src))) {
+    const title = m[2];
+    const open = src.indexOf('(', m.index);
+    if (open < 0) continue;
+    let depth = 0; let str = null; let end = -1;
+    for (let j = open; j < src.length; j++) {
+      const ch = src[j];
+      if (str) { if (ch === str && src[j - 1] !== '\\') str = null; continue; }
+      if (ch === '"' || ch === "'" || ch === '`') { str = ch; continue; }
+      if (ch === '/' && src[j + 1] === '/') { const nl = src.indexOf('\n', j); j = nl < 0 ? src.length : nl; continue; }
+      if (ch === '/' && src[j + 1] === '*') { const ce = src.indexOf('*/', j + 2); j = ce < 0 ? src.length : ce + 1; continue; }
+      if (ch === '(') depth++;
+      else if (ch === ')') { depth--; if (depth === 0) { end = j; break; } }
+    }
+    if (end < 0) continue;
+    let tail = end + 1;
+    while (tail < src.length && /\s/.test(src[tail])) tail++;
+    if (src[tail] === ';') end = tail;
+    if (seen.has(title)) continue;
+    seen.add(title);
+    out.push({ name: title, text: src.slice(m.index, end + 1) });
+  }
+  return out;
+}
+
 /**
  * Best-effort ADDITIVE merge for a code file (page/module). When the regenerated file would DROP
  * existing members (so the reuse guard would protect it) but also ADDS new methods/getters, keep the
@@ -2511,6 +2547,16 @@ function captureBaselines(fw) {
       try { map[`${sub}/${f}`] = new Set(memberBlocks(fs.readFileSync(path.join(dir, f), 'utf8')).map((b) => b.name)); } catch { /* skip unreadable */ }
     }
   }
+  // Specs: baseline = the test TITLES that existed at job start (immutable). This-run tests may be
+  // corrected by compile-fix/heal; new tests appended. Prevents the destructive guard from
+  // protecting the whole spec and trapping a partial compile-fix that never lands its fixes.
+  const tdir = path.join(fw, 'src/tests');
+  let specs;
+  try { specs = fs.readdirSync(tdir); } catch { specs = []; }
+  for (const f of specs) {
+    if (!f.endsWith('.spec.ts')) continue;
+    try { map[`src/tests/${f}`] = new Set(specBlocks(fs.readFileSync(path.join(tdir, f), 'utf8')).map((b) => b.name)); } catch { /* skip unreadable */ }
+  }
   return map;
 }
 
@@ -2523,8 +2569,9 @@ function captureBaselines(fw) {
  * text, or null when nothing changed / can't parse. Generic.
  */
 function mergeExisting(current, next, layer, baseNames) {
-  if (layer !== 'page' && layer !== 'module') return null;
-  const curBlocks = memberBlocks(current);
+  if (layer !== 'page' && layer !== 'module' && layer !== 'spec') return null;
+  const blocksOf = layer === 'spec' ? specBlocks : memberBlocks;
+  const curBlocks = blocksOf(current);
   if (!curBlocks.length) return null;
   const curNames = new Set(curBlocks.map((b) => b.name));
   const curByName = new Map(curBlocks.map((b) => [b.name, b]));
@@ -2532,13 +2579,13 @@ function mergeExisting(current, next, layer, baseNames) {
   let out = current;
   let changed = false;
   // 1) Correct members that were ADDED this run (not in the baseline) when `next` re-emits them.
-  for (const nb of memberBlocks(next)) {
+  for (const nb of blocksOf(next)) {
     if (base.has(nb.name)) continue; // baseline member — never touch
     const cb = curByName.get(nb.name);
     if (cb && cb.text !== nb.text) { out = out.replace(cb.text, nb.text); changed = true; }
   }
   // 2) Append genuinely-new members (present in next, absent from current and baseline).
-  const additions = memberBlocks(next).filter((b) => !curNames.has(b.name) && !base.has(b.name));
+  const additions = blocksOf(next).filter((b) => !curNames.has(b.name) && !base.has(b.name));
   if (additions.length) {
     const idx = out.lastIndexOf('}');
     if (idx >= 0) { out = out.slice(0, idx) + '\n' + additions.map((b) => b.text.replace(/\s+$/, '')).join('\n\n') + '\n' + out.slice(idx); changed = true; }
@@ -2721,6 +2768,25 @@ function writeFiles(fw, files, baselines = null) {
         // try an ADDITIVE merge: keep the working file and append only the genuinely-new
         // methods/getters (e.g. a new Page locator the module needs). This preserves existing
         // coverage AND lands the new member. Only when merge isn't possible do we protect.
+        // SPECS: a partial compile-fix/heal re-emits only the CASES it corrected, so a whole-file
+        // overwrite is destructive and the guard would `🛡 keep` the spec — trapping the fix so it
+        // never lands (this is why compile errors like `boundaryX is not defined` / `<mod>.<method>
+        // is not a function` couldn't be corrected). Merge test-block-wise: keep baseline (job-start)
+        // tests VERBATIM, swap in the corrected version of this-run tests, append any new tests.
+        if (f.layer === 'spec') {
+          const baseTitles = baselines ? baselines[relFromRoot] : null;
+          const specMerged = mergeExisting(current, next, 'spec', baseTitles);
+          if (specMerged && specMerged.trim() !== current.trim()) {
+            const bak = path.join(root, '.blast-backups', `${relFromRoot}.bak-${ts}`);
+            fs.mkdirSync(path.dirname(bak), { recursive: true });
+            fs.copyFileSync(abs, bak);
+            backups.push(path.relative(root, bak).replace(/\\/g, '/'));
+            fs.writeFileSync(abs, specMerged.endsWith('\n') ? specMerged : specMerged + '\n', 'utf8');
+            report.overwritten += 1;
+            written.push({ path: relFromRoot, layer: f.layer, reused: false, action: 'merged' });
+            continue;
+          }
+        }
         const merged = additiveMerge(current, next, f.layer);
         if (merged && merged !== current && merged.trim() !== current.trim()) {
           const bak = path.join(root, '.blast-backups', `${relFromRoot}.bak-${ts}`);

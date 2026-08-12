@@ -750,3 +750,30 @@ then a PR opening on pass/partial. If the live walk captures 0 states, tighten `
   never trips the 60%-length bar. `jsonOverwriteViolation` removed. Unit-tested (existing keys kept, new nested +
   top-level keys added, bad JSON → protect). Generic — no app specifics.
 
+- **SPEC protect-guard trapped compile-fix/heal → this-run cases could not be corrected** (job run 31639451904,
+  the run AFTER the testData fix `6e389e1`: testData fix CONFIRMED — TC_032/033 now pass; but 5 NEW failures, 3 of
+  them a fresh guard-trap). Symptoms: TC_027 `ReferenceError: boundaryLastName is not defined`, TC_028 & TC_034
+  `TypeError: checkoutModule.checkout is not a function`. The compile gate DETECTED all three (`TS2304: Cannot find
+  name 'boundaryLastName'`, `TS2339: Property 'checkout' does not exist`) but `Type-check still failing after 2
+  compile-fix round(s)` because `writeFiles` `🛡 kept … src/tests/checkout.spec.ts` — the fix never landed. Root
+  cause (same CLASS as the `6e389e1` testData trap and the `d0710d8` Page baseline-merge, but for SPECS): compile-fix/
+  heal re-emit only the CASES they corrected (a partial spec), so a whole-file overwrite is `isDestructiveOverwrite`
+  → `additiveMerge` can't parse a spec (a spec is not a class → no member blocks) → protected → the correction is
+  trapped. Fix (commit pending, CI Generate → effective next run WITHOUT a worker restart): make the SPEC layer
+  baseline-aware like Page/Module. New `specBlocks(src)` parses each top-level `test('title', …)` block (regex limited
+  to `test`/`test.only|skip|fixme|fail` so `test.describe`/hooks don't swallow inner tests; balances the `test(...)`
+  parens while skipping strings/comments). `mergeExisting` now accepts `layer === 'spec'` (baseline test titles from
+  job start stay VERBATIM — no existing-test regression; this-run tests are swapped in when re-emitted; brand-new
+  tests appended before the describe's closing brace). `captureBaselines` now ALSO snapshots existing `src/tests/
+  *.spec.ts` test titles. `writeFiles` tries the spec baseline-merge in the destructive branch BEFORE `additiveMerge`/
+  protect, so a partial compile-fix spec lands its corrections without dropping other tests. Unit-tested: baseline
+  kept verbatim (even a `)` inside a string body), this-run case corrected, no duplicate, brand-new case appended.
+  Generic. NOTE: the OTHER 2 failures this run are AUTHORING/worker hallucinations, NOT engine-fixable in Generate —
+  TC_029 "Go back Cancel" (merged-label + wrong expected URL: expected `/inventory.html` but SauceDemo Cancel returns
+  to `cart.html`) and TC_010 "reject nonnumeric Zip" (SauceDemo ACCEPTS nonnumeric zip → proceeds to
+  `checkout-step-two.html`; invented a validation that doesn't exist). Both come from the STALE laptop Explore worker
+  running older authoring (the verbatim-label fix `97b6255` is on main but the worker wasn't restarted). Restart the
+  worker on current `main` to clear them. `checkoutModule.checkout()` is also a wrong call — checkout submission
+  belongs to the cart/checkout flow, not a `checkout()` method on CheckoutModule; the spec-merge lets heal correct it.
+
+
