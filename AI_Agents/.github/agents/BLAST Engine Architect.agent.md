@@ -704,3 +704,18 @@ then a PR opening on pass/partial. If the live walk captures 0 states, tighten `
   before the first snapshot. Then re-dispatch to see `[L3] ✓ step N…` + the "Verified live actions (LEVEL 3)" block.
 - Temp diagnostic scripts added (untracked, gitignored `scripts/_*.js`): `_dispatch-l3-cart.js`, `_run-log.js`.
 
+## Settled decisions (LEVEL 3 FULLY LIVE — frame-scoped ref fix VERIFIED green) — commit `ee9e873`, keep it
+- **MILESTONE (run 31634077374 #70):** Level 3 now DRIVES THE LIVE APP and writes from PROVEN locators — the whole
+  point of Level 3. Log confirms end-to-end: `[L3] ✓ step 1: click "Add to cart"`, `Journey complete after 1 verified
+  step(s)`, `Captured 1 PROVEN action(s) with real locators — feeding to codegen as top evidence`, `3 passed`,
+  `✅ Verification passed … TC_501`, `PR=true`. No blind guessing, no heal rounds needed.
+- **ROOT CAUSE of the earlier 0-steps (run #68/#69, NOT the auth theory from the #68 note):** auth WORKED (url was
+  `inventory.html`, 5789-char snapshot). The real bug: `playwright-cli snapshot` emits FRAME-SCOPED refs
+  (`[ref=f3e3]`, `[ref=f3e7]`) not just plain `[ref=e15]`, and `parseCliRefs` only accepted `[ref=e\d+]` → matched
+  NOTHING → 0 refs → walk stopped → safe fallback (still passed). FIX: broaden the ref regex from `(e\d+)` to
+  `([a-z0-9]+)` so any alphanumeric ref token is accepted; keep the interactable-role filter + drop `generic`.
+  Unit-tested locally (parses f3e7/f3e8/f3e9 + e42, drops generics) then verified in the cloud (run #70). Generic.
+- **Diagnostics kept (commit `2d51f50`):** on a 0-ref first snapshot `driveFeatureLive` now logs url + char count,
+  re-navigates + re-snapshots once, and on still-empty logs a 200-char preview — so any future 0-steps is diagnosable
+  from the log, not guesswork. Landing-url start (`28f66c7`) + numeric-id (`TC_501`) fixes remain in force.
+
