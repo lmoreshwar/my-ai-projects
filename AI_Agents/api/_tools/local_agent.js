@@ -24,6 +24,10 @@ const { spawn } = require('child_process');
 const LLMConnector = require('./llm_connector');
 
 const RUN_TIMEOUT_MS = Number(process.env.LOCAL_RUN_TIMEOUT_MS || 300000);
+// The type-check gate compiles the generated code BEFORE the (slow) Playwright run so every
+// contract violation (invented/missing method, wrong argument type/count, missing key) surfaces
+// at once with file:line — the compiler encodes the WHOLE framework API. Skipped when TS absent.
+const TSC_TIMEOUT_MS = Number(process.env.LOCAL_TSC_TIMEOUT_MS || 120000);
 // How many times to ask the LLM for one case before giving up. LLMs are non-deterministic
 // and sometimes answer a duplicate-looking case with prose (no ===FILE=== block); a retry
 // (with a stricter directive) usually yields parseable code the behavioral dedup can then judge.
@@ -1856,11 +1860,34 @@ function buildGeneratePrompt(job, g, snapshot, existing, liveWalk) {
   ].filter(Boolean).join('\n');
 }
 
+/**
+ * Compile-gate prompt. The generated code failed `tsc --noEmit` BEFORE running Playwright.
+ * The compiler is the authoritative API contract, so it lists EVERY method/argument violation at
+ * once — fix them all in one shot instead of discovering them one runtime crash at a time. Generic.
+ */
+function buildCompilePrompt(job, files, tscErrors, g) {
+  const current = files.map((f) => `===FILE:${f.rel}|${f.layer}===\n${f.content}\n===ENDFILE===`).join('\n');
+  return [
+    'The generated TypeScript/Playwright code does NOT COMPILE. Fix EVERY error below and return the corrected files in the same ===FILE=== format. The TypeScript compiler is AUTHORITATIVE — it knows the exact real API of every wrapper/Page/Module, so these errors are the ground truth.',
+    'Fix ALL errors at once (do not fix one and leave the rest). Keep the 3-layer split (pages = locators, modules = workflows, specs = assertions) and change only what each error requires. Return the FULL content of every file you touch.',
+    'Error → fix mapping:',
+    '- "Property \'<m>\' does not exist on type \'<T>\'": you called a method/property that does not exist. If <T> is a UTIL WRAPPER (Actions/WaitHelper/WorkflowActions), replace it with a REAL method from the Wrapper API contract below, or use the `page` object. If <T> is a DOMAIN Page/Module, either call an existing method OR DEFINE <m> on that class and emit its FULL extended file. Never keep an invented call.',
+    '- "Expected N arguments, but got M": pass every REQUIRED argument with a concrete value (e.g. `goto(url)` needs a real url); never call with a missing/undefined argument.',
+    '- "Argument of type \'X\' is not assignable to parameter of type \'Y\'": pass the correct type (e.g. a string key to `press(key: string)`, not an object; a Locator where a Locator is expected).',
+    '- "Cannot find name \'<n>\'" / "Cannot find module": add the missing import from the SAME path the exemplars use; do not invent a module path.',
+    '- Property error on testData (e.g. testData.<a>.<b>): add `<a>.<b>` to the emitted testData.json with a concrete valid value; keep every existing key.',
+    '- Type/return mismatches: make the signature and its usage agree; never use `any` or `// @ts-ignore` to silence an error — fix the real cause.',
+    g && g.wrapperApi ? '\n## Wrapper API contract (the ONLY methods on the shared wrappers — use these EXACT signatures)\n' + g.wrapperApi : '',
+    g && g.capabilities ? '\n## Reusable API across ALL domains (existing Page/Module methods to reuse or extend)\n' + g.capabilities : '',
+    '\n## TypeScript errors (fix EVERY one)\n' + String(tscErrors || '').slice(-6000),
+    '\n## Current files\n' + current,
+  ].filter(Boolean).join('\n');
+}
+
 function buildHealPrompt(job, files, runOutput, errorContext, g) {
   const current = files.map((f) => `===FILE:${f.rel}|${f.layer}===\n${f.content}\n===ENDFILE===`).join('\n');
   const journeyBlock = renderJourney(job.journey);
-  return [
-    'The generated Playwright test FAILED. Fix the ROOT cause and return the corrected files in the same ===FILE=== format.',
+  return [    'The generated Playwright test FAILED. Fix the ROOT cause and return the corrected files in the same ===FILE=== format.',
     'Only change what is needed to make the test pass. Keep the 3-layer split (pages = locators, modules = workflows, specs = assertions).',
     'DIAGNOSE THE PAGE FIRST (most important). The error-context.md below is a snapshot of the page AT THE MOMENT OF FAILURE. Before editing ANY locator, compare that snapshot to the page the failing step expected. If it shows a DIFFERENT page — e.g. the step waited for a form field / detail element but the snapshot shows a list, landing, cart, or login page — then the test SKIPPED A PRECONDITION and never navigated there. The correct fix is to ADD the missing setup/navigation steps to REACH that page (follow the Discovered journey below IN ORDER and CALL existing setup methods from the Reusable API), NOT to change the locator or extend the Page object. A "waiting for X to be visible" timeout is almost NEVER a locator problem when X\'s page was never reached. Only treat it as a locator problem when the snapshot shows the CORRECT page but the element name/role differs.',
     'INVENTED CONTROL (hallucinated locator). If the failing step waits for a control whose exact name appears NOWHERE — not in the error-context.md snapshot, not in the Discovered journey, not on the real page — then that name was fabricated (often two labels merged, e.g. "Go back Continue Shopping"). Do NOT keep waiting for it and do NOT add it to the Page object. Replace it with the SINGLE closest REAL control that actually exists in the evidence (e.g. the real "Continue Shopping" button). If no real control matches the step\'s intent, the step is invalid — remove that step/assertion rather than waiting for a control that cannot appear.',
@@ -2405,6 +2432,46 @@ function runPlaywright(fw, specRelPaths, job, opts = {}) {
     child.on('error', (err) => { clearTimeout(timer); resolve({ passed: false, output: output + `\n[local] spawn error: ${err.message}`, summary: null }); });
   });
 }
+
+/** True when the framework is a TypeScript project with a compiler available (else the gate is skipped). */
+function hasTypeScript(fw) {
+  try {
+    return fs.existsSync(path.join(fw, 'tsconfig.json'))
+      && (fs.existsSync(path.join(fw, 'node_modules', 'typescript'))
+        || fs.existsSync(path.join(fw, 'node_modules', '.bin', 'tsc'))
+        || fs.existsSync(path.join(fw, 'node_modules', '.bin', 'tsc.cmd')));
+  } catch { return false; }
+}
+
+/** Type-check the whole project (no emit). Returns { ok, output }. The compiler is the authoritative API contract. */
+function typeCheck(fw) {
+  return new Promise((resolve) => {
+    const child = spawn('npx', ['tsc', '--noEmit', '-p', 'tsconfig.json'], { cwd: fw, env: process.env, shell: true });
+    let output = '';
+    const onData = (d) => { output += d.toString(); };
+    child.stdout.on('data', onData);
+    child.stderr.on('data', onData);
+    const timer = setTimeout(() => { child.kill('SIGKILL'); output += '\n[local] tsc timed out.'; }, TSC_TIMEOUT_MS);
+    child.on('close', (code) => { clearTimeout(timer); resolve({ ok: code === 0, output }); });
+    child.on('error', (err) => { clearTimeout(timer); resolve({ ok: false, output: output + `\ntsc spawn error: ${err.message}` }); });
+  });
+}
+
+/**
+ * Filter tsc output to only the compile errors in files WE generated/changed this run. A clean
+ * framework `main` compiles, so any error here is from our code; filtering also prevents a stray
+ * pre-existing project error from blocking the gate.
+ */
+function tscErrorsForFiles(output, relPaths) {
+  const wants = relPaths.map((p) => String(p).replace(/\\/g, '/'));
+  return String(output || '').split('\n').filter((line) => {
+    const m = line.match(/^\s*(.+?\.tsx?)[(:]/);
+    if (!m) return false;
+    const f = m[1].replace(/\\/g, '/').replace(/^\.\//, '');
+    return wants.some((w) => f === w || f.endsWith('/' + w) || f.endsWith(w));
+  });
+}
+
 
 /**
  * Parse Playwright's JSON report (test-results/results.json) into a compact, UI-friendly
@@ -3041,6 +3108,43 @@ async function coreGenerate(fw, job, log, logs) {
   if (specPaths().length === 0) {
     log('[local] No spec file generated (LLM output likely truncated) — requested case(s) NOT automated. Verification FAILED; no PR will be opened.');
     return { generatedFiles: written, reusedFiles: [], executionStatus: 'FAILED', reportUrl: '', requestedCases: requestedIds, missingCases: requestedIds, verified: false, logs };
+  }
+
+  // 1.5) Type-check gate — compile the generated code BEFORE the slow Playwright run. The compiler
+  // encodes the WHOLE framework API, so invented/missing methods, wrong argument types/counts and
+  // missing keys ALL surface at once with exact file:line, and one heal fixes them together —
+  // instead of discovering them one runtime crash at a time. Generic; skipped when TS is absent.
+  if (hasTypeScript(fw)) {
+    const MAX_TS_ROUNDS = 3;
+    for (let tsr = 0; tsr <= MAX_TS_ROUNDS; tsr++) {
+      const tsc = await typeCheck(fw);
+      const ourErrors = tscErrorsForFiles(tsc.output, written.map((w) => w.path));
+      if (tsc.ok || ourErrors.length === 0) {
+        if (tsr > 0) log('[local] Type-check clean ✓ — generated code compiles against the real framework API.');
+        break;
+      }
+      if (tsr === MAX_TS_ROUNDS) {
+        log(`[local] Type-check still failing after ${MAX_TS_ROUNDS} compile-fix round(s) — proceeding to run so Playwright can surface the runtime detail.`);
+        break;
+      }
+      log(`[local] ✗ Type-check found ${ourErrors.length} compile error(s) in generated code — fixing ALL before running:`);
+      ourErrors.slice(0, 12).forEach((e) => log('    ' + e.trim()));
+      const tsInput = findDomainFiles(fw, job);
+      const fixText = await llmGenerate(buildCompilePrompt(job, tsInput.length ? tsInput : files, ourErrors.join('\n'), grounding), buildSystemPrompt());
+      const fixed = sanitizeFiles(parseFiles(fixText));
+      if (!fixed.length) { log('[local] Compile-fix produced no parseable files — proceeding to run.'); break; }
+      const cr = writeFiles(fw, fixed);
+      cr.written.forEach((w) => { recordWrite(w); logWrite(w); });
+      allBackups.push(...cr.backups);
+      files = fixed;
+      const fxC = ensureFixturesRegistered(fw, cr.written);
+      if (fxC.changed) {
+        if (fxC.backup) allBackups.push(fxC.backup);
+        log(`[local]   ＋ registered ${fxC.added.length} new fixture(s) during compile-fix: ${fxC.added.join(', ')}`);
+        recordWrite({ path: 'src/fixtures/index.ts', layer: 'fixture', reused: false, action: 'overwritten' });
+      }
+      log(`[local] Applied compile-fix ${tsr + 1}/${MAX_TS_ROUNDS} to ${cr.written.length} file(s). Re-checking…`);
+    }
   }
 
   // 2) Run
