@@ -1097,13 +1097,28 @@ async function driveFeatureLive(fw, job, tc, auth, log, opts = {}) {
   try {
     await runCli(fw, session, ['open']);
     if (authed) await runCli(fw, session, ['state-load', stateFile]);
-    await runCli(fw, session, ['goto', startUrl]);
+    const gotoOut = await runCli(fw, session, ['goto', startUrl]);
+    const landedUrl = extractPageUrl(gotoOut) || startUrl;
     log(`[L3] Driving the live app for "${tc.title || tc.id || job.feature}" from ${startUrl} — verifying up to ${maxSteps} action(s)…`);
+    if (authed && /\/(login|index\.html)?$/i.test(landedUrl) && landedUrl !== startUrl) {
+      log(`[L3] After auth the CLI landed on ${landedUrl} (not ${startUrl}) — the storage state did not carry into the CLI session.`);
+    }
     for (let step = 1; step <= maxSteps; step++) {
-      const rawSnap = await runCli(fw, session, ['snapshot']);
-      const yaml = (rawSnap.match(/```yaml\n([\s\S]*?)```/) || [, ''])[1] || rawSnap;
-      const refs = parseCliRefs(yaml).slice(0, 60);
-      if (!refs.length) { log('[L3] No interactable elements in the live snapshot — stopping the walk.'); break; }
+      let rawSnap = await runCli(fw, session, ['snapshot']);
+      let yaml = (rawSnap.match(/```yaml\n([\s\S]*?)```/) || [, ''])[1] || rawSnap;
+      let refs = parseCliRefs(yaml).slice(0, 60);
+      // First snapshot can be empty if the page has not settled — re-navigate + retry ONCE before giving up.
+      if (!refs.length && step === 1) {
+        log(`[L3] First snapshot had 0 interactable refs (url=${extractPageUrl(rawSnap) || landedUrl}, ${yaml.length} chars) — settling and retrying once.`);
+        await runCli(fw, session, ['goto', startUrl]);
+        rawSnap = await runCli(fw, session, ['snapshot']);
+        yaml = (rawSnap.match(/```yaml\n([\s\S]*?)```/) || [, ''])[1] || rawSnap;
+        refs = parseCliRefs(yaml).slice(0, 60);
+      }
+      if (!refs.length) {
+        log(`[L3] No interactable elements in the live snapshot (${yaml.length} chars) — stopping the walk. Preview: ${yaml.slice(0, 200).replace(/\s+/g, ' ').trim()}`);
+        break;
+      }
       const decision = await llmNextAction(job, tc, trace, yaml, refs);
       if (!decision || String(decision.action || '').toLowerCase() === 'done' || !decision.ref) {
         log(`[L3] Journey complete after ${trace.length} verified step(s).`);
