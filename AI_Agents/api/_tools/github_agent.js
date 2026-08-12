@@ -328,6 +328,7 @@ async function dispatchWorkflow(job) {
     browser: job.browser || 'Chrome',
     testScope: job.testScope || 'Generated only',
     parallel: job.parallel || 'Auto',
+    journey: Array.isArray(job.journey) ? job.journey : [],
     testCases: (job.testCases || []).map((tc) => ({
       id: tc.id,
       title: tc.title || '',

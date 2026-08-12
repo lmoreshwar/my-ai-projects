@@ -1692,10 +1692,44 @@ function skillModeDirective(job) {
   return ''; // new automation = the default behavior already described above
 }
 
+/**
+ * Compact the rich crawl featureModel.steps into a BOUNDED, names-only journey
+ * that is safe to carry inside the workflow_dispatch payload. Names only, capped
+ * per page and overall, so codegen sees the real per-page controls without bloat.
+ */
+function compactJourney(featureModel) {
+  if (!featureModel || !Array.isArray(featureModel.steps) || !featureModel.steps.length) return [];
+  const cap = (arr, n) => (Array.isArray(arr) ? arr.slice(0, n) : []);
+  const nm = (x) => String(typeof x === 'string' ? x : (x && x.name) || '').trim().slice(0, 60);
+  const uniq = (arr) => [...new Set(arr.filter(Boolean))];
+  return featureModel.steps.slice(0, 8).map((s) => ({
+    label: String(s.label || '').slice(0, 60),
+    url: String(s.url || '').slice(0, 200),
+    inputs: uniq(cap(s.inputs, 12).map(nm)),
+    buttons: uniq(cap(s.buttons, 12).map(nm)),
+    links: uniq(cap(s.links, 12).map(nm)),
+    controls: uniq(cap(s.controls, 8).map(nm)),
+  }));
+}
+
+/** Render the compact journey as ordered per-page evidence for the generate prompt. */
+function renderJourney(journey) {
+  if (!Array.isArray(journey) || !journey.length) return '';
+  return journey.map((s, i) => {
+    const parts = [`  ${i + 1}. ${s.label || 'Page'}${s.url ? ` (${s.url})` : ''}`];
+    if (s.inputs && s.inputs.length) parts.push(`     Inputs: ${s.inputs.join(', ')}`);
+    if (s.buttons && s.buttons.length) parts.push(`     Buttons: ${s.buttons.join(', ')}`);
+    if (s.links && s.links.length) parts.push(`     Links: ${s.links.join(', ')}`);
+    if (s.controls && s.controls.length) parts.push(`     Controls: ${s.controls.join(', ')}`);
+    return parts.join('\n');
+  }).join('\n');
+}
+
 function buildGeneratePrompt(job, g, snapshot, existing) {
   const existingBlock = (existing && existing.length)
     ? existing.map((f) => `===FILE:${f.rel}|${f.layer}===\n${f.content}\n===ENDFILE===`).join('\n')
     : '';
+  const journeyBlock = renderJourney(job.journey);
   return [
     `# Task: automate the following test case(s) for URL ${job.url || '(unknown)'} (env ${job.environment}).`,
     testCaseBlock(job),
@@ -1707,6 +1741,9 @@ function buildGeneratePrompt(job, g, snapshot, existing) {
     skillModeDirective(job),
     '\n## Reuse index — READ FIRST (sharded manifest + the relevant domain shard). Every asset listed here ALREADY EXISTS — reuse locators/methods/tests; do NOT recreate them.\n' + g.capabilities,
     snapshot ? '\n## Live page snapshot (EVIDENCE — derive real locators from these roles/names)\n' + snapshot : '',
+    journeyBlock
+      ? '\n## Discovered journey (EVIDENCE from the crawl — each page IN ORDER with its REAL controls). Reach the target page by walking THESE pages through the app UI, and establish every precondition the earlier pages create (add an item, create a record, open a sub-page). Do NOT deep-link to a later page and assume its fields exist — the earlier pages produce the state that makes them appear.\n' + journeyBlock
+      : '',
     existingBlock
       ? '\n## Existing domain files — EXTEND these (return full content, keep every existing test/locator/method, ADD the new cases)\n' + existingBlock
       : '\n## Style exemplar — Page (locators only, single semantic strategy)\n' + g.pageEx
@@ -3514,6 +3551,7 @@ module.exports = {
   exploreViaWorker,
   generateViaWorker,
   buildFeatureModel,
+  compactJourney,
   ensureFixturesRegistered,
   pushBranch,
   discardBranch,

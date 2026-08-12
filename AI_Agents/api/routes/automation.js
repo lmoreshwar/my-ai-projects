@@ -237,6 +237,9 @@ router.post('/explore', auth, async (req, res) => {
       job.featureSummary = featureModel
         ? `${featureModel.inputs.length} input(s), ${featureModel.buttons.length} button(s), ${featureModel.links.length} link(s)`
         : '';
+      // Persist the discovered per-page journey (names only, bounded) so codegen can
+      // self-establish preconditions instead of re-guessing a multi-page flow.
+      job.journey = localAgent.compactJourney(featureModel);
     } catch (e) {
       job.logs = [...(job.logs || []), ...exploreLogs, `[explore] error: ${e.message}`];
     }
