@@ -2382,6 +2382,28 @@ function planExecutionCopy(providerName) {
   };
 }
 
+/**
+ * Render a new case's authored steps for the plan so the user (and reviewer)
+ * can SEE exactly what the LLM will build from. If a case has no steps, we flag
+ * it explicitly — a title-only case means the LLM has to guess the journey.
+ */
+function renderCaseSteps(c) {
+  const out = [];
+  const stepsRaw = String(c.steps || '').trim();
+  if (stepsRaw) {
+    const stepLines = stepsRaw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    out.push('    - Steps:');
+    stepLines.forEach((s) => out.push(`      ${/^\d/.test(s) ? '' : '- '}${s}`));
+  } else {
+    out.push('    - ⚠ No steps authored — the LLM will infer the journey from the title only (lower confidence).');
+  }
+  const testData = String(c.testData || '').trim();
+  if (testData) out.push(`    - Test data: ${testData.replace(/\s*\r?\n\s*/g, '; ')}`);
+  const expected = String(c.expectedResults || c.expected || '').trim();
+  if (expected) out.push(`    - Expected: ${expected.replace(/\s*\r?\n\s*/g, '; ')}`);
+  return out;
+}
+
 function buildPlan(job, fwOverride, providerName) {
   const { frameworkPath, platform, model } = config();
   const fw = fwOverride || frameworkPath;
@@ -2457,7 +2479,10 @@ function buildPlan(job, fwOverride, providerName) {
   }
   if (toAdd.length) {
     lines.push(`> ＋ ${toAdd.length} case(s) are **new** and will be added:`);
-    toAdd.forEach((c) => lines.push(`  - 🆕 ${c.id} ${c.title || ''} — new → generate`));
+    toAdd.forEach((c) => {
+      lines.push(`  - 🆕 ${c.id} ${c.title || ''} — new → generate`);
+      renderCaseSteps(c).forEach((l) => lines.push(l));
+    });
     lines.push('  - ↺ A final **behavioral de-duplication** runs at generation: any case above that turns out to drive the SAME actions + test-data as an existing test is auto-skipped (reused as-is), never duplicated — even when its id/title differ (e.g. a re-worded locked-user check collapses onto the existing one). Only genuinely-new behavior is written and PR-gated.');
   }
   if (specTestCount > cases.length && !toAdd.length) {
@@ -2861,8 +2886,16 @@ async function coreGenerate(fw, job, log, logs) {
   const MAX_HEAL_ROUNDS = 2;
   for (let heal = 1; !run.passed && heal <= MAX_HEAL_ROUNDS; heal++) {
     const errorContext = readErrorContext(fw);
+    // The exact per-test error from the JSON report — guarantees the heal sees the real
+    // message (TimeoutError / strict-mode / assertion) even when error-context.md is absent.
+    const failText = ((run.summary && run.summary.tests) || [])
+      .filter((t) => t.status !== 'passed' && t.status !== 'skipped')
+      .map((t) => `### ${t.title}\n${String(t.error || '').trim()}`)
+      .filter((s) => s.trim())
+      .join('\n\n');
+    const healContext = [failText, errorContext].filter(Boolean).join('\n\n');
     const healInput = findDomainFiles(fw, job); // heal against the full spec on disk
-    const healText = await llmGenerate(buildHealPrompt(job, healInput.length ? healInput : files, run.output, errorContext), buildSystemPrompt());
+    const healText = await llmGenerate(buildHealPrompt(job, healInput.length ? healInput : files, run.output, healContext), buildSystemPrompt());
     const healed = sanitizeFiles(parseFiles(healText));
     if (!healed.length) { log('[local] Heal produced no parseable files.'); break; }
     const hr = writeFiles(fw, healed);
@@ -2937,6 +2970,26 @@ async function coreGenerate(fw, job, log, logs) {
   }
 
   const executionStatus = run.passed ? 'PASSED' : (partial ? 'PARTIAL' : 'FAILED');
+
+  // Surface WHY it failed — the exact Playwright error per failing test. Meets the product
+  // requirement ("tell me why it failed") and ends blind heal loops: the log/report now carries
+  // the real message (TimeoutError / strict-mode violation / assertion), not just a stack trace.
+  const failureReasons = ((run.summary && run.summary.tests) || [])
+    .filter((t) => t.status !== 'passed' && t.status !== 'skipped')
+    .map((t) => ({ title: t.title, error: String(t.error || '').trim() }));
+  if (!run.passed) {
+    if (failureReasons.length) {
+      log('[local] ✖ FAILURE REASON(S) — exact Playwright error per failing test:');
+      failureReasons.forEach((f) => {
+        log(`[local]   • ${f.title}`);
+        (f.error ? f.error.split('\n') : ['(no error text captured)'])
+          .forEach((l) => log(`[local]       ${l}`));
+      });
+    } else {
+      log('[local] ✖ Tests failed but no per-test error was captured (JSON report missing) — see raw output tail above.');
+    }
+  }
+
   return {
     generatedFiles: written,
     reusedFiles: written.filter((w) => w.reused).map((w) => w.path),
@@ -2944,6 +2997,7 @@ async function coreGenerate(fw, job, log, logs) {
     executionStatus,
     reportUrl: 'playwright-report/index.html',
     reportSummary: run.summary || null,
+    failureReasons,
     requestedCases: requestedIds,
     automatedCases,
     failedCases,

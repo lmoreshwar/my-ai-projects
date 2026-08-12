@@ -95,9 +95,21 @@ async function main() {
     changedPaths: changed,
     requestedCases: result.requestedCases || [],
     missingCases,
+    failureReasons: result.failureReasons || [],
     verified,
   };
   fs.writeFileSync(path.join(process.cwd(), 'blast-ci-result.json'), JSON.stringify(summary, null, 2));
+
+  // Always echo WHY it failed (the exact per-test error) so the run log and the UI
+  // give the user actionable reasons — never just a suppressed PR with no explanation.
+  if ((summary.failureReasons || []).length) {
+    console.log('[blast-ci] Failure reason(s):');
+    summary.failureReasons.forEach((f) => {
+      console.log(`[blast-ci]   • ${f.title}`);
+      const first = String(f.error || '(no error text captured)').split('\n')[0];
+      console.log(`[blast-ci]       ${first}`);
+    });
+  }
 
   // Gate-aware overall status: the tests passing is NOT success if the requested case(s)
   // were never automated. Report FAILED so the log and the UI agree with reality.
