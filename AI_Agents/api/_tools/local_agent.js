@@ -1737,8 +1737,9 @@ async function explore(job, onLog, creds) {
 function buildSystemPrompt() {
   return [
     'You are the AI Native Playwright Engineer. You output ONLY code files in the exact 3-layer architecture.',
-    'Binding rules: pages = locators only (semantic: getByRole/getByLabel/getByPlaceholder); modules = workflows using Actions/WaitHelper/WorkflowActions wrappers + Logger.step(); specs = assertions/intent using the custom fixtures.',
-    'Never put business logic in pages. Never put assertions in modules. Never use raw Playwright in specs. No `any`. Reuse existing files where the capabilities index shows them.',
+    'Binding rules: pages = LOCATORS ONLY (semantic getByRole/getByLabel/getByPlaceholder as class properties) — a Page has NO methods with logic, NO this.actions/this.logger/this.waitHelper, NO collaborators; put ALL workflow logic in the module. modules = workflows that call the wrappers via the module\'s OWN constructor-declared collaborators (this.actions, this.workflowActions, its page object) and log via this.logger (created ONCE as `private readonly logger = Logger.create(\'<Module>\')`). specs = assertions/intent using the custom fixtures.',
+    'Never put business logic or methods in pages. Never put assertions in modules. Never use raw Playwright in specs. No `any`. Reuse existing files where the capabilities index shows them.',
+    'LOGGER: call step()/info() ONLY on the instance `this.logger`. NEVER call `Logger.step(...)`/`Logger.info(...)` statically (they are instance methods; the static side only has create()). When adding a method to an EXISTING module, use ONLY collaborators its constructor already declares — do NOT reference this.waitHelper (or any field) that the constructor does not create.',
     'LOCATOR STANDARD (follow exactly): default to a SINGLE semantic strategy per element (getByRole/getByLabel/getByPlaceholder; app-owned data-test only when no role/label exists). Do NOT stack multiple locators by default. Add a SmartLocator.resolve fallback chain ONLY when an element is genuinely fragile, and then annotate it with a `// reason:` comment and use at most 3 strategies. Collections use plain Playwright locators, never SmartLocator.',
     'DATA & CONFIG: never hardcode credentials/data. Valid credentials come from credentials(\'app\') (src/config). Negative/other data lives in src/testdata/testData.json — reuse existing keys; if you need NEW data, emit an EXTENDED testData.json (config layer) that KEEPS all existing keys and ADDS yours.',
     'FIXTURES: specs consume fixtures (e.g. loginModule, loginPage, page) from src/fixtures. If you CREATE a new Page/Module, you MUST also emit an updated src/fixtures/index.ts (fixture layer) that keeps all existing fixtures and registers the new Page + Module.',
@@ -2297,6 +2298,54 @@ function additiveMerge(current, next, layer) {
   return current.slice(0, idx) + inject + current.slice(idx);
 }
 
+/** Member names of every existing Page/Module at JOB START — the immutable baseline. Members not
+ * in this set were added DURING the job and may still be corrected by compile-fix/heal. */
+function captureBaselines(fw) {
+  const map = {};
+  for (const sub of ['src/pages', 'src/modules']) {
+    const dir = path.join(fw, sub);
+    let names;
+    try { names = fs.readdirSync(dir); } catch { continue; }
+    for (const f of names) {
+      if (!f.endsWith('.ts')) continue;
+      try { map[`${sub}/${f}`] = new Set(memberBlocks(fs.readFileSync(path.join(dir, f), 'utf8')).map((b) => b.name)); } catch { /* skip unreadable */ }
+    }
+  }
+  return map;
+}
+
+/**
+ * Baseline-aware merge for an existing Page/Module. PRE-EXISTING members (in `baseNames`, captured
+ * at job start) are IMMUTABLE — existing tests depend on them, so a new-case regen can never rewrite
+ * a constructor or method. But members ADDED during this job are still correctable: if `next` re-emits
+ * one (a compile-fix/heal), its block is swapped in; brand-new members are appended. This keeps the
+ * regression protection AND lets the compile gate actually fix a broken new member. Returns merged
+ * text, or null when nothing changed / can't parse. Generic.
+ */
+function mergeExisting(current, next, layer, baseNames) {
+  if (layer !== 'page' && layer !== 'module') return null;
+  const curBlocks = memberBlocks(current);
+  if (!curBlocks.length) return null;
+  const curNames = new Set(curBlocks.map((b) => b.name));
+  const curByName = new Map(curBlocks.map((b) => [b.name, b]));
+  const base = baseNames || curNames; // no baseline → pure append-only (immutable = all current)
+  let out = current;
+  let changed = false;
+  // 1) Correct members that were ADDED this run (not in the baseline) when `next` re-emits them.
+  for (const nb of memberBlocks(next)) {
+    if (base.has(nb.name)) continue; // baseline member — never touch
+    const cb = curByName.get(nb.name);
+    if (cb && cb.text !== nb.text) { out = out.replace(cb.text, nb.text); changed = true; }
+  }
+  // 2) Append genuinely-new members (present in next, absent from current and baseline).
+  const additions = memberBlocks(next).filter((b) => !curNames.has(b.name) && !base.has(b.name));
+  if (additions.length) {
+    const idx = out.lastIndexOf('}');
+    if (idx >= 0) { out = out.slice(0, idx) + '\n' + additions.map((b) => b.text.replace(/\s+$/, '')).join('\n\n') + '\n' + out.slice(idx); changed = true; }
+  }
+  return changed ? out : null;
+}
+
 /**
  * DETERMINISTIC fixture registrar — guarantees every newly-created Page/Module gets a
  * fixture entry in src/fixtures/index.ts, WITHOUT trusting the LLM to regenerate that
@@ -2393,7 +2442,7 @@ function ensureFixturesRegistered(fw, written) {
  * - Otherwise → CREATED.
  * Returns { written[{path,layer,reused,action}], backups[], report{created,reused,overwritten,protected} }.
  */
-function writeFiles(fw, files) {
+function writeFiles(fw, files, baselines = null) {
   const written = [];
   const backups = [];
   const report = { created: 0, reused: 0, overwritten: 0, protected: 0 };
@@ -2419,10 +2468,12 @@ function writeFiles(fw, files) {
       // APPEND-ONLY for an existing Page/Module: the LLM must NEVER rewrite an existing
       // method/getter/constructor — existing tests depend on them. A new-case regen that
       // rewrote InventoryModule dropped its constructor wiring and broke 5 passing tests
-      // (`Cannot read properties of undefined`). So keep the working file VERBATIM and append
-      // only genuinely-new members; if there's nothing new, reuse it untouched. Generic.
+      // (`Cannot read properties of undefined`). So keep every PRE-EXISTING member (from the
+      // job-start baseline) VERBATIM; members ADDED this run stay correctable so the compile
+      // gate / heal can fix a broken new method. If nothing changed, reuse untouched. Generic.
       if (f.layer === 'page' || f.layer === 'module') {
-        const merged = additiveMerge(current, next, f.layer);
+        const baseNames = baselines ? baselines[relFromRoot] : null;
+        const merged = mergeExisting(current, next, f.layer, baseNames);
         if (merged && merged.trim() !== current.trim()) {
           const bak = path.join(root, '.blast-backups', `${relFromRoot}.bak-${ts}`);
           fs.mkdirSync(path.dirname(bak), { recursive: true });
@@ -3002,6 +3053,10 @@ async function coreGenerate(fw, job, log, logs) {
   }
   const existing = findDomainFiles(fw, job);
   if (existing.length) log(`[local] Extending existing domain files: ${existing.map((e) => e.rel).join(', ')}`);
+  // Pre-existing Page/Module members captured NOW (job start) are immutable for the whole run —
+  // only members ADDED this run may be corrected by compile-fix/heal. Guards against a new-case
+  // regen breaking an existing test's method/constructor.
+  const baselines = captureBaselines(fw);
 
   // 0b) Duplicate guard — decide what is genuinely NEW before touching the LLM.
   // Check EVERY spec (cross-file), not just the resolved domain spec, so a case that
@@ -3179,7 +3234,7 @@ async function coreGenerate(fw, job, log, logs) {
       if (ri >= 0) requestedIds.splice(ri, 1);
       continue;
     }
-    const wr = writeFiles(fw, batch);
+    const wr = writeFiles(fw, batch, baselines);
     allBackups.push(...wr.backups);
     wr.written.forEach((w) => { recordWrite(w); logWrite(w); });
     files = batch;
@@ -3256,7 +3311,7 @@ async function coreGenerate(fw, job, log, logs) {
       const fixText = await llmGenerate(buildCompilePrompt(job, tsInput.length ? tsInput : files, ourErrors.join('\n'), grounding), buildSystemPrompt());
       const fixed = sanitizeFiles(parseFiles(fixText));
       if (!fixed.length) { log('[local] Compile-fix produced no parseable files — proceeding to run.'); break; }
-      const cr = writeFiles(fw, fixed);
+      const cr = writeFiles(fw, fixed, baselines);
       cr.written.forEach((w) => { recordWrite(w); logWrite(w); });
       allBackups.push(...cr.backups);
       files = fixed;
@@ -3293,7 +3348,7 @@ async function coreGenerate(fw, job, log, logs) {
     const healText = await llmGenerate(buildHealPrompt(job, healInput.length ? healInput : files, run.output, healContext, grounding), buildSystemPrompt());
     const healed = sanitizeFiles(parseFiles(healText));
     if (!healed.length) { log('[local] Heal produced no parseable files.'); break; }
-    const hr = writeFiles(fw, healed);
+    const hr = writeFiles(fw, healed, baselines);
     hr.written.forEach((w) => { recordWrite(w); logWrite(w); });
     allBackups.push(...hr.backups);
     files = healed;
