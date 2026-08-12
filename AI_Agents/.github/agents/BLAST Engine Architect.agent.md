@@ -611,3 +611,35 @@ then a PR opening on pass/partial. If the live walk captures 0 states, tighten `
   flag (`BLAST_LEVEL3=1`) with the current static-snapshot path as a SAFE fallback; prove it on one feature, then
   default it. Generic — BASE_URL + creds only.
 
+## Settled decisions (Level 3 v1 BUILT — agentic live-drive codegen evidence) — commit `f0f5c26`, keep it
+- **VERIFIED command surface (local `playwright-cli --help` + a live saucedemo login probe):** `<target>` for
+  `click`/`fill`/`select`/`check` accepts "the exact element REF from the snapshot (e.g. `e15`), or a unique
+  selector". A `snapshot` returns `- role "name" [ref=eNN]` rows. CRUCIAL: after `fill e11 <text>` / `click e15`,
+  `playwright-cli` ECHOES the REAL locator it ran inside a ```js …``` block (e.g.
+  `await page.locator('[data-test="username"]').fill(...)`) and prints `Page URL:` after. So driving by ref YIELDS
+  the proven Playwright locator + detects navigation. SECURITY: the CLI also echoes the FILLED VALUE into its
+  output — so the engine NEVER fills a username/password via the CLI; auth is done by an env-cred LIBRARY login that
+  saves a storage state, which the CLI `state-load`s (no secret in argv/logs). This reuses the existing secure
+  `driveFlow({ stateFile })` → `.blast-l3-state.json` path.
+- **What was built in `local_agent.js` (all flag-gated `BLAST_LEVEL3=1`, safe `''` fallback → existing path):**
+  `parseCliRefs(snapshot)` (extract interactable `[ref=eNN]` rows, drops `generic`/decoration),
+  `extractRanLocator(cliOut)` (pull the proven ```js locator), `extractPageUrl(cliOut)` (detect navigation),
+  `llmNextAction(job, tc, trace, yaml, refs)` (LLM returns STRICT JSON `{action,ref,value,note}` choosing ONE ref
+  from the LIVE list ONLY — anti-hallucination: a ref not in the list stops the walk),
+  `driveFeatureLive(fw, job, tc, auth, log)` (open → state-load auth → goto target → LOOP up to
+  `BLAST_LEVEL3_STEPS` (default 12): snapshot → LLM picks next action → execute by ref → record the PROVEN locator
+  + observed nav → repeat until `done`), and `renderLiveTrace(trace)` (ordered proven-locator evidence).
+  `buildGeneratePrompt` gained a 6th param `liveTrace`, rendered as the NEW HIGHEST-PRIORITY block "Verified live
+  actions (LEVEL 3 …) — copy these EXACT locators verbatim, do NOT invent/alter". `coreGenerate` produces
+  `liveTrace` ONCE before the per-case loop (steered by `newCases[0]`) and threads it into the prompt.
+- **Proven locally:** engine loads clean (`node -e require`), `get_errors` clean, the parsers unit-tested against
+  REAL captured CLI output (refs correct, `generic` excluded, locator + URL extracted), and the full
+  open/goto/snapshot/fill-by-ref/click-by-ref/close choreography verified live against saucedemo (login → refs
+  e11/e13/e15 → filled/clicked by ref → landed on `/inventory.html`). Generic — BASE_URL + creds only.
+- **NOT YET DONE (next session):** wire the Generate CI (`blast-runner.yml` in the framework repo) to
+  `npm install -g @playwright/cli@latest` + `npx playwright install --with-deps chromium` + run the generate step
+  under `xvfb-run -a` (proven pattern from smoke run 31627800092), gated by `BLAST_LEVEL3=1` env. Then a cloud run
+  with the flag on to confirm the "Verified live actions (LEVEL 3)" block appears and the FIRST-attempt spec uses
+  proven locators (fewer/no heal rounds). v1 drives the PRIMARY journey ONCE (feature-level); v2 = per-case drive;
+  v2.5 = the LLM also writes each step live and re-picks on a miss without a full re-run.
+
