@@ -504,6 +504,25 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   ONLY on `this.logger`, NEVER `Logger.step()` statically. Generic — framework util/Logger names are framework-universal,
   only BASE_URL + creds stay app-specific. Verified: baseline member preserved verbatim, broken new member corrected,
   brand-new member appended, no duplicates.
+- **MILESTONE — baseline-merge PROVEN green + heal edited the wrong file** (job on run 31624998689, feature "Product
+  sorting", the run AFTER `d0710d8`). WIN: the baseline-merge fix worked end-to-end — the compile gate CONVERGED (2
+  rounds, `Type-check clean ✓`, no more `🛡 kept` trap), the run went `PARTIAL`, and a PR OPENED for the 3 genuine sort
+  cases (TC_026/027/028 automated). Only TC_025 was deferred. The compile gate converged by RENAMING the spec's calls
+  to existing near-miss methods (`sortProductsInNameOrder`→`sortProductsInReverseNameOrder`, etc.) — semantically loose
+  but it compiled, and the sort cases still passed. TC_025 "Completes an order after reverse-name sorting" (checkout
+  over-reach for a sort feature) failed with `TimeoutError: locator.waitFor` waiting for
+  `getByRole('link', { name: /shopping cart/i })` at `Actions.ts:24`, thrown from `InventoryModule.openCart
+  (InventoryModule.ts:73)`. Root cause of the STUCK heal: the failing frame was a MODULE method (`openCart` uses a wrong
+  cart-link locator — the SauceDemo cart link is not named "shopping cart"), but BOTH heal rounds only `⚠ extended
+  src/tests/product-detail.spec.ts` — heal was GIVEN the module (`healInput = findDomainFiles`) yet edited the SPEC,
+  which can never fix a wrong locator inside a module method. Fix (commit pending, CI Generate → effective next run
+  WITHOUT a worker restart): `buildHealPrompt` now has a "READ THE STACK TRACE FIRST to find WHICH file to fix" rule —
+  the trace names `<Class>.<method> (<File>.ts:<line>)`; when the failing frame is inside a Page/Module method, return
+  the FULL corrected Page/Module file and do NOT edit only the spec; a `waitFor` visible-timeout on a control used
+  inside a module method (browser already on the right page) means THAT METHOD'S locator is wrong → replace it with the
+  real control from the snapshot/journey, or reuse an existing method that navigates there. Generic. OPERATIONAL: the
+  TC_025 checkout over-reach on a SORT feature is authoring over-reach (`360389c` scopes the coverage floor, but an
+  AUTHORED "completes an order" case still slips the STAY-SCOPED author rule) — tighten authoring next if it recurs.
 - Empty journey (e.g. AI Native mode with no explore) renders nothing → no regression.
 - The journey is EVIDENCE, not code — the LLM still authors the walk from the real control names.
 
