@@ -415,6 +415,31 @@ Result: for ANY app, codegen writes from what the crawl actually saw, instead of
   each locator from the live snapshot and writing a step ONLY after verifying it — the full local-Copilot loop.
   driveFlow's deterministic walk is actually more reliable than LLM free-clicking, so v1 ships first.
 
+## Settled decisions (Level 2 VERIFIED green + feature-scoped authoring) — DONE, keep it
+- **Level 2 v1 proven green** (job AUTO-1786543567451 run 31605119019, then AUTO-1786546582924): the live walk
+  verifies 8 states, codegen writes from the proven walk, and self-heal now recovers invented methods to a PASS.
+  The Cart/Checkout PR (TC_023/024) merged and both specs pass locally (`tsc`+`eslint` clean). Do not re-litigate
+  whether CLI/GitHub Actions/VM work — they do; the remaining gaps are authoring QUALITY, not plumbing.
+- **Feature over-reach fixed** (commit `360389c`, job AUTO-1786546582924: feature "Product sorting on the inventory
+  page"). Root cause: the Level 2 walk correctly traverses the WHOLE journey (login→inventory→cart→checkout→complete
+  = 8 states), so the MERGED `model.inputs`/`buttons` include downstream CHECKOUT form fields (First Name/Last
+  Name/Zip) that are NOT part of sorting. `ensureCoverageFloor` iterated that union → emitted off-topic
+  First/Last/Zip boundary cases + a "Cancel/Back aborts" case; the author prompt's "traverse every step" line pushed
+  the LLM to author checkout negatives too. Result: 6/8 cases off-topic and failing (they searched for
+  `getByLabel('First Name')` on the inventory page → 10s visible timeout), only the 2 genuine sort cases passed.
+  Partial-success gate worked (pruned the 6, opened a PR for the 2). Fix (generic): `featureScreen(job, model)`
+  returns the walked step whose URL matches `job.url` (feature's OWN screen); `ensureCoverageFloor` now synthesizes
+  ONLY from that screen's inputs/buttons — a sorting page (no form inputs) yields ZERO input-based floor cases
+  (anti-hallucination-correct), a checkout page still yields the right form cases. Falls back to the union when no
+  per-step match (single-page explores unchanged — no regression). `buildAuthorPrompt` gains a STAY-SCOPED rule and
+  the multi-step line is reframed: downstream pages are the PATH/setup to reach the feature, NOT extra test surface.
+  BASE_URL + creds remain the only app-specific inputs. OPERATIONAL: authoring runs on the LAPTOP worker, so this
+  fix only takes effect after the worker is restarted on current engine code.
+- **User-facing rule (not an engine bug): Application URL must be the feature's own screen.** Autopilot logs in via
+  the creds, then snapshots the URL you give. For a feature behind login, point the URL at the feature page
+  (e.g. `…/inventory.html`), NOT the login page — otherwise Explore captures only the login form (2 inputs, 1
+  button, 0 links) → `feature-not-found` → 0 cases → generic "App" domain. (Confirmed job AUTO-1786546179352.)
+
 ## Open work (the next priority)
 Level 2 v1 (`fb109d7`) is implemented. VERIFY with a fresh Autopilot run (URL + feature + creds, non-prod): the
 generate log should show "Level 2: driving the live app…" and "Level 2: verified N live state(s)", and the spec
