@@ -130,21 +130,63 @@ body {
 
 /* Rocket zipping diagonally across the login background (subtle, decorative) */
 @keyframes rocket-zip {
-  0%   { transform: translate(-16vw, 16vh) rotate(45deg) scale(0.92); opacity: 0; }
-  12%  { opacity: 0.16; }
-  88%  { opacity: 0.16; }
-  100% { transform: translate(95vw, -95vh) rotate(45deg) scale(1.08); opacity: 0; }
+  0%   { transform: translate(-14vw, calc(88vh + var(--oy, 0vh))) rotate(45deg) scale(var(--sc, 1)); opacity: 0; }
+  12%  { opacity: 0.75; }
+  88%  { opacity: 0.75; }
+  100% { transform: translate(112vw, calc(-26vh + var(--oy, 0vh))) rotate(45deg) scale(var(--sc, 1)); opacity: 0; }
 }
 .rocket-zip {
   position: absolute;
+  top: 0;
   left: 0;
-  bottom: 0;
-  width: 130px;
-  height: 182px;
+  width: 46px;
+  height: 62px;
   pointer-events: none;
   user-select: none;
   will-change: transform, opacity;
-  animation: rocket-zip 9s cubic-bezier(0.45,0,0.55,1) infinite;
+  transform: translate(-14vw, 88vh) rotate(45deg);
+  animation: rocket-zip 10s linear infinite;
+}
+.rocket-craft { position: relative; width: 100%; height: 100%; }
+.rocket-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+
+/* Flickering ignition flame at the rocket tail */
+.rocket-flame {
+  position: absolute;
+  left: 50%;
+  bottom: -11px;
+  width: 13px;
+  height: 22px;
+  border-radius: 50% 50% 45% 45% / 35% 35% 65% 65%;
+  background: radial-gradient(circle at 50% 25%, #fff2b0 0%, #ffcf5c 32%, #ff8a1e 62%, #ff5722 100%);
+  filter: blur(0.4px);
+  transform-origin: 50% 0%;
+  animation: rocket-flame 0.14s ease-in-out infinite alternate;
+}
+@keyframes rocket-flame {
+  0%   { transform: translateX(-50%) scale(0.85, 0.8); opacity: 0.85; }
+  100% { transform: translateX(-50%) scale(1.05, 1.3); opacity: 1; }
+}
+
+/* Sparks trailing from the ignition */
+.rocket-spark {
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #ffb03a;
+  box-shadow: 0 0 3px #ff8a1e;
+  opacity: 0;
+  animation: rocket-spark 0.8s linear infinite;
+}
+.rocket-spark-1 { animation-delay: 0s;    --sx: -7px; }
+.rocket-spark-2 { animation-delay: 0.26s; --sx:  6px; }
+.rocket-spark-3 { animation-delay: 0.52s; --sx: -2px; }
+@keyframes rocket-spark {
+  0%   { transform: translate(-50%, 0) scale(1);   opacity: 1; }
+  100% { transform: translate(calc(-50% + var(--sx, 0px)), 30px) scale(0.2); opacity: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   .rocket-zip { display: none; }
