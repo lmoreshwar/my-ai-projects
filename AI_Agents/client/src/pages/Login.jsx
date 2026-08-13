@@ -57,7 +57,7 @@ export default function Login({ onLogin }) {
       <main className="relative flex-grow flex items-center justify-center px-6 py-12 overflow-hidden">
         {/* Decorative rocket zipping across the background */}
         <img
-          src="/blast-rocket.png?v=1"
+          src="/rocket.svg"
           alt=""
           aria-hidden="true"
           className="rocket-zip"
@@ -67,7 +67,7 @@ export default function Login({ onLogin }) {
             <div>
               <div className="mb-12 flex items-center gap-3 blast-rise blast-rise-1">
                 <span className="grid place-items-center w-11 h-11 rounded-xl bg-white shadow-lg shadow-primary/20 ring-1 ring-app-red/15 blast-glow">
-                  <img src="/blast-mark.png?v=2" alt="BLAST AIQA" className="w-8 h-8 object-contain" />
+                  <img src="/blast-mark.png?v=3" alt="BLAST AIQA" className="w-8 h-8 object-contain" />
                 </span>
                 <div className="leading-none">
                   <span className="font-headline font-black text-2xl tracking-tighter bg-gradient-to-r from-app-red to-primary bg-clip-text text-transparent">BLAST</span>

@@ -130,17 +130,17 @@ body {
 
 /* Rocket zipping diagonally across the login background (subtle, decorative) */
 @keyframes rocket-zip {
-  0%   { transform: translate(-18vw, 18vh) rotate(-4deg) scale(0.9); opacity: 0; }
-  12%  { opacity: 0.10; }
-  88%  { opacity: 0.10; }
-  100% { transform: translate(96vw, -96vh) rotate(4deg) scale(1.15); opacity: 0; }
+  0%   { transform: translate(-16vw, 16vh) rotate(45deg) scale(0.92); opacity: 0; }
+  12%  { opacity: 0.16; }
+  88%  { opacity: 0.16; }
+  100% { transform: translate(95vw, -95vh) rotate(45deg) scale(1.08); opacity: 0; }
 }
 .rocket-zip {
   position: absolute;
   left: 0;
   bottom: 0;
-  width: 150px;
-  height: 150px;
+  width: 130px;
+  height: 182px;
   pointer-events: none;
   user-select: none;
   will-change: transform, opacity;

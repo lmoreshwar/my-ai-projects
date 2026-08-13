@@ -260,7 +260,7 @@ function App() {
       <footer className={`hidden lg:flex items-center justify-between gap-4 px-8 py-4 border-t border-outline-variant/20 dark:border-slate-800 bg-background dark:bg-slate-950 text-xs text-on-surface-variant dark:text-slate-500 transition-all duration-300 ${sidebarCollapsed ? 'lg:ml-[72px]' : 'lg:ml-80'}`}>
         <div className="flex items-center gap-2">
           <span className="grid place-items-center w-5 h-5 rounded bg-white ring-1 ring-app-red/15">
-            <img src="/blast-mark.png?v=2" alt="BLAST AIQA" className="w-4 h-4 object-contain" />
+            <img src="/blast-mark.png?v=3" alt="BLAST AIQA" className="w-4 h-4 object-contain" />
           </span>
           <span className="font-semibold text-on-surface dark:text-slate-300">BLAST AIQA</span>
           <span className="opacity-60">· Browser-Level Autonomous Software Testing</span>

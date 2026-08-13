@@ -84,13 +84,13 @@ export default function Sidebar({ activePage, onNavigate, onToggleDark, collapse
           {collapsed ? (
             <button onClick={onToggleCollapse} title="Expand sidebar" aria-label="Expand sidebar" className="group">
               <span className="grid place-items-center w-11 h-11 rounded-xl bg-white ring-1 ring-app-red/15 shadow-sm transition-transform group-hover:scale-105">
-                <img src="/blast-mark.png?v=2" alt="BLAST AIQA" className="w-10 h-10 object-contain" />
+                <img src="/blast-mark.png?v=3" alt="BLAST AIQA" className="w-10 h-10 object-contain" />
               </span>
             </button>
           ) : (
             <div className="flex items-center gap-2.5 overflow-hidden">
               <span className="grid place-items-center w-11 h-11 rounded-xl bg-white ring-1 ring-app-red/15 shadow-sm shrink-0">
-                <img src="/blast-mark.png?v=2" alt="BLAST AIQA" className="w-10 h-10 object-contain" />
+                <img src="/blast-mark.png?v=3" alt="BLAST AIQA" className="w-10 h-10 object-contain" />
               </span>
               <div className="leading-none min-w-0">
                 <div className="whitespace-nowrap">

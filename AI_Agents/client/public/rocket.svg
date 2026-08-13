@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 168" fill="none">
+  <!-- exhaust flames -->
+  <path d="M60 128 C51 142 51 154 60 166 C69 154 69 142 60 128 Z" fill="#ff8a1e"/>
+  <path d="M60 132 C54 142 54 151 60 159 C66 151 66 142 60 132 Z" fill="#ffd15c"/>
+  <!-- side fins -->
+  <path d="M41 92 L24 124 L46 112 Z" fill="#8f171d"/>
+  <path d="M79 92 L96 124 L74 112 Z" fill="#8f171d"/>
+  <!-- body -->
+  <path d="M60 6 C79 30 86 58 86 86 C86 107 75 122 60 126 C45 122 34 107 34 86 C34 58 41 30 60 6 Z" fill="#c0272d"/>
+  <!-- window -->
+  <circle cx="60" cy="58" r="13" fill="#ffffff"/>
+  <circle cx="60" cy="58" r="13" fill="none" stroke="#8f171d" stroke-width="3.5"/>
+  <!-- nozzle -->
+  <path d="M52 122 L68 122 L64 132 L56 132 Z" fill="#8f171d"/>
+</svg>

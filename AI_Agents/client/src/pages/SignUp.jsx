@@ -56,7 +56,7 @@ export default function SignUp() {
             <div className="relative z-10">
               <div className="mb-16 flex items-center gap-3">
                 <span className="grid place-items-center w-11 h-11 rounded-xl bg-white shadow-lg ring-1 ring-white/40 blast-glow">
-                  <img src="/blast-mark.png?v=2" alt="BLAST AIQA" className="w-8 h-8 object-contain" />
+                  <img src="/blast-mark.png?v=3" alt="BLAST AIQA" className="w-8 h-8 object-contain" />
                 </span>
                 <div className="leading-none">
                   <span className="font-headline font-black text-2xl tracking-tighter text-white">BLAST</span>
@@ -95,7 +95,7 @@ export default function SignUp() {
           <div className="col-span-1 md:col-span-7 p-8 md:p-16 lg:p-24 flex flex-col justify-center">
             <div className="mb-10">
               <div className="md:hidden mb-8 flex items-center gap-2">
-                <img src="/blast-mark.png?v=2" alt="BLAST AIQA" className="w-8 h-8 object-contain" />
+                <img src="/blast-mark.png?v=3" alt="BLAST AIQA" className="w-8 h-8 object-contain" />
                 <span className="font-headline font-black text-xl tracking-tighter text-on-surface">BLAST AIQA</span>
               </div>
               <h1 className="text-4xl md:text-5xl font-extrabold tracking-tighter mb-2 bg-gradient-to-br from-primary via-app-red to-secondary bg-clip-text text-transparent">Create your account</h1>
