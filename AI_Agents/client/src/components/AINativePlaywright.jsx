@@ -1,10 +1,14 @@
 import { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import CustomSelect from './CustomSelect';
+import PrTargetBadge from './PrTargetBadge';
+import StatusChip from './StatusChip';
 import {
   automationFeasibleCases,
+  parseTestCasesFromMarkdown,
   estimateComplexity,
   primaryTag,
 } from '../utils/testCaseParser';
+import { listArtifacts, loadArtifact } from '../utils/artifactService';
 
 /* ── API helper (auth via blast_token) ── */
 function authHeaders() {
@@ -23,39 +27,34 @@ async function api(apiBase, path, { method = 'GET', body } = {}) {
   return data;
 }
 
-/* ── Status → badge styling ── */
-const STATUS_STYLE = {
-  Pending: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300',
-  Planning: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300',
-  WaitingForApproval: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300',
-  Generating: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
-  Executing: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
-  HandedToCopilot: 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300',
-  Passed: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
-  Failed: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300',
-  PushedToGate: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300',
-  Merged: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
-  Completed: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300',
-};
-
+/* ── Status → badge styling (canonical StatusChip is the single source of truth) ── */
 const COMPLEXITY_STYLE = {
   Low: 'text-green-600 dark:text-green-400',
   Medium: 'text-amber-600 dark:text-amber-400',
   High: 'text-red-600 dark:text-red-400',
 };
 
-// Human-friendly badge text (backend status values stay unchanged).
-const STATUS_LABEL = {
-  WaitingForApproval: 'Waiting for approval',
-  HandedToCopilot: 'Handed to Copilot',
-  PushedToGate: 'Pull Request raised',
-  Merged: 'Merged to main',
+function StatusBadge({ status }) {
+  return <StatusChip status={status} />;
+}
+
+/* Per-CASE automation status — a LIVE check against the framework (its capabilities memory on the
+   main branch) plus CI outcomes. Three honest states, so the user sees exactly what to automate:
+   • Automated    — a passing test already exists in the framework gate.
+   • Failed       — the framework has it but the last CI/CD run failed → needs a fix.
+   • Not automated — no test yet → select it and Generate. (No spinner, no ambiguous "in progress".) */
+const AUTO_STATE = {
+  automated: { cls: 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300', icon: 'check_circle', label: 'Automated', hint: 'A passing test already exists in the framework. No action needed.' },
+  failed: { cls: 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300', icon: 'cancel', label: 'Test failed', hint: 'This test exists but the last CI/CD run failed — select it and Generate to fix it.' },
+  notautomated: { cls: 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300', icon: 'radio_button_unchecked', label: 'Not automated', hint: 'No test yet — select it and Generate to automate.' },
 };
 
-function StatusBadge({ status }) {
+function AutomationStatusBadge({ state }) {
+  const s = AUTO_STATE[state] || AUTO_STATE.notautomated;
   return (
-    <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-semibold ${STATUS_STYLE[status] || STATUS_STYLE.Pending}`}>
-      {STATUS_LABEL[status] || status || '—'}
+    <span title={s.hint} className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold ${s.cls}`}>
+      <span className="material-symbols-outlined text-[14px] leading-none">{s.icon}</span>
+      {s.label}
     </span>
   );
 }
@@ -285,11 +284,28 @@ function RunLogsConsole({ logs, live, trackUrl }) {
   );
 }
 
-export default function AINativePlaywright({ apiBase, generatedTestCases, onNavigate, setCicdState }) {
-  const cases = useMemo(() => automationFeasibleCases(generatedTestCases), [generatedTestCases]);
+export default function AINativePlaywright({ apiBase, connections, generatedTestCases, onNavigate, setCicdState }) {
+  // Cases come from the app's generated test cases, OR from a Test Artifact the user pulls in below.
+  const [artifactCases, setArtifactCases] = useState(null);
+  const [artifactLabel, setArtifactLabel] = useState('');
+  const cases = useMemo(
+    () => artifactCases || automationFeasibleCases(generatedTestCases),
+    [artifactCases, generatedTestCases],
+  );
+
+  // Live automation coverage, checked against the framework's capabilities memory (main branch).
+  const [coverageMap, setCoverageMap] = useState({});
+  const [coverageLoading, setCoverageLoading] = useState(false);
+
+  // Test Artifacts picker — pull saved test cases straight into this page to automate them.
+  const [artifactPickerOpen, setArtifactPickerOpen] = useState(false);
+  const [savedArtifacts, setSavedArtifacts] = useState([]);
+  const [artifactBusy, setArtifactBusy] = useState('');
 
   const [selected, setSelected] = useState(() => new Set());
   const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -316,7 +332,6 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
     skill: 'New Automation',
     executionMode: 'GenerateAndExecute',
     comments: '',
-    level3: false,
   });
 
   const rows = useMemo(() => {
@@ -340,11 +355,54 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
       .filter((r) => !q || `${r.id} ${r.scenario} ${r.tags}`.toLowerCase().includes(q));
   }, [cases, search]);
 
-  const jobByCaseId = useMemo(() => {
+  // Pagination — keep the list readable when there are hundreds of cases.
+  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize));
+  const currentPage = Math.min(page, totalPages);
+  const pagedRows = useMemo(
+    () => rows.slice((currentPage - 1) * pageSize, currentPage * pageSize),
+    [rows, currentPage, pageSize]
+  );
+  // Snap back to page 1 whenever the filtered set or page size changes.
+  useEffect(() => { setPage(1); }, [search, pageSize, cases]);
+
+  // Live per-CASE automation status. Source of truth = the framework's capabilities memory on the
+  // main branch (coverageMap, fetched below): present there ⇒ Automated. CI failures (job.failedCases)
+  // mark an existing-but-broken test as "Test failed". Everything else ⇒ Not automated. No spinner.
+  const caseAutomation = useMemo(() => {
+    const failed = new Set();
+    jobs.forEach((j) => (j.failedCases || []).forEach((id) => failed.add(id)));
     const map = {};
-    jobs.forEach((j) => (j.testCases || []).forEach((tc) => { map[tc.id] = j; }));
+    rows.forEach((r) => {
+      map[r.id] = coverageMap[r.id] === 'automated' ? 'automated'
+        : failed.has(r.id) ? 'failed'
+          : 'notautomated';
+    });
     return map;
-  }, [jobs]);
+  }, [rows, coverageMap, jobs]);
+
+  // Ask the backend which of these cases are already automated in the framework (fast, cached 60s).
+  // Runs whenever the case set changes; failures leave everything as "Not automated" (never blocks).
+  const coverageKey = useMemo(
+    () => cases.map((tc) => `${tc['SRL No.']}|${tc['Test Case Title'] || ''}`).join('§'),
+    [cases],
+  );
+  useEffect(() => {
+    if (!cases.length) { setCoverageMap({}); return undefined; }
+    let active = true;
+    setCoverageLoading(true);
+    (async () => {
+      try {
+        const payload = cases.map((tc) => ({ id: tc['SRL No.'], title: tc['Test Case Title'] || '' }));
+        const data = await api(apiBase, '/coverage', { method: 'POST', body: { testCases: payload } });
+        if (active) setCoverageMap(data && data.coverage ? data.coverage : {});
+      } catch {
+        if (active) setCoverageMap({});
+      } finally {
+        if (active) setCoverageLoading(false);
+      }
+    })();
+    return () => { active = false; };
+  }, [apiBase, coverageKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadJobs = useCallback(async () => {
     try {
@@ -354,6 +412,45 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
       /* dashboard still works without job history */
     }
   }, [apiBase]);
+
+  // ── Test Artifacts pull ──────────────────────────────────────────────────
+  const openArtifactPicker = useCallback(async () => {
+    setArtifactPickerOpen(true);
+    setArtifactBusy('list');
+    try {
+      const list = await listArtifacts(apiBase, 'test-cases');
+      setSavedArtifacts(Array.isArray(list) ? list : []);
+    } catch {
+      setSavedArtifacts([]);
+    } finally {
+      setArtifactBusy('');
+    }
+  }, [apiBase]);
+
+  const pickArtifact = useCallback(async (art) => {
+    setArtifactBusy(art._id);
+    try {
+      const full = art.content ? art : await loadArtifact(apiBase, art._id);
+      const md = full.content || '';
+      // Prefer automation-tagged cases; if none are tagged, fall back to every parsed case.
+      const feasible = automationFeasibleCases(md);
+      const parsed = feasible.length ? feasible : parseTestCasesFromMarkdown(md);
+      setArtifactCases(parsed);
+      setArtifactLabel(full.title || 'Test Artifact');
+      setSelected(new Set());
+      setArtifactPickerOpen(false);
+    } catch {
+      setError('Could not load that test artifact.');
+    } finally {
+      setArtifactBusy('');
+    }
+  }, [apiBase]);
+
+  const clearArtifact = useCallback(() => {
+    setArtifactCases(null);
+    setArtifactLabel('');
+    setSelected(new Set());
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -713,6 +810,18 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
         <button onClick={loadJobs} className="px-3 py-2 rounded-sm border border-outline-variant/40 dark:border-slate-700 text-sm flex items-center gap-1 hover:bg-surface-container-high dark:hover:bg-slate-800">
           <span className="material-symbols-outlined text-lg">refresh</span> Refresh
         </button>
+        <button onClick={openArtifactPicker} className="px-3 py-2 rounded-sm border border-outline-variant/40 dark:border-slate-700 text-sm flex items-center gap-1 hover:bg-surface-container-high dark:hover:bg-slate-800" title="Pull saved test cases from Test Artifacts and check which are already automated.">
+          <span className="material-symbols-outlined text-lg">inventory_2</span> Load from Test Artifacts
+        </button>
+        {artifactCases && (
+          <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300" title="Showing cases pulled from a Test Artifact.">
+            <span className="material-symbols-outlined text-sm">inventory_2</span>
+            {artifactLabel || 'Test Artifact'}
+            <button onClick={clearArtifact} className="ml-1 hover:text-indigo-900 dark:hover:text-indigo-100" title="Back to generated test cases">
+              <span className="material-symbols-outlined text-sm">close</span>
+            </button>
+          </span>
+        )}
         <button
           onClick={openGenerate}
           disabled={selected.size === 0}
@@ -737,33 +846,72 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
               <th className="p-2">Feature</th>
               <th className="p-2">Complexity</th>
               <th className="p-2">Automation Status</th>
-              <th className="p-2">Report</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => {
-              const job = jobByCaseId[r.id];
-              return (
-                <tr key={r.id} className="border-t border-outline-variant/20 dark:border-slate-700/50 hover:bg-surface-container-low dark:hover:bg-slate-800/50">
-                  <td className="p-2">
-                    <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} aria-label={`Select ${r.id}`} />
-                  </td>
-                  <td className="p-2 font-mono text-xs whitespace-nowrap">{r.id}</td>
-                  <td className="p-2 max-w-xs truncate" title={r.scenario}>{r.scenario}</td>
-                  <td className="p-2 whitespace-nowrap">{r.type || '—'}</td>
-                  <td className="p-2 whitespace-nowrap">{r.feature}</td>
-                  <td className={`p-2 font-medium ${COMPLEXITY_STYLE[r.complexity]}`}>{r.complexity}</td>
-                  <td className="p-2"><StatusBadge status={job ? job.status : 'Pending'} /></td>
-                  <td className="p-2">
-                    {job && job.reportUrl
-                      ? <a href={reportHref(job.reportUrl)} target="_blank" rel="noreferrer" className="text-app-red text-xs underline">Open report ↗</a>
-                      : <span className="text-slate-400 text-xs">—</span>}
-                  </td>
-                </tr>
-              );
-            })}
+            {pagedRows.map((r) => (
+              <tr key={r.id} className="border-t border-outline-variant/20 dark:border-slate-700/50 hover:bg-surface-container-low dark:hover:bg-slate-800/50">
+                <td className="p-2">
+                  <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} aria-label={`Select ${r.id}`} />
+                </td>
+                <td className="p-2 font-mono text-xs whitespace-nowrap">{r.id}</td>
+                <td className="p-2 max-w-xs truncate" title={r.scenario}>{r.scenario}</td>
+                <td className="p-2 whitespace-nowrap">{r.type || '—'}</td>
+                <td className="p-2 whitespace-nowrap">{r.feature}</td>
+                <td className={`p-2 font-medium ${COMPLEXITY_STYLE[r.complexity]}`}>{r.complexity}</td>
+                <td className="p-2"><AutomationStatusBadge state={caseAutomation[r.id]} /></td>
+              </tr>
+            ))}
           </tbody>
         </table>
+      </div>
+
+      {/* Pagination — show a page at a time so the list stays readable. */}
+      {rows.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-on-surface-variant dark:text-slate-400">
+          <div className="flex items-center gap-2">
+            <span>Rows per page</span>
+            <select
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value))}
+              className="px-2 py-1 rounded-sm border border-outline-variant/40 dark:border-slate-700 bg-white dark:bg-slate-800"
+            >
+              {[20, 50, 100].map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          <div className="flex items-center gap-3">
+            <span>
+              {(currentPage - 1) * pageSize + 1}–{Math.min(currentPage * pageSize, rows.length)} of {rows.length}
+            </span>
+            <div className="flex items-center gap-1">
+              <button onClick={() => setPage(1)} disabled={currentPage === 1}
+                className="px-2 py-1 rounded-sm border border-outline-variant/40 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40" aria-label="First page">
+                <span className="material-symbols-outlined text-base align-middle">first_page</span>
+              </button>
+              <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={currentPage === 1}
+                className="px-2 py-1 rounded-sm border border-outline-variant/40 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40" aria-label="Previous page">
+                <span className="material-symbols-outlined text-base align-middle">chevron_left</span>
+              </button>
+              <span className="px-1">Page {currentPage} of {totalPages}</span>
+              <button onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={currentPage === totalPages}
+                className="px-2 py-1 rounded-sm border border-outline-variant/40 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40" aria-label="Next page">
+                <span className="material-symbols-outlined text-base align-middle">chevron_right</span>
+              </button>
+              <button onClick={() => setPage(totalPages)} disabled={currentPage === totalPages}
+                className="px-2 py-1 rounded-sm border border-outline-variant/40 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40" aria-label="Last page">
+                <span className="material-symbols-outlined text-base align-middle">last_page</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Legend — what each automation status means, so it's clear what still needs automating. */}
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-on-surface-variant dark:text-slate-400">
+        <span className="font-medium">Automation status{coverageLoading ? ' (checking framework…)' : ''}:</span>
+        <span className="inline-flex items-center gap-1"><AutomationStatusBadge state="automated" /> already in the framework</span>
+        <span className="inline-flex items-center gap-1"><AutomationStatusBadge state="failed" /> exists but CI failed</span>
+        <span className="inline-flex items-center gap-1"><AutomationStatusBadge state="notautomated" /> select &amp; Generate to automate</span>
       </div>
 
       {/* Active job panel: plan → missing info → approve → results */}
@@ -1190,25 +1338,69 @@ export default function AINativePlaywright({ apiBase, generatedTestCases, onNavi
                 <textarea value={form.comments} onChange={(e) => setF('comments', e.target.value)} rows={2}
                   className="w-full px-3 py-2 rounded-sm border border-outline-variant/40 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm" />
               </Field>
-
-              <label className="flex items-start gap-2 cursor-pointer select-none">
-                <input type="checkbox" checked={!!form.level3} onChange={(e) => setF('level3', e.target.checked)}
-                  className="mt-0.5 accent-app-red" />
-                <span className="text-sm">
-                  <span className="font-medium">Level 3 — verify locators live before writing</span>
-                  <span className="block text-xs text-secondary dark:text-slate-400">Drives the real app to confirm each locator (fewer heal rounds). Slower; non-prod only.</span>
-                </span>
-              </label>
             </div>
 
-            <div className="flex justify-end gap-2 px-5 py-3 border-t border-outline-variant/30 dark:border-slate-700">
-              <button onClick={() => setDialogOpen(false)} className="px-4 py-2 rounded-sm border border-outline-variant/40 dark:border-slate-700 text-sm">
+            <div className="flex flex-wrap items-center justify-end gap-2 px-5 py-3 border-t border-outline-variant/30 dark:border-slate-700">
+              <div className="mr-auto min-w-0 max-w-full"><PrTargetBadge connections={connections} /></div>
+              <button onClick={() => setDialogOpen(false)} className="px-4 py-2 rounded-md border border-outline-variant/40 dark:border-slate-700 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800">
                 Cancel
               </button>
-              <button onClick={submitGenerate} disabled={busy === 'generate'} className="px-4 py-2 rounded-sm bg-app-red text-white text-sm font-medium hover:bg-app-dark-red disabled:opacity-50 flex items-center gap-1">
+              <button onClick={submitGenerate} disabled={busy === 'generate'} className="px-4 py-2 rounded-md bg-app-red text-white text-sm font-medium hover:bg-app-dark-red disabled:opacity-50 flex items-center gap-1.5">
                 <span className="material-symbols-outlined text-lg">auto_awesome</span>
                 {busy === 'generate' ? 'Planning…' : 'Generate'}
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Test Artifacts picker — pull saved test cases in to check coverage + automate the gaps */}
+      {artifactPickerOpen && (
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={() => setArtifactPickerOpen(false)}>
+          <div className="bg-white dark:bg-slate-900 rounded-md shadow-xl w-full max-w-lg max-h-[80vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between px-5 py-3 border-b border-outline-variant/30 dark:border-slate-700">
+              <h3 className="font-bold flex items-center gap-2">
+                <span className="material-symbols-outlined text-app-red">inventory_2</span>
+                Load from Test Artifacts
+              </h3>
+              <button onClick={() => setArtifactPickerOpen(false)} className="text-slate-400 hover:text-slate-600">
+                <span className="material-symbols-outlined">close</span>
+              </button>
+            </div>
+            <div className="p-5 space-y-2">
+              <p className="text-xs text-on-surface-variant dark:text-slate-400">
+                Pick a saved test-case set. We&apos;ll load it here and instantly show which cases are already automated in the framework.
+              </p>
+              {artifactBusy === 'list' ? (
+                <p className="text-sm text-slate-500 py-6 text-center">Loading saved artifacts…</p>
+              ) : savedArtifacts.length === 0 ? (
+                <p className="text-sm text-slate-500 py-6 text-center">No saved test-case artifacts yet. Save some from the Test Cases page first.</p>
+              ) : (
+                <ul className="divide-y divide-outline-variant/20 dark:divide-slate-700">
+                  {savedArtifacts.map((art) => (
+                    <li key={art._id}>
+                      <button
+                        onClick={() => pickArtifact(art)}
+                        disabled={!!artifactBusy}
+                        className="w-full text-left py-2.5 px-2 rounded-sm hover:bg-surface-container-high dark:hover:bg-slate-800 flex items-center gap-3 disabled:opacity-50"
+                      >
+                        <span className="material-symbols-outlined text-app-red">description</span>
+                        <span className="min-w-0 flex-grow">
+                          <span className="block text-sm font-medium truncate">{art.title || 'Untitled'}</span>
+                          <span className="block text-[11px] text-on-surface-variant dark:text-slate-400">
+                            {art.metadata?.ticketId ? `${art.metadata.ticketId} · ` : ''}
+                            {art.metadata?.totalCases ? `${art.metadata.totalCases} cases · ` : ''}
+                            {art.createdAt ? new Date(art.createdAt).toLocaleString() : ''}
+                          </span>
+                        </span>
+                        {artifactBusy === art._id
+                          ? <span className="material-symbols-outlined text-slate-400 animate-spin">progress_activity</span>
+                          : <span className="material-symbols-outlined text-slate-400">chevron_right</span>}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         </div>

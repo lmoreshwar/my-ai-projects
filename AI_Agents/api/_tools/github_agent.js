@@ -26,13 +26,19 @@ function parseRepoUrl(url) {
   return m ? { owner: m[1], repo: m[2] } : { owner: '', repo: '' };
 }
 
-function repoConfig() {
+// `git` (optional) is a per-request override resolved from the caller's GitHub connection:
+// { token, owner, repo, branch }. When absent, fall back to the server env — so a job with no
+// connection configured behaves exactly as before (single-tenant default). This is what lets a
+// customer's PR open in THEIR selected repo using THEIR token, without a secret ever touching the
+// persisted job (the token is passed in per call, never stored on job.git).
+function repoConfig(git) {
   const fromUrl = parseRepoUrl(process.env.GITHUB_REPO_URL);
+  const g = git || {};
   return {
-    token: process.env.GITHUB_TOKEN || '',
-    owner: process.env.GITHUB_OWNER || fromUrl.owner || '',
-    repo: process.env.GITHUB_REPO || fromUrl.repo || '',
-    branch: process.env.GITHUB_DEFAULT_BRANCH || 'main',
+    token: g.token || process.env.GITHUB_TOKEN || '',
+    owner: g.owner || process.env.GITHUB_OWNER || fromUrl.owner || '',
+    repo: g.repo || process.env.GITHUB_REPO || fromUrl.repo || '',
+    branch: g.branch || process.env.GITHUB_DEFAULT_BRANCH || 'main',
     copilotLogin: process.env.COPILOT_ASSIGNEE_LOGIN || '',
   };
 }
@@ -42,8 +48,8 @@ function isConfigured() {
   return Boolean(token && owner && repo);
 }
 
-function headers() {
-  const { token } = repoConfig();
+function headers(git) {
+  const { token } = repoConfig(git);
   return {
     Authorization: `Bearer ${token}`,
     Accept: 'application/vnd.github+json',
@@ -311,8 +317,8 @@ async function getProgress(job) {
  * Requires: GITHUB_TOKEN with Actions:write on the framework repo, GITHUB_OWNER,
  * GITHUB_REPO. Returns { dispatched, ref, workflow, runsUrl }.
  */
-async function dispatchWorkflow(job) {
-  const { owner, repo, branch } = repoConfig();
+async function dispatchWorkflow(job, git) {
+  const { owner, repo, branch } = repoConfig(git);
   const workflow = process.env.BLAST_WORKFLOW_FILE || 'blast-runner.yml';
   const ref = process.env.BLAST_WORKFLOW_REF || branch || 'main';
 
@@ -350,7 +356,7 @@ async function dispatchWorkflow(job) {
     await axios.post(
       `${API}/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`,
       { ref, inputs },
-      { headers: headers() },
+      { headers: headers(git) },
     );
     return {
       dispatched: true,
@@ -369,8 +375,8 @@ async function dispatchWorkflow(job) {
  * (so steps never duplicate). Returns { status, checksStatus, executionStatus,
  * prUrl, runId, runHtmlUrl, snapshotLogs }.
  */
-async function getWorkflowRunProgress(job) {
-  const { owner, repo, branch } = repoConfig();
+async function getWorkflowRunProgress(job, git) {
+  const { owner, repo, branch } = repoConfig(git);
   const workflow = process.env.BLAST_WORKFLOW_FILE || 'blast-runner.yml';
   const header = Array.isArray(job.dispatchLogs) && job.dispatchLogs.length
     ? job.dispatchLogs
@@ -384,7 +390,7 @@ async function getWorkflowRunProgress(job) {
     if (!runId) {
       const { data } = await axios.get(
         `${API}/repos/${owner}/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(branch || 'main')}&per_page=10`,
-        { headers: headers() },
+        { headers: headers(git) },
       );
       const floor = job.dispatchedAt ? new Date(job.dispatchedAt).getTime() - 60000 : 0;
       const run = (data.workflow_runs || [])
@@ -399,8 +405,8 @@ async function getWorkflowRunProgress(job) {
 
     // 2) Read the run + its jobs/steps.
     const [runRes, jobsRes] = await Promise.all([
-      axios.get(`${API}/repos/${owner}/${repo}/actions/runs/${runId}`, { headers: headers() }),
-      axios.get(`${API}/repos/${owner}/${repo}/actions/runs/${runId}/jobs`, { headers: headers() }),
+      axios.get(`${API}/repos/${owner}/${repo}/actions/runs/${runId}`, { headers: headers(git) }),
+      axios.get(`${API}/repos/${owner}/${repo}/actions/runs/${runId}/jobs`, { headers: headers(git) }),
     ]);
     const runData = runRes.data;
     runHtmlUrl = runData.html_url || runHtmlUrl;
@@ -435,14 +441,14 @@ async function getWorkflowRunProgress(job) {
     // The BLAST gate is the Pull Request. As soon as it exists, the job is functionally
     // done from the app's perspective — surface it and the Merge action without waiting
     // for GitHub's teardown steps (which is what made the UI look "stuck").
-    const pr = await findBlastPr(job);
+    const pr = await findBlastPr(job, git);
     if (pr) done = true;
 
     // A green GitHub run is NOT proof of success: the runner exits 0 even when the
     // completion gate FAILS (requested cases not automated → PR suppressed). Read the
     // BLAST result artifact to learn the true outcome.
     let result = null;
-    if (done && !pr) result = await getRunResult(job, runId);
+    if (done && !pr) result = await getRunResult(job, runId, git);
     const verified = !result || result.verified !== false;
     const missingCases = (result && result.missingCases) || [];
     const changedPaths = (result && result.changedPaths) || [];
@@ -476,7 +482,7 @@ async function getWorkflowRunProgress(job) {
     // Pull the parsed report summary once the run is functionally done (only if not cached).
     let reportSummary;
     if (done && !job.reportSummary) {
-      reportSummary = result ? (result.reportSummary || null) : await getRunReportSummary(job, runId);
+      reportSummary = result ? (result.reportSummary || null) : await getRunReportSummary(job, runId, git);
     }
 
     return {
@@ -512,13 +518,13 @@ function runData_jobs(data) {
  * `mergeable`/`mergeableState` come from a follow-up single-PR GET (GitHub computes them
  * asynchronously, so they may be null on the first read and settle on a later poll).
  */
-async function findBlastPr(job) {
-  const { owner, repo } = repoConfig();
+async function findBlastPr(job, git) {
+  const { owner, repo } = repoConfig(git);
   const branch = `blast/auto-${job.jobId}`;
   try {
     const { data } = await axios.get(
       `${API}/repos/${owner}/${repo}/pulls?head=${encodeURIComponent(`${owner}:${branch}`)}&state=all&per_page=5`,
-      { headers: headers(), timeout: 12000 },
+      { headers: headers(git), timeout: 12000 },
     );
     const pr = (data || []).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
     if (!pr) return null;
@@ -527,7 +533,7 @@ async function findBlastPr(job) {
     try {
       const { data: full } = await axios.get(
         `${API}/repos/${owner}/${repo}/pulls/${pr.number}`,
-        { headers: headers(), timeout: 12000 },
+        { headers: headers(git), timeout: 12000 },
       );
       return { ...base, mergeable: full.mergeable, mergeableState: full.mergeable_state || 'unknown' };
     } catch {
@@ -539,9 +545,9 @@ async function findBlastPr(job) {
 }
 
 /** Merge the BLAST pull request for a job. Returns { merged, message, prUrl }. */
-async function mergePr(job) {
-  const { owner, repo } = repoConfig();
-  const pr = await findBlastPr(job);
+async function mergePr(job, git) {
+  const { owner, repo } = repoConfig(git);
+  const pr = await findBlastPr(job, git);
   if (!pr) return { merged: false, message: 'No pull request found for this job yet.' };
   if (pr.merged) return { merged: true, message: 'Pull request already merged.', prUrl: pr.url };
   // Block early on a known-dirty PR so the user gets a clear conflict message + resolve link.
@@ -558,7 +564,7 @@ async function mergePr(job) {
     await axios.put(
       `${API}/repos/${owner}/${repo}/pulls/${pr.number}/merge`,
       { merge_method: 'squash', commit_title: `[BLAST] merge ${job.jobId} automated tests (#${pr.number})` },
-      { headers: headers(), timeout: 15000 },
+      { headers: headers(git), timeout: 15000 },
     );
     return { merged: true, message: 'Pull request merged.', prUrl: pr.url };
   } catch (err) {
@@ -578,13 +584,13 @@ async function mergePr(job) {
 }
 
 /** Read a single file's UTF-8 content from the framework repo. Returns null if missing. */
-async function getFileContent(filePath, ref) {
-  const { owner, repo, branch } = repoConfig();
+async function getFileContent(filePath, ref, git) {
+  const { owner, repo, branch } = repoConfig(git);
   const r = ref || branch || 'main';
   try {
     const { data } = await axios.get(
       `${API}/repos/${owner}/${repo}/contents/${filePath}?ref=${encodeURIComponent(r)}`,
-      { headers: headers() },
+      { headers: headers(git) },
     );
     if (data && data.content && data.encoding === 'base64') {
       return Buffer.from(data.content, 'base64').toString('utf8');
@@ -616,21 +622,21 @@ async function listDir(dirPath, ref) {  const { owner, repo, branch } = repoConf
  * blast-ci-result.json (verified, missingCases, changedPaths, executionStatus,
  * reportSummary, …). Returns null when unavailable.
  */
-async function getRunResult(job, runId) {
-  const { owner, repo } = repoConfig();
+async function getRunResult(job, runId, git) {
+  const { owner, repo } = repoConfig(git);
   const id = runId || job.runId;
   if (!id) return null;
   try {
     const { data } = await axios.get(
       `${API}/repos/${owner}/${repo}/actions/runs/${id}/artifacts?per_page=100`,
-      { headers: headers(), timeout: 12000 },
+      { headers: headers(git), timeout: 12000 },
     );
     const arts = data.artifacts || [];
     const art = arts.find((a) => a.name === `blast-result-${job.jobId}`)
       || arts.find((a) => a.name.startsWith('blast-result-'));
     if (!art || art.expired) return null;
     const zipRes = await axios.get(art.archive_download_url, {
-      headers: headers(),
+      headers: headers(git),
       responseType: 'arraybuffer',
       maxRedirects: 5,
       timeout: 20000,
@@ -648,8 +654,8 @@ async function getRunResult(job, runId) {
  * Download the run's `blast-result-<jobId>` artifact and extract the parsed Playwright
  * report summary (pass/fail counts + per-test steps). Returns null when unavailable.
  */
-async function getRunReportSummary(job, runId) {
-  const result = await getRunResult(job, runId);
+async function getRunReportSummary(job, runId, git) {
+  const result = await getRunResult(job, runId, git);
   return (result && result.reportSummary) || null;
 }
 

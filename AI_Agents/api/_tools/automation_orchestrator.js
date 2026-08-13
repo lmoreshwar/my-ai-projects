@@ -191,13 +191,13 @@ async function requestGenerate(job, onLog) {
  * returns an empty no-op and the run console freezes on the dispatch header.
  * Returns { status, prUrl, checksStatus, executionStatus, logs }.
  */
-async function requestProgress(job) {
+async function requestProgress(job, git) {
   const prov = (job && job.provider) || provider();
   if (prov === 'github') {
     return githubAgent.getProgress(job);
   }
   if (prov === 'github-actions') {
-    return githubAgent.getWorkflowRunProgress(job);
+    return githubAgent.getWorkflowRunProgress(job, git);
   }
   return { status: job.status, prUrl: job.prUrl || '', checksStatus: job.checksStatus || '', executionStatus: job.executionStatus || '', logs: [] };
 }

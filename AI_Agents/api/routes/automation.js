@@ -7,6 +7,7 @@ const AutomationJob = require('../models/AutomationJob');
 const orchestrator = require('../_tools/automation_orchestrator');
 const localAgent = require('../_tools/local_agent');
 const githubAgent = require('../_tools/github_agent');
+const { resolveGitConnection } = require('../_tools/git_connection');
 const runnerAuth = require('../middleware/runnerAuth');
 // Dev-mode local store (used when MongoDB is unreachable / DEV_MODE=true).
 const DEV_JOBS_FILE = path.join(__dirname, '..', '..', 'dev-automation-jobs.json');
@@ -89,6 +90,69 @@ router.get('/jobs/:jobId', auth, async (req, res) => {
   }
 });
 
+// Short-lived cache of the framework's automation gate (capabilities index) per repo, so
+// repeatedly landing on the page doesn't re-fetch GitHub every time (60s is fresh enough).
+const gateCache = new Map(); // key: owner/repo/branch -> { at, ids:Set, titles:Set, ok:bool }
+const GATE_TTL_MS = 60 * 1000;
+const normTitle = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const normTcId = (s) => { const m = String(s || '').match(/tc[_-]?0*(\d+)/i); return m ? `tc${m[1]}` : ''; };
+
+// Load the framework's "gate" (which cases are automated) from .ai-memory/capabilities.json on the
+// connected repo's main branch, and index it by normalized id + title for O(1) lookup. Cached.
+async function loadGate(git) {
+  const key = `${git.owner}/${git.repo}/${git.branch}`;
+  const cached = gateCache.get(key);
+  if (cached && Date.now() - cached.at < GATE_TTL_MS) return cached;
+  const ids = new Set();
+  const titles = new Set();
+  let ok = false;
+  try {
+    const raw = await githubAgent.getFileContent('.ai-memory/capabilities.json', git.branch, git);
+    if (raw) {
+      const man = JSON.parse(raw);
+      const idx = (man && man.testIndex) || {};
+      for (const [tid, arr] of Object.entries(idx)) {
+        const nid = normTcId(tid);
+        if (nid) ids.add(nid);
+        (Array.isArray(arr) ? arr : []).forEach((e) => { if (e && e.title) titles.add(normTitle(e.title)); });
+      }
+      ok = true;
+    }
+  } catch (err) {
+    console.error('[coverage] gate load failed:', err.message);
+  }
+  const entry = { at: Date.now(), ids, titles, ok };
+  gateCache.set(key, entry);
+  return entry;
+}
+
+// @route   POST /api/automation/coverage
+// @desc    For the given test cases, report which are ALREADY automated in the framework gate
+//          (reads .ai-memory/capabilities.json from the connected repo @ main). Fast + cached,
+//          so landing on the AI Native page instantly reflects live automation coverage.
+router.post('/coverage', auth, async (req, res) => {
+  try {
+    const { testCases } = req.body;
+    if (!Array.isArray(testCases) || testCases.length === 0) return res.json({ coverage: {}, hasGate: false });
+    const git = await resolveGitConnection(req.user.id);
+    let gate = { ids: new Set(), titles: new Set(), ok: false };
+    if (git && git.token && git.owner && git.repo) gate = await loadGate(git);
+    const coverage = {};
+    testCases.forEach((tc) => {
+      const id = tc.id || tc['SRL No.'];
+      if (!id) return;
+      const title = tc.title || tc['Test Case Title'] || '';
+      if (gate.ok && (gate.ids.has(normTcId(id)) || (title && gate.titles.has(normTitle(title))))) {
+        coverage[id] = 'automated';
+      }
+    });
+    res.json({ coverage, hasGate: gate.ok });
+  } catch (err) {
+    console.error('[coverage] error:', err.message);
+    res.json({ coverage: {}, hasGate: false }); // never break the UI
+  }
+});
+
 // @route   POST /api/automation/generate
 // @desc    Create a job and request a plan from the AI Service
 router.post('/generate', auth, async (req, res) => {
@@ -102,10 +166,13 @@ router.post('/generate', auth, async (req, res) => {
     const existing = isDev() ? loadDevJobs() : [];
     const jobId = isDev() ? nextJobId(existing) : `AUTO-${Date.now()}`;
     const now = new Date().toISOString();
+    const git = await resolveGitConnection(req.user.id);
 
     let job = {
       jobId,
       userId: req.user.id,
+      // Non-secret dispatch target (customer's selected repo). Token stays server-side, never persisted.
+      git: { owner: git.owner, repo: git.repo, branch: git.branch },
       project: project || '',
       environment: environment || 'QA',
       url: url || '',
@@ -116,7 +183,8 @@ router.post('/generate', auth, async (req, res) => {
       browser: browser || 'Chrome',
       testScope: testScope || 'Generated only',
       parallel: parallel || 'Auto',
-      level3: level3 === true || String(level3).toLowerCase() === 'true',
+      // Level 3 (verify locators live before writing) is ON by default; an explicit false disables it.
+      level3: level3 === false || String(level3).toLowerCase() === 'false' ? false : true,
       testCases: testCases.map((tc) => ({
         id: tc.id,
         title: tc.title || '',
@@ -186,10 +254,13 @@ router.post('/explore', auth, async (req, res) => {
     const existing = isDev() ? loadDevJobs() : [];
     const jobId = isDev() ? nextJobId(existing) : `AUTO-${Date.now()}`;
     const now = new Date().toISOString();
+    const git = await resolveGitConnection(req.user.id);
 
     let job = {
       jobId,
       userId: req.user.id,
+      // Non-secret dispatch target (customer's selected repo). Token stays server-side, never persisted.
+      git: { owner: git.owner, repo: git.repo, branch: git.branch },
       mode: 'explore',
       project: project || '',
       environment: environment || 'QA',
@@ -204,7 +275,8 @@ router.post('/explore', auth, async (req, res) => {
       flowUrls: Array.isArray(flowUrls) ? flowUrls.map((u) => String(u).trim()).filter(Boolean) : [],
       evidenceFiles: Array.isArray(evidenceFiles) ? evidenceFiles : [],
       browser: browser || 'Chrome',
-      level3: level3 === true || String(level3).toLowerCase() === 'true',
+      // Level 3 (verify locators live before writing) is ON by default; an explicit false disables it.
+      level3: level3 === false || String(level3).toLowerCase() === 'false' ? false : true,
       agent: 'AI Native Playwright Engineer',
       skill: 'New Automation',
       executionMode: 'GenerateAndExecute',
@@ -336,7 +408,8 @@ router.post('/jobs/:jobId/approve', auth, async (req, res) => {
     // tests and opens a PR. Nothing runs on this server or a laptop worker.
     if (job.provider === 'github-actions') {
       try {
-        const dispatch = await githubAgent.dispatchWorkflow(job);
+        const git = await resolveGitConnection(req.user.id);
+        const dispatch = await githubAgent.dispatchWorkflow(job, git);
         job.status = 'Generating';
         job.provider = 'github-actions';
         job.reportUrl = dispatch.runsUrl || '';
@@ -444,7 +517,8 @@ router.get('/jobs/:jobId/progress', auth, async (req, res) => {
 
     // Cloud (GitHub Actions) path: stream live run steps into the job's logs.
     if (job.provider === 'github-actions') {
-      const progress = await orchestrator.requestProgress(job);
+      const git = await resolveGitConnection(req.user.id);
+      const progress = await orchestrator.requestProgress(job, git);
       if (progress.status) job.status = progress.status;
       if (progress.prUrl) job.prUrl = progress.prUrl;
       if (progress.prNumber) job.prNumber = progress.prNumber;
@@ -540,7 +614,7 @@ router.post('/jobs/:jobId/merge-pr', auth, async (req, res) => {
     if (job.provider !== 'github-actions') {
       return res.status(400).json({ msg: 'Merge is only available for cloud (GitHub Actions) jobs.' });
     }
-    const result = await githubAgent.mergePr(job);
+    const result = await githubAgent.mergePr(job, await resolveGitConnection(req.user.id));
     if (result.prUrl) job.prUrl = result.prUrl;
     if (result.merged) {
       job.prMerged = true;

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, Fragment } from 'react';
 import ReactMarkdown from 'react-markdown';
 import * as XLSX from 'xlsx';
 import { saveArtifact, checkExistingArtifact, updateArtifact } from '../utils/artifactService';
@@ -372,11 +372,23 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
   const [saveStatus, setSaveStatus] = useState(''); // '' | 'saving' | 'saved' | 'error'
   const [selectedRowKeys, setSelectedRowKeys] = useState(() => new Set());
   const [reviewByRowKey, setReviewByRowKey] = useState({});
+  const [expandedRows, setExpandedRows] = useState(() => new Set());
   const selectAllCheckboxRef = useRef(null);
   const itemsPerPage = 10;
   const carouselRef = useRef(null);
 
   const getRowKey = (tc) => tc._reviewRowId || '';
+
+  const toggleRowExpanded = (rowKey) => {
+    if (!rowKey) return;
+    setExpandedRows((prev) => {
+      const n = new Set(prev);
+      n.has(rowKey) ? n.delete(rowKey) : n.add(rowKey);
+      return n;
+    });
+  };
+  const expandAllRows = () => setExpandedRows(new Set(parsedCases.map(getRowKey).filter(Boolean)));
+  const collapseAllRows = () => setExpandedRows(new Set());
 
   // Determine which input method is active (for mutual exclusion)
   const activeInputMethod = ticketId.trim() || issueData ? 'jira' : manualReq.trim() ? 'upload' : null;
@@ -1021,12 +1033,19 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
         {testCasesExpanded && (
           <div className="border-t border-outline-variant/10">
             {/* Filter & Clear controls */}
-            <div className="flex items-center justify-end gap-3 px-5 py-3 bg-slate-50/50 dark:bg-slate-800/30">
+            <div className="flex flex-wrap items-center justify-end gap-2 px-5 py-3 bg-slate-50/50 dark:bg-slate-800/30">
               {parsedCases.length > 0 && (
-                <button onClick={() => { if (confirm('Clear all test cases?')) { setTestCases(''); setParsedCases([]); setCoverage(null); setTestCasesCleared(true); setSelectedRowKeys(new Set()); setReviewByRowKey({}); } }}
-                  className="text-[10px] font-bold text-slate-400 hover:text-red-500 flex items-center gap-0.5 transition" title="Clear all">
-                  <span className="material-symbols-outlined text-xs">delete_sweep</span> Clear
-                </button>
+                <>
+                  <button onClick={expandedRows.size >= parsedCases.length ? collapseAllRows : expandAllRows}
+                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white text-xs font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
+                    <span className="material-symbols-outlined text-sm">{expandedRows.size >= parsedCases.length ? 'unfold_less' : 'unfold_more'}</span>
+                    {expandedRows.size >= parsedCases.length ? 'Collapse all' : 'Expand all'}
+                  </button>
+                  <button onClick={() => { if (confirm('Clear all test cases?')) { setTestCases(''); setParsedCases([]); setCoverage(null); setTestCasesCleared(true); setSelectedRowKeys(new Set()); setReviewByRowKey({}); setExpandedRows(new Set()); } }}
+                    className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 text-slate-500 text-xs font-bold hover:text-red-500 hover:border-red-300 transition-colors" title="Clear all">
+                    <span className="material-symbols-outlined text-sm">delete_sweep</span> Clear
+                  </button>
+                </>
               )}
               <button onClick={() => setFilterOpen(!filterOpen)}
                 className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-on-surface dark:text-white text-xs font-bold hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors">
@@ -1110,6 +1129,7 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
                       const desc = tc['Description'] || '';
                       const type = tc['Test Case Type'] || 'Functional';
                       const rowDecision = rowKey ? reviewByRowKey[rowKey] : null;
+                      const isExpanded = rowKey ? expandedRows.has(rowKey) : false;
                       const rowBg =
                         rowDecision === 'approved'
                           ? 'bg-green-50/90 dark:bg-green-900/20'
@@ -1117,7 +1137,8 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
                             ? 'bg-red-50/90 dark:bg-red-900/20'
                             : '';
                       return (
-                        <tr key={rowKey || `orig-${origIdx}`} className={`${rowBg} hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors`}>
+                        <Fragment key={rowKey || `orig-${origIdx}`}>
+                        <tr className={`${rowBg} hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors`}>
                           <td className="px-3 py-4 text-center align-middle">
                             <input
                               type="checkbox"
@@ -1131,10 +1152,15 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
                           </td>
                           <td className="px-4 py-4 font-mono text-sm text-app-red font-bold">{tcId}</td>
                           <td className="px-4 py-4">
-                            <div className={`text-sm font-semibold ${rowDecision === 'rejected' ? 'line-through text-slate-400 dark:text-slate-500' : 'text-on-surface dark:text-white'}`}>{title}</div>
-                            {desc && desc !== title && (
-                              <div className={`text-xs truncate max-w-md ${rowDecision === 'rejected' ? 'line-through text-slate-400 dark:text-slate-600' : 'text-on-surface-variant dark:text-slate-400'}`}>{desc}</div>
-                            )}
+                            <button type="button" onClick={() => toggleRowExpanded(rowKey)} className="flex items-start gap-2 text-left w-full group" title={isExpanded ? 'Collapse details' : 'Expand details'}>
+                              <span className="material-symbols-outlined text-base text-secondary shrink-0 mt-0.5 transition-transform" style={{ transform: isExpanded ? 'rotate(90deg)' : 'rotate(0deg)' }}>chevron_right</span>
+                              <span className="min-w-0">
+                                <span className={`block text-sm font-semibold group-hover:text-app-red transition-colors ${rowDecision === 'rejected' ? 'line-through text-slate-400 dark:text-slate-500' : 'text-on-surface dark:text-white'}`}>{title}</span>
+                                {desc && desc !== title && (
+                                  <span className={`block text-xs truncate max-w-md ${rowDecision === 'rejected' ? 'line-through text-slate-400 dark:text-slate-600' : 'text-on-surface-variant dark:text-slate-400'}`}>{desc}</span>
+                                )}
+                              </span>
+                            </button>
                           </td>
                           <td className="px-4 py-4">
                             <div className="flex flex-col items-center gap-1">
@@ -1186,6 +1212,22 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
                             )}
                           </td>
                         </tr>
+                        {isExpanded && (
+                          <tr className={rowBg}>
+                            <td colSpan={5} className="px-6 pb-5 pt-1 bg-slate-50/60 dark:bg-slate-800/30">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-3 rounded-xl border border-outline-variant/15 bg-white dark:bg-slate-900 p-4">
+                                <DetailField label="Pre-conditions" value={tc['Pre-conditions']} />
+                                <DetailField label="Test Data" value={tc['Test Data']} />
+                                <DetailField label="Test Steps" value={tc['Test Steps']} span />
+                                <DetailField label="Expected Results" value={tc['Expected Results']} span />
+                                <DetailField label="Tags" value={tc['Tags']} />
+                                <DetailField label="Execution Tags" value={tc['Execution Tags']} />
+                                {tc['Comments'] && tc['Comments'] !== '[NOT SPECIFIED]' && <DetailField label="Comments" value={tc['Comments']} span />}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                        </Fragment>
                       );
                     })}
                   </tbody>
@@ -1295,6 +1337,19 @@ export default function ReviewTestCases({ connections, apiBase, generatedTestCas
           {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved to Library!' : 'Save to Library'}
         </button>
       </div>
+    </div>
+  );
+}
+
+/* Expanded test-case detail field (Pre-conditions, Steps, Expected, etc.) */
+function DetailField({ label, value, span = false }) {
+  const text = (value || '').trim();
+  return (
+    <div className={span ? 'md:col-span-2' : ''}>
+      <p className="text-[10px] font-bold uppercase tracking-wider text-secondary mb-1">{label}</p>
+      <p className="text-sm text-on-surface dark:text-slate-200 whitespace-pre-wrap leading-relaxed">
+        {text || <span className="italic text-slate-400 dark:text-slate-500">Not specified</span>}
+      </p>
     </div>
   );
 }

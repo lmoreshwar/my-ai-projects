@@ -3327,7 +3327,9 @@ async function coreGenerate(fw, job, log, logs) {
   // writes from a PROVEN walk instead of guessing. Non-prod only; safe fallback to the static snapshot.
   let liveWalk = '';
   const isProdEnv = String(job.environment || '').toLowerCase().startsWith('prod');
-  if (snapAuth && !isProdEnv && process.env.BLAST_LIVE_WALK !== '0') {
+  const level3Enabled = process.env.BLAST_LEVEL3 === '1';
+  const canLiveWalk = snapAuth && !isProdEnv && process.env.BLAST_LIVE_WALK !== '0';
+  const runLevel2Walk = async () => {
     log('[local] Level 2: driving the live app to VERIFY the journey (login → walk → capture real states)…');
     try {
       const drive = await driveFlow(fw, [job.url], { auth: snapAuth, allowSubmit: true, maxDepth: 10 });
@@ -3341,6 +3343,13 @@ async function coreGenerate(fw, job, log, logs) {
     } catch (e) {
       log(`[local] Level 2: live walk skipped (${e.message}) — using the static snapshot evidence.`);
     }
+  };
+  // When Level 3 will run it captures equal-or-better live evidence, so skip the Level 2 walk here
+  // to avoid driving the app twice. If Level 3 later yields nothing, we run this as a fallback below.
+  if (canLiveWalk && !level3Enabled) {
+    await runLevel2Walk();
+  } else if (canLiveWalk && level3Enabled) {
+    log('[local] Level 2: skipping the deterministic walk — Level 3 live drive will capture proven evidence (avoids driving the app twice).');
   }
   const existing = findDomainFiles(fw, job);
   if (existing.length) log(`[local] Extending existing domain files: ${existing.map((e) => e.rel).join(', ')}`);
@@ -3392,12 +3401,18 @@ async function coreGenerate(fw, job, log, logs) {
   // that provably worked. Fed to codegen as top evidence so the writer reuses proven locators
   // instead of guessing. Flag-gated (BLAST_LEVEL3=1); '' on any issue → existing path unchanged.
   let liveTrace = '';
-  if (process.env.BLAST_LEVEL3 === '1' && snapAuth && !isProdEnv && newCases.length) {
+  if (level3Enabled && snapAuth && !isProdEnv && newCases.length) {
     try {
       liveTrace = await driveFeatureLive(fw, job, newCases[0], snapAuth, log, { startUrl: l3StartUrl });
     } catch (e) {
       log(`[local] Level 3: live drive skipped (${e.message}) — using standard evidence.`);
     }
+  }
+  // Fallback: Level 3 produced no proven actions — run the Level 2 walk now (we skipped it above to
+  // avoid driving the app twice) so codegen still writes from live evidence instead of guessing.
+  if (level3Enabled && canLiveWalk && !liveTrace && !liveWalk) {
+    log('[local] Level 3 captured no live actions — falling back to the Level 2 deterministic walk.');
+    await runLevel2Walk();
   }
 
   // 1) Generate — ONE case per LLM call so each response stays small enough to

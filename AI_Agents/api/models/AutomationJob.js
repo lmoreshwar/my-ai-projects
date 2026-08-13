@@ -83,7 +83,7 @@ const AutomationJobSchema = new mongoose.Schema({
   browser: { type: String, enum: ['Chrome', 'Edge', 'Firefox', 'Safari', 'All'], default: 'Chrome' },
   testScope: { type: String, enum: ['Generated only', 'Smoke'], default: 'Generated only' },
   parallel: { type: String, enum: ['Auto', 'Serial'], default: 'Auto' },
-  level3: { type: Boolean, default: false },    // verify locators live via @playwright/cli before writing
+  level3: { type: Boolean, default: true },    // verify locators live via @playwright/cli before writing (on by default)
 
   // Orchestration state
   status: { type: String, enum: JOB_STATUSES, default: 'Pending' },

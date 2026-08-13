@@ -5,6 +5,7 @@ import Sidebar from './components/Sidebar';
 import TopBar from './components/TopBar';
 import ConnectionSettings from './components/ConnectionSettings';
 import TestPlanGenerator from './components/TestPlanGenerator';
+import TestScenarioGenerator from './components/TestScenarioGenerator';
 import TestCaseGenerator from './components/TestCaseGenerator';
 import ReviewTestCases from './components/ReviewTestCases';
 import ZephyrDashboard from './components/ZephyrDashboard';
@@ -153,6 +154,8 @@ function App() {
     });
     setReviewCoverage(null); setReviewLocalState({ ticketId: '', manualReq: '', issueData: null });
     setVisitedPages(new Set(['connections']));
+    // Clear persisted generated data so a fresh login never shows the previous user's test cases
+    try { localStorage.removeItem(TC_STORAGE_KEY); localStorage.removeItem(LIFTED_STATE_KEY); } catch { /* ignore */ }
     // Trigger re-fetch of the new user's saved connections from DB
     setIsLoggedIn(prev => !prev); // toggle to trigger useEffect
   };
@@ -221,6 +224,9 @@ function App() {
         <div style={{ display: activePage === 'test-plan' ? undefined : 'none' }}>
           {visitedPages.has('test-plan') && <TestPlanGenerator connections={connections} apiBase={API_BASE} />}
         </div>
+        <div style={{ display: activePage === 'test-scenarios' ? undefined : 'none' }}>
+          {visitedPages.has('test-scenarios') && <TestScenarioGenerator connections={connections} apiBase={API_BASE} />}
+        </div>
         <div style={{ display: activePage === 'test-cases' ? undefined : 'none' }}>
           {visitedPages.has('test-cases') && <TestCaseGenerator connections={connections} apiBase={API_BASE} onTestCasesGenerated={setGeneratedTestCases} onNavigate={setActivePage} />}
         </div>
@@ -234,7 +240,7 @@ function App() {
           {visitedPages.has('ai-native-playwright') && <AINativePlaywright connections={connections} apiBase={API_BASE} generatedTestCases={generatedTestCases} onNavigate={setActivePage} setCicdState={setCicdState} />}
         </div>
         <div style={{ display: activePage === 'autopilot' ? undefined : 'none' }}>
-          {visitedPages.has('autopilot') && <AutopilotExplorer apiBase={API_BASE} />}
+          {visitedPages.has('autopilot') && <AutopilotExplorer apiBase={API_BASE} connections={connections} />}
         </div>
         <div style={{ display: activePage === 'github' ? undefined : 'none' }}>
           {visitedPages.has('github') && <GitHubIntegration connections={connections} apiBase={API_BASE} onNavigate={setActivePage} pendingPushFiles={pendingPushFiles} setPendingPushFiles={setPendingPushFiles} />}
@@ -252,7 +258,6 @@ function App() {
         <div className="flex items-center overflow-x-auto px-2 py-2 gap-1 scrollbar-hide">
           {[
             { id: 'connections', icon: 'hub', label: 'Settings' },
-            { id: 'test-plan', icon: 'assignment', label: 'Plan' },
             { id: 'test-cases', icon: 'edit_note', label: 'Cases' },
             { id: 'review-cases', icon: 'fact_check', label: 'Review' },
             { id: 'ai-native-playwright', icon: 'smart_toy', label: 'AI·PW' },
@@ -261,6 +266,8 @@ function App() {
             { id: 'github-cicd', icon: 'rocket_launch', label: 'CI/CD' },
             { id: 'saved-history', icon: 'inventory_2', label: 'Artifacts' },
             { id: 'zephyr-dashboard', icon: 'dashboard', label: 'Zephyr' },
+            { id: 'test-plan', icon: 'assignment', label: 'Plan' },
+            { id: 'test-scenarios', icon: 'schema', label: 'Scenarios' },
           ].map(item => (
             <button
               key={item.id}

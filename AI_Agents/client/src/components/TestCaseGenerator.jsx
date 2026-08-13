@@ -799,11 +799,14 @@ Then the full test case table.`;
 
   /* ═══════════ RENDER ═══════════ */
   return (
-    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-8 sm:pt-12 pb-32">
-      <div className="mb-12">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-2">Test Case Architect</h1>
-        <p className="text-on-surface-variant dark:text-slate-400 max-w-3xl font-medium leading-relaxed mt-3">
-          Generate detailed, structured test cases from JIRA tickets or manual requirements using a powerful anti-hallucination prompt and context-aware generation.
+    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-6 pb-32">
+      <div className="mb-6">
+        <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+          <span className="material-symbols-outlined text-app-red">architecture</span>
+          Test Case Architect
+        </h1>
+        <p className="text-on-surface-variant dark:text-slate-400 text-sm mt-1">
+          Generate structured test cases from JIRA or manual requirements with anti-hallucination checks.
         </p>
       </div>
 
@@ -1277,8 +1280,11 @@ Then the full test case table.`;
               <div className="col-span-12 lg:col-span-9 space-y-6">
                 {/* Header */}
                 <div>
-                  <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-1">Test Case Generator - Live Preview</h1>
-                  <p className="text-on-surface-variant dark:text-slate-400 text-sm">Drafting intelligent test protocols from system requirements using AI-driven logic.</p>
+                  <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100 flex items-center gap-2">
+                    <span className="material-symbols-outlined text-app-red">visibility</span>
+                    Live Preview
+                  </h1>
+                  <p className="text-on-surface-variant dark:text-slate-400 text-sm mt-1">Review and refine the generated test cases before sending to review.</p>
                 </div>
 
                 {/* Error/Warning Banner with Action Buttons */}
@@ -1344,10 +1350,10 @@ Then the full test case table.`;
                     {issueData ? `${issueData.id}: ${issueData.summary}\n\n${issueData.description || ''}` : manualReq || 'Manual requirement input'}
                   </div>
                   <div className="flex justify-end mt-3 gap-2">
-                    <button onClick={() => setStep(1)} className="text-xs font-bold text-app-red hover:underline flex items-center gap-1">
+                    <button onClick={() => setStep(1)} className="px-3 py-1.5 rounded-lg border border-app-red/40 text-app-red text-xs font-bold hover:bg-app-red/10 transition flex items-center gap-1.5">
                       <span className="material-symbols-outlined text-sm">arrow_back</span> Edit Input
                     </button>
-                    <button onClick={resetAll} className="text-xs font-bold text-secondary hover:underline flex items-center gap-1">
+                    <button onClick={resetAll} className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 text-secondary text-xs font-bold hover:bg-slate-100 dark:hover:bg-slate-800 transition flex items-center gap-1.5">
                       <span className="material-symbols-outlined text-sm">refresh</span> New
                     </button>
                   </div>
@@ -1362,7 +1368,7 @@ Then the full test case table.`;
                     </h3>
                     <div className="flex items-center gap-3">
                       {tableRows.length > 0 && (
-                        <button onClick={() => { if (confirm('Clear all test cases?')) { setTableRows([]); setTestCases(''); } }} className="text-[11px] font-bold text-slate-400 hover:text-red-500 flex items-center gap-1 transition" title="Clear all test cases">
+                        <button onClick={() => { if (confirm('Clear all test cases?')) { setTableRows([]); setTestCases(''); } }} className="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-600 text-xs font-bold text-slate-500 hover:text-red-500 hover:border-red-300 flex items-center gap-1.5 transition" title="Clear all test cases">
                           <span className="material-symbols-outlined text-sm">delete_sweep</span> Clear All
                         </button>
                       )}
@@ -1594,30 +1600,7 @@ Then the full test case table.`;
                   </div>
                 </div>
 
-                {/* AI Insights Card */}
-                <div className="bg-[#1d1a22] text-white p-6 rounded-xl relative overflow-hidden group">
-                  <div className="absolute -right-4 -top-4 w-24 h-24 bg-app-red/20 rounded-full blur-2xl group-hover:bg-app-red/40 transition-all duration-700"></div>
-                  <div className="relative z-10 space-y-4">
-                    <div className="flex items-center gap-2 text-red-300">
-                      <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>analytics</span>
-                      <h3 className="font-bold text-sm uppercase tracking-wider">AI Insights</h3>
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-4xl font-extrabold text-white">{tableRows.length > 0 ? Math.min(94 + Math.floor(tableRows.length / 3), 100) : 0}%</p>
-                      <p className="text-xs text-red-300 font-medium uppercase">Coverage Confidence</p>
-                    </div>
-                    <p className="text-sm text-slate-400 leading-relaxed italic">
-                      "Generated {tableRows.length} test cases with anti-hallucination verification. All assertions are traceable to provided requirements."
-                    </p>
-                    <div className="pt-2">
-                      <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
-                        <div className="bg-app-red h-full transition-all duration-1000" style={{ width: `${tableRows.length > 0 ? Math.min(94 + Math.floor(tableRows.length / 3), 100) : 0}%` }}></div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Send to Review */}
+                {/* Send to Review — coverage insights live on the Review page */}
                 <button onClick={sendToReview} className="w-full flex items-center justify-center gap-2 px-4 py-3 bg-white dark:bg-slate-800 text-app-red border-2 border-app-red hover:bg-app-red hover:text-white rounded-lg transition-all font-bold text-sm">
                   <span className="material-symbols-outlined text-lg">rate_review</span>
                   Send to AI Review

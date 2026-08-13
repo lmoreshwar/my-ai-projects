@@ -1,4 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
+import PrTargetBadge from './PrTargetBadge';
+import StatusChip from './StatusChip';
 
 /* ── API helper (auth via blast_token) ── */
 function authHeaders() {
@@ -21,7 +23,7 @@ const labelCls = 'block text-xs font-semibold text-on-surface-variant dark:text-
  * /api/automation/explore, and renders the returned scaffold plan. The explore/author engine
  * is wired in Phase 1; this page proves the UX and page→API→job flow.
  */
-export default function AutopilotExplorer({ apiBase }) {
+export default function AutopilotExplorer({ apiBase, connections }) {
   const [form, setForm] = useState({
     url: 'https://www.saucedemo.com',
     feature: '',
@@ -33,7 +35,6 @@ export default function AutopilotExplorer({ apiBase }) {
     maxCases: 8,
     environment: 'QA',
     notes: '',
-    level3: false,
   });
   const [testTypes, setTestTypes] = useState(new Set(DEFAULT_TYPES));
   const [showPassword, setShowPassword] = useState(false);
@@ -91,7 +92,6 @@ export default function AutopilotExplorer({ apiBase }) {
           flowUrls: (form.flowUrls || '').split(/\r?\n/).map((u) => u.trim()).filter(Boolean),
           scopeHint: form.scopeHint || '',
           notes: form.notes || '',
-          level3: !!form.level3,
           evidenceFiles: files.map((f) => f.name),
         }),
       });
@@ -295,14 +295,6 @@ export default function AutopilotExplorer({ apiBase }) {
                 <textarea className={inputCls} rows={3} value={form.notes}
                   onChange={(e) => set('notes', e.target.value)} placeholder="Any intent the AI should factor into case design…" />
               </div>
-              <label className="flex items-start gap-2 cursor-pointer select-none">
-                <input type="checkbox" checked={!!form.level3} onChange={(e) => set('level3', e.target.checked)}
-                  className="mt-0.5 accent-app-red" />
-                <span className="text-sm">
-                  <span className="font-medium">Level 3 — verify locators live before writing</span>
-                  <span className="block text-xs text-secondary dark:text-slate-400">Drives the real app to confirm each locator (fewer heal rounds). Slower; non-prod only.</span>
-                </span>
-              </label>
             </div>
           )}
 
@@ -339,12 +331,13 @@ export default function AutopilotExplorer({ apiBase }) {
             </div>
           )}
 
+          <PrTargetBadge connections={connections} />
+
           <div className="flex gap-3 pt-1">
             <button onClick={submit} disabled={!canSubmit}
               className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-white transition ${
                 canSubmit ? 'bg-app-red hover:bg-app-dark-red' : 'bg-slate-300 dark:bg-slate-700 cursor-not-allowed'
-              }`}>
-              {busy ? (
+              }`}>              {busy ? (
                 <>
                   <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
                   Exploring…
@@ -379,8 +372,8 @@ export default function AutopilotExplorer({ apiBase }) {
           {job && (
             <div>
               <div className="text-[11px] text-on-surface-variant dark:text-slate-500 mb-2 flex items-center gap-2">
-                Job <span className="font-mono">{job.jobId}</span> · status{' '}
-                <span className="font-semibold">{job.status}</span>
+                Job <span className="font-mono">{job.jobId}</span>
+                <StatusChip status={job.status} />
                 {job.featureSummary ? <span>· {job.featureSummary}</span> : null}
               </div>
 

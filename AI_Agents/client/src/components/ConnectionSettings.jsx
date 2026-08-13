@@ -59,6 +59,9 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
     } else if (section === 'github') {
       sectionData.token = connections.github.token;
       sectionData.apiUrl = connections.github.apiUrl;
+      // Persist the chosen target repo so the cloud runner opens the PR in THIS repo.
+      sectionData.selectedRepo = connections.github.selectedRepo || '';
+      sectionData.selectedBranch = connections.github.selectedBranch || 'main';
     }
 
     setSavedMsg(`Saving ${names[section]} credentials securely to database...`);
@@ -600,8 +603,17 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                 onChange={(e) => updateConn('github', 'token', e.target.value)}
               />
               <p className="text-[0.6rem] text-slate-400 dark:text-slate-600 ml-1">
-                Required scopes: <span className="font-semibold text-slate-500 dark:text-slate-400">repo</span>, <span className="font-semibold text-slate-500 dark:text-slate-400">read:org</span> (optional for org repos)
+                Required scopes: <span className="font-semibold text-slate-500 dark:text-slate-400">repo</span>, <span className="font-semibold text-slate-500 dark:text-slate-400">workflow</span>, <span className="font-semibold text-slate-500 dark:text-slate-400">read:org</span> (optional for org repos)
               </p>
+            </div>
+            <div className="space-y-1 p-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded">
+              <p className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500">Pull Request target</p>
+              <p className="text-sm font-semibold text-on-surface dark:text-white">
+                {connections.github?.selectedRepo
+                  ? `${connections.github.selectedRepo}${connections.github.selectedBranch ? ` @ ${connections.github.selectedBranch}` : ''}`
+                  : 'Server default (no repo selected)'}
+              </p>
+              <p className="text-[0.6rem] text-slate-400 dark:text-slate-600">BLAST opens the generated-tests Pull Request in this repo. It must contain the BLAST Playwright framework, the <span className="font-semibold">blast-runner.yml</span> workflow, and your Actions secrets.</p>
             </div>
           </div>
 
@@ -634,16 +646,51 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
             </button>
           </div>
 
-          {/* Post-Connection: Success message */}
+          {/* Post-Connection: Success message + target repo/branch selector */}
           {connections.github?.status === 'connected' && (
-            <div className="flex items-center gap-3 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
-              <span className="material-symbols-outlined text-green-600 text-xl">check_circle</span>
-              <div>
-                <p className="text-sm font-bold text-green-700 dark:text-green-400">GitHub Connected Successfully</p>
-                <p className="text-xs text-green-600 dark:text-green-500 mt-0.5">
-                  {(connections.github.repos || []).length} repositories found. Use the <span className="font-bold">GitHub CICD</span> page to select a repo, branch and trigger workflows.
-                </p>
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center gap-3 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+                <span className="material-symbols-outlined text-green-600 text-xl">check_circle</span>
+                <div>
+                  <p className="text-sm font-bold text-green-700 dark:text-green-400">GitHub Connected Successfully</p>
+                  <p className="text-xs text-green-600 dark:text-green-500 mt-0.5">
+                    {(connections.github.repos || []).length} repositories found. Select the target repo + branch below, then <span className="font-bold">Save Connection</span>.
+                  </p>
+                </div>
               </div>
+              <div className="space-y-2">
+                <label className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500 ml-1">
+                  Target repository (PR destination)
+                </label>
+                <select
+                  className="w-full h-12 px-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded focus:border-app-red focus:ring-1 focus:ring-app-red transition-all text-sm text-on-surface dark:text-white"
+                  value={connections.github?.selectedRepo || ''}
+                  onChange={(e) => fetchBranches(e.target.value)}
+                >
+                  <option value="">Select a repository…</option>
+                  {(connections.github.repos || []).map((r) => (
+                    <option key={r.name} value={r.name}>{r.name}{r.visibility ? ` (${r.visibility})` : ''}</option>
+                  ))}
+                </select>
+              </div>
+              {connections.github?.selectedRepo && (
+                <div className="space-y-2">
+                  <label className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500 ml-1">
+                    Branch
+                  </label>
+                  <select
+                    className="w-full h-12 px-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded focus:border-app-red focus:ring-1 focus:ring-app-red transition-all text-sm text-on-surface dark:text-white disabled:opacity-50"
+                    value={connections.github?.selectedBranch || 'main'}
+                    onChange={(e) => updateConn('github', 'selectedBranch', e.target.value)}
+                    disabled={fetchingBranches}
+                  >
+                    {fetchingBranches && <option value="">Loading branches…</option>}
+                    {(connections.github.branches || []).map((b) => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
           )}
         </section>

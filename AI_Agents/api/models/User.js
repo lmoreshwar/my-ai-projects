@@ -49,7 +49,12 @@ const UserSchema = new mongoose.Schema({
     },
     github: {
       token: { type: String, default: '' },
-      apiUrl: { type: String, default: 'https://api.github.com' }
+      apiUrl: { type: String, default: 'https://api.github.com' },
+      // Target repo the customer's generated tests + PR land in (their fork/copy of the
+      // framework, which holds blast-runner.yml + their Actions secrets). "owner/repo" +
+      // branch, chosen in the Connections UI. Empty => server default (single-tenant).
+      selectedRepo: { type: String, default: '' },
+      selectedBranch: { type: String, default: 'main' }
     }
   },
   createdAt: {
