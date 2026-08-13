@@ -55,19 +55,24 @@ export default function Login({ onLogin }) {
   return (
     <div className="bg-surface text-on-surface min-h-screen flex flex-col font-body">
       <main className="flex-grow flex items-center justify-center px-6 py-12">
-        <div className="w-full max-w-6xl grid grid-cols-1 md:grid-cols-12 gap-0 overflow-hidden rounded-xl shadow-[0_12px_32px_rgba(29,26,34,0.06)] bg-surface-container-lowest">
+        <div className="w-full max-w-6xl grid grid-cols-1 md:grid-cols-12 gap-0 overflow-hidden rounded-2xl shadow-[0_24px_60px_-15px_rgba(230,0,18,0.25)] ring-1 ring-black/5 bg-surface-container-lowest blast-rise">
           <div className="md:col-span-5 p-8 md:p-12 flex flex-col justify-between">
             <div>
-              <div className="mb-12 flex items-center gap-2">
-                <span className="material-symbols-outlined text-4xl text-primary" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
-                <span className="font-headline font-black text-2xl tracking-tighter text-on-surface">B.L.A.S.T AGENT</span>
+              <div className="mb-12 flex items-center gap-3 blast-rise blast-rise-1">
+                <span className="grid place-items-center w-11 h-11 rounded-xl bg-gradient-to-br from-app-red to-primary text-white shadow-lg shadow-primary/30 blast-glow">
+                  <span className="material-symbols-outlined text-2xl" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
+                </span>
+                <div className="leading-none">
+                  <span className="font-headline font-black text-2xl tracking-tighter bg-gradient-to-r from-app-red to-primary bg-clip-text text-transparent">BLAST</span>
+                  <span className="block text-[10px] font-bold uppercase tracking-[0.18em] text-on-surface-variant mt-0.5">AIQA Platform</span>
+                </div>
               </div>
-              <div className="space-y-2 mb-10">
-                <h1 className="text-primary-container text-4xl font-black tracking-tighter leading-none">
-                  TEST COMMAND CENTER
+              <div className="space-y-3 mb-10 blast-rise blast-rise-2">
+                <h1 className="text-4xl font-black tracking-tighter leading-none bg-gradient-to-br from-primary via-app-red to-secondary bg-clip-text text-transparent">
+                  Welcome back
                 </h1>
                 <p className="text-on-surface-variant text-lg font-medium">
-                  Autonomous Intelligence · Precision Engineering
+                  Browser-Level Autonomous Software Testing
                 </p>
               </div>
               {error && (
@@ -83,7 +88,7 @@ export default function Login({ onLogin }) {
                     className="w-full border-0 border-b-2 border-outline-variant bg-surface-container-highest px-4 py-3 focus:ring-0 focus:border-primary transition-colors duration-200"
                     id="login-email"
                     name="login-email"
-                    placeholder="admin@blastai.com"
+                    placeholder="you@blastaiqa.com"
                     type="email"
                     autoComplete="off"
                     value={email}
@@ -107,11 +112,14 @@ export default function Login({ onLogin }) {
                   />
                 </div>
                 <button
-                  className="w-full bg-gradient-to-r from-primary to-primary-container text-white font-bold py-4 rounded-md shadow-md hover:scale-[0.98] transition-transform duration-150 ease-in-out disabled:opacity-70 disabled:cursor-not-allowed"
+                  className="blast-shine relative overflow-hidden w-full bg-gradient-to-r from-app-red via-primary to-app-red bg-[length:200%_auto] hover:bg-[position:right_center] text-white font-bold py-4 rounded-xl shadow-lg shadow-primary/30 hover:shadow-primary/50 active:scale-[0.98] transition-all duration-300 disabled:opacity-70 disabled:cursor-not-allowed"
                   type="submit"
                   disabled={loading}
                 >
-                  {loading ? 'Signing In...' : 'Sign In'}
+                  <span className="relative z-10 flex items-center justify-center gap-2">
+                    {loading ? 'Signing In...' : 'Sign In'}
+                    {!loading && <span className="material-symbols-outlined text-lg">arrow_forward</span>}
+                  </span>
                 </button>
               </form>
             </div>
@@ -121,16 +129,37 @@ export default function Login({ onLogin }) {
               </p>
             </div>
           </div>
-          <div className="hidden md:block md:col-span-7 relative bg-primary overflow-hidden">
-            <div className="absolute inset-0 bg-gradient-to-br from-primary via-primary-container to-secondary opacity-90 mix-blend-multiply"></div>
-            <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1558494949-ef010cbdcc31?q=80&w=2034&auto=format&fit=crop')] bg-cover bg-center opacity-40 mix-blend-overlay"></div>
-            <div className="absolute inset-0 flex flex-col justify-end p-16 text-white space-y-4">
-              <div className="backdrop-blur-md bg-white/10 p-8 rounded-xl border border-white/20">
-                <span className="material-symbols-outlined text-4xl mb-4">terminal</span>
-                <h2 className="text-3xl font-black tracking-tight mb-2">Architecting Autonomous Testing</h2>
-                <p className="text-lg text-primary-fixed opacity-90 font-light leading-relaxed">
-                  Access the global hub for B.L.A.S.T AGENT's proprietary QA frameworks and deterministic command protocols.
-                </p>
+          <div className="hidden md:block md:col-span-7 relative overflow-hidden bg-[#1a0407]">
+            {/* Animated aurora backdrop */}
+            <div className="blast-aurora absolute inset-0 bg-[linear-gradient(120deg,#e60012,#b7000c,#2d5bb3,#b7000c,#e60012)] opacity-90"></div>
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_20%_20%,rgba(255,255,255,0.25),transparent_40%)]"></div>
+            {/* Floating glass orbs */}
+            <div className="blast-float absolute -top-10 -right-10 w-52 h-52 rounded-full bg-white/10 blur-2xl"></div>
+            <div className="blast-float-slow absolute bottom-10 -left-8 w-40 h-40 rounded-full bg-secondary/30 blur-2xl"></div>
+
+            <div className="relative z-10 h-full flex flex-col justify-center p-12 lg:p-16 text-white">
+              <div className="blast-glass rounded-2xl p-8 shadow-2xl blast-rise blast-rise-2">
+                <p className="text-xs font-bold uppercase tracking-[0.25em] text-white/70 mb-4">What BLAST stands for</p>
+                <ul className="space-y-3">
+                  {[
+                    { l: 'B', w: 'Browser-Level', d: 'Tests run exactly where your users live — the real browser.' },
+                    { l: 'A', w: 'Autonomous', d: 'AI authors, heals and maintains the suite on its own.' },
+                    { l: 'S', w: 'Software', d: 'Enterprise-grade coverage for any web application.' },
+                    { l: 'T', w: 'Testing', d: 'From exploration to CI/CD pull requests — end to end.' },
+                  ].map((row) => (
+                    <li key={row.w} className="flex items-start gap-4">
+                      <span className="grid place-items-center shrink-0 w-9 h-9 rounded-lg bg-white/15 border border-white/25 font-black text-lg">{row.l}</span>
+                      <div>
+                        <p className="font-bold leading-tight">{row.w}</p>
+                        <p className="text-sm text-white/75 leading-snug">{row.d}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-6 pt-5 border-t border-white/15 flex items-center gap-2 text-sm font-semibold text-white/90">
+                  <span className="material-symbols-outlined text-base">groups</span>
+                  Built for every team. Trusted across every industry.
+                </div>
               </div>
             </div>
           </div>
@@ -143,7 +172,7 @@ export default function Login({ onLogin }) {
           <Link className="text-on-surface-variant text-xs font-normal hover:text-primary transition-colors" to="#">Help Center</Link>
         </div>
         <p className="text-on-surface-variant text-xs font-normal tracking-wide">
-          © 2026 B.L.A.S.T AGENT. All rights reserved.
+          © 2026 BLAST AIQA · Browser-Level Autonomous Software Testing. All rights reserved.
         </p>
       </footer>
     </div>

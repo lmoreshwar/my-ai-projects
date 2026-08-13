@@ -21,14 +21,22 @@ export default function TopBar({ children, sidebarCollapsed }) {
   }, []);
 
   return (
-    <header className={`bg-app-red dark:bg-app-dark-red flex items-center justify-between px-3 sm:px-6 h-16 sticky top-0 z-40 transition-all duration-300 ${sidebarCollapsed ? 'lg:ml-[72px]' : 'lg:ml-80'}`}>
+    <header className={`bg-gradient-to-r from-app-dark-red via-app-red to-app-dark-red dark:from-[#1d1a22] dark:via-[#2a0508] dark:to-[#1d1a22] shadow-lg shadow-primary/20 flex items-center justify-between px-3 sm:px-6 h-16 sticky top-0 z-40 transition-all duration-300 ${sidebarCollapsed ? 'lg:ml-[72px]' : 'lg:ml-80'}`}>
       <div className="flex items-center gap-4">
         {children}
         <div className="flex items-center gap-3">
-          <h1 className="text-sm sm:text-lg font-bold text-white uppercase tracking-wider font-headline">
-            <span className="hidden sm:inline">B.L.A.S.T AI Test Command Center</span>
-            <span className="sm:hidden">B.L.A.S.T</span>
-          </h1>
+          <span className="hidden sm:grid place-items-center w-9 h-9 rounded-lg bg-white/15 border border-white/20 text-white">
+            <span className="material-symbols-outlined text-xl" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
+          </span>
+          <div className="leading-tight">
+            <h1 className="text-sm sm:text-lg font-black text-white tracking-tight font-headline">
+              <span className="hidden sm:inline">BLAST AIQA</span>
+              <span className="sm:hidden">BLAST</span>
+            </h1>
+            <span className="hidden sm:block text-[9px] font-semibold text-white/70 uppercase tracking-[0.15em]">
+              Browser-Level Autonomous Software Testing
+            </span>
+          </div>
           <span className="hidden lg:inline-block text-[9px] font-bold bg-white/20 text-white/90 px-2 py-0.5 rounded-full uppercase tracking-widest">
             Powered by GenAI
           </span>

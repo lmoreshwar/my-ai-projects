@@ -2,7 +2,7 @@
 
 > **Recording Setup:** Clipchamp → Screen and camera | Clean background | Edge full screen (F11) | Hide favorites bar (Ctrl+Shift+B) | Dark mode ON
 >
-> **URL:** `blast-test-agent.onrender.com`
+> **URL:** `blastaiqa.com`
 >
 > **Keep ready:** Gemini API key, GitHub PAT, sample requirement text (below)
 
@@ -418,7 +418,7 @@ E-Commerce Checkout Flow:
 
 - [ ] Edge browser: Hide favorites bar (Ctrl+Shift+B)
 - [ ] Edge browser: Full screen (F11)
-- [ ] Only one tab open: blast-test-agent.onrender.com
+- [ ] Only one tab open: blastaiqa.com
 - [ ] Dark mode ON in the app
 - [ ] LLM pre-connected (so demo doesn't fail on camera)
 - [ ] Sample requirement copied and ready to paste
@@ -468,7 +468,7 @@ An intelligent test agent that generates test plans, test cases,
 automation code (Playwright POM / Selenium BDD), and runs CI/CD
 pipelines — all powered by LLMs (Gemini, Groq, Grok).
 
-Live Demo: https://blast-test-agent.onrender.com
+Live Demo: https://blastaiqa.com
 
 Part 1: Overview (this video)
 Part 2: Test Generation & AI Coverage Review

@@ -44,30 +44,49 @@ export default function SignUp() {
   return (
     <div className="bg-surface text-on-surface min-h-screen flex flex-col items-center font-body">
       <main className="w-full flex-1 flex items-center justify-center p-6 md:p-12">
-        <div className="w-full max-w-[1200px] grid grid-cols-1 md:grid-cols-12 gap-0 overflow-hidden rounded-xl shadow-[0_12px_32px_rgba(29,26,34,0.06)] bg-surface-container-lowest">
+        <div className="w-full max-w-[1200px] grid grid-cols-1 md:grid-cols-12 gap-0 overflow-hidden rounded-2xl shadow-[0_24px_60px_-15px_rgba(230,0,18,0.25)] ring-1 ring-black/5 bg-surface-container-lowest blast-rise">
           
           {/* Branding/Visual Side */}
-          <div className="hidden md:flex md:col-span-5 bg-primary-container p-12 flex-col justify-between relative overflow-hidden">
-            <div className="absolute inset-0 opacity-10">
-              <div className="absolute -top-24 -left-24 w-96 h-96 rounded-full bg-white blur-3xl"></div>
-              <div className="absolute bottom-1/4 right-0 w-64 h-64 rounded-full bg-primary blur-3xl"></div>
-            </div>
+          <div className="hidden md:flex md:col-span-5 p-12 flex-col justify-between relative overflow-hidden bg-[#1a0407]">
+            <div className="blast-aurora absolute inset-0 bg-[linear-gradient(120deg,#e60012,#b7000c,#2d5bb3,#b7000c,#e60012)] opacity-90"></div>
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_80%_10%,rgba(255,255,255,0.22),transparent_45%)]"></div>
+            <div className="blast-float absolute -top-16 -left-10 w-72 h-72 rounded-full bg-white/10 blur-3xl"></div>
+            <div className="blast-float-slow absolute bottom-1/4 -right-10 w-52 h-52 rounded-full bg-secondary/30 blur-3xl"></div>
+
             <div className="relative z-10">
-              <div className="mb-20 flex items-center gap-2">
-                <span className="material-symbols-outlined text-4xl text-white" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
-                <span className="font-headline font-black text-2xl tracking-tighter text-white">B.L.A.S.T AGENT</span>
+              <div className="mb-16 flex items-center gap-3">
+                <span className="grid place-items-center w-11 h-11 rounded-xl bg-white/15 border border-white/25 text-white blast-glow">
+                  <span className="material-symbols-outlined text-2xl" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
+                </span>
+                <div className="leading-none">
+                  <span className="font-headline font-black text-2xl tracking-tighter text-white">BLAST</span>
+                  <span className="block text-[10px] font-bold uppercase tracking-[0.18em] text-white/70 mt-0.5">AIQA Platform</span>
+                </div>
               </div>
-              <h2 className="text-white text-5xl font-black tracking-tighter leading-none mb-6">
-                Autonomous <br /> Intelligence. <br /> Perfected.
+              <h2 className="text-white text-4xl font-black tracking-tighter leading-tight mb-4">
+                Browser-Level<br />Autonomous<br />Software Testing.
               </h2>
-              <p className="text-on-primary-container opacity-90 text-lg max-w-xs font-medium leading-relaxed">
-                Welcome to the Test Command Center. Where precision logic meets self-healing automation.
+              <p className="text-white/85 text-base max-w-xs font-medium leading-relaxed mb-8">
+                AI that explores your app, writes the tests, heals them, and ships pull requests — automatically.
               </p>
+              <ul className="space-y-2.5">
+                {[
+                  { l: 'B', w: 'Browser-Level' },
+                  { l: 'A', w: 'Autonomous' },
+                  { l: 'S', w: 'Software' },
+                  { l: 'T', w: 'Testing' },
+                ].map((row) => (
+                  <li key={row.w} className="flex items-center gap-3 text-white">
+                    <span className="grid place-items-center w-7 h-7 rounded-md bg-white/15 border border-white/25 font-black text-sm">{row.l}</span>
+                    <span className="font-semibold text-sm">{row.w}</span>
+                  </li>
+                ))}
+              </ul>
             </div>
             <div className="relative z-10">
-              <div className="flex items-center gap-4 text-white/80 text-sm font-label uppercase tracking-widest">
-                <span className="w-8 h-[2px] bg-white"></span>
-                B.L.A.S.T AGENT Infrastructure
+              <div className="blast-glass rounded-xl px-4 py-3 flex items-center gap-3 text-white text-sm font-semibold">
+                <span className="material-symbols-outlined text-base">groups</span>
+                For every team, across every industry.
               </div>
             </div>
           </div>
@@ -77,10 +96,10 @@ export default function SignUp() {
             <div className="mb-10">
               <div className="md:hidden mb-8 flex items-center gap-2">
                 <span className="material-symbols-outlined text-2xl text-primary" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
-                <span className="font-headline font-black text-xl tracking-tighter text-on-surface">B.L.A.S.T AGENT</span>
+                <span className="font-headline font-black text-xl tracking-tighter text-on-surface">BLAST AIQA</span>
               </div>
-              <h1 className="text-primary-container text-4xl md:text-5xl font-extrabold tracking-tighter mb-2">Create Your Account</h1>
-              <p className="text-secondary font-medium text-sm">Step into the TEST COMMAND CENTER.</p>
+              <h1 className="text-4xl md:text-5xl font-extrabold tracking-tighter mb-2 bg-gradient-to-br from-primary via-app-red to-secondary bg-clip-text text-transparent">Create your account</h1>
+              <p className="text-secondary font-medium text-sm">Join the autonomous testing platform.</p>
             </div>
 
             {error && (
@@ -149,7 +168,7 @@ export default function SignUp() {
                     className="w-full bg-surface-container-highest border-0 border-b-2 border-transparent focus:border-primary-container focus:ring-0 transition-all duration-200 pl-12 pr-4 py-3 rounded-t-md text-on-surface placeholder:text-on-surface-variant/40"
                     id="signup-email"
                     name="signup-email"
-                    placeholder="admin@blastai.com"
+                    placeholder="you@blastaiqa.com"
                     type="email"
                     autoComplete="off"
                     value={email}
@@ -182,11 +201,11 @@ export default function SignUp() {
               {/* Action Button */}
               <div className="pt-4 flex flex-col sm:flex-row items-center gap-6">
                 <button
-                  className="w-full sm:w-auto px-10 py-4 bg-gradient-to-br from-primary to-primary-container text-white font-bold rounded-md shadow-lg shadow-primary/20 hover:scale-[1.02] active:scale-95 transition-all duration-150 disabled:opacity-70 disabled:cursor-not-allowed"
+                  className="blast-shine relative overflow-hidden w-full sm:w-auto px-10 py-4 bg-gradient-to-r from-app-red via-primary to-app-red bg-[length:200%_auto] hover:bg-[position:right_center] text-white font-bold rounded-xl shadow-lg shadow-primary/30 hover:shadow-primary/50 active:scale-95 transition-all duration-300 disabled:opacity-70 disabled:cursor-not-allowed"
                   type="submit"
                   disabled={loading}
                 >
-                  {loading ? 'Signing Up...' : 'Sign Up'}
+                  <span className="relative z-10">{loading ? 'Signing Up...' : 'Sign Up'}</span>
                 </button>
                 <Link className="text-sm font-medium text-on-surface-variant hover:text-primary transition-colors" to="/login">
                   Already have an account? <span className="text-secondary font-bold underline underline-offset-4 decoration-outline-variant/30 hover:decoration-secondary">Sign In</span>
@@ -197,7 +216,7 @@ export default function SignUp() {
             {/* Legal/Trust */}
             <div className="mt-16 pt-8 border-t border-outline-variant/15">
               <p className="text-[11px] text-on-surface-variant/60 leading-relaxed max-w-sm">
-                By signing up, you agree to the B.L.A.S.T AGENT <Link className="underline" to="#">Terms of Service</Link> and <Link className="underline" to="#">Privacy Policy</Link>. We use encryption to protect your data.
+                By signing up, you agree to the BLAST AIQA <Link className="underline" to="#">Terms of Service</Link> and <Link className="underline" to="#">Privacy Policy</Link>. We use encryption to protect your data.
               </p>
             </div>
           </div>
@@ -211,7 +230,7 @@ export default function SignUp() {
           <Link className="text-xs font-normal text-on-surface-variant hover:text-primary-container transition-colors" to="#">Help Center</Link>
         </div>
         <p className="text-xs font-normal text-on-surface-variant/60">
-          © 2026 B.L.A.S.T AGENT. All rights reserved.
+          © 2026 BLAST AIQA · Browser-Level Autonomous Software Testing. All rights reserved.
         </p>
       </footer>
     </div>

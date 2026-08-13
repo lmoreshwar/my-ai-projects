@@ -82,8 +82,8 @@ export default function Sidebar({ activePage, onNavigate, onToggleDark, collapse
         {/* Brand + Collapse Toggle */}
         <div className={`flex items-center ${collapsed ? 'justify-center' : 'justify-between'} px-4 h-16 border-b border-outline-variant/30 bg-white dark:bg-slate-900`}>
           {!collapsed && (
-            <h2 className="text-lg font-bold text-app-red font-headline uppercase tracking-wider whitespace-nowrap overflow-hidden">
-              Command Center
+            <h2 className="text-lg font-black text-app-red font-headline tracking-tight whitespace-nowrap overflow-hidden">
+              BLAST AIQA
             </h2>
           )}
           {/* Desktop collapse toggle */}

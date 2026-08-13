@@ -18,7 +18,7 @@ export default function DevHome() {
     <div className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
       <div className="max-w-md w-full bg-white/10 backdrop-blur-xl rounded-2xl border border-white/20 p-8 text-center">
         <div className="text-6xl mb-4">🚀</div>
-        <h1 className="text-3xl font-bold text-white mb-2">B.L.A.S.T AGENT</h1>
+        <h1 className="text-3xl font-bold text-white mb-2">BLAST AIQA</h1>
         <p className="text-purple-200 mb-2">Development Mode</p>
         <p className="text-sm text-gray-400 mb-6">
           Database not connected. Running in local dev mode.
