@@ -127,3 +127,26 @@ body {
 .blast-rise-2 { animation-delay: 0.18s; }
 .blast-rise-3 { animation-delay: 0.28s; }
 .blast-rise-4 { animation-delay: 0.38s; }
+
+/* Rocket zipping diagonally across the login background (subtle, decorative) */
+@keyframes rocket-zip {
+  0%   { transform: translate(-18vw, 18vh) rotate(-4deg) scale(0.9); opacity: 0; }
+  12%  { opacity: 0.10; }
+  88%  { opacity: 0.10; }
+  100% { transform: translate(96vw, -96vh) rotate(4deg) scale(1.15); opacity: 0; }
+}
+.rocket-zip {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 150px;
+  height: 150px;
+  pointer-events: none;
+  user-select: none;
+  will-change: transform, opacity;
+  animation: rocket-zip 9s cubic-bezier(0.45,0,0.55,1) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .rocket-zip { display: none; }
+}
+

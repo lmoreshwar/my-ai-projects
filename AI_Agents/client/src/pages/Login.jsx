@@ -54,8 +54,15 @@ export default function Login({ onLogin }) {
 
   return (
     <div className="bg-surface text-on-surface min-h-screen flex flex-col font-body">
-      <main className="flex-grow flex items-center justify-center px-6 py-12">
-        <div className="w-full max-w-6xl grid grid-cols-1 md:grid-cols-12 gap-0 overflow-hidden rounded-2xl shadow-[0_24px_60px_-15px_rgba(230,0,18,0.25)] ring-1 ring-black/5 bg-surface-container-lowest blast-rise">
+      <main className="relative flex-grow flex items-center justify-center px-6 py-12 overflow-hidden">
+        {/* Decorative rocket zipping across the background */}
+        <img
+          src="/blast-rocket.png?v=1"
+          alt=""
+          aria-hidden="true"
+          className="rocket-zip"
+        />
+        <div className="relative z-10 w-full max-w-6xl grid grid-cols-1 md:grid-cols-12 gap-0 overflow-hidden rounded-2xl shadow-[0_24px_60px_-15px_rgba(230,0,18,0.25)] ring-1 ring-black/5 bg-surface-container-lowest blast-rise">
           <div className="md:col-span-5 p-8 md:p-12 flex flex-col justify-between">
             <div>
               <div className="mb-12 flex items-center gap-3 blast-rise blast-rise-1">
