@@ -92,36 +92,30 @@ router.get('/jobs/:jobId', auth, async (req, res) => {
 
 // Short-lived cache of the framework's automation gate (capabilities index) per repo, so
 // repeatedly landing on the page doesn't re-fetch GitHub every time (60s is fresh enough).
-const gateCache = new Map(); // key: owner/repo/branch -> { at, ids:Set, titles:Set, ok:bool }
+const gateCache = new Map(); // key: owner/repo/branch -> { at, testIndex, ok }
 const GATE_TTL_MS = 60 * 1000;
-const normTitle = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-const normTcId = (s) => { const m = String(s || '').match(/tc[_-]?0*(\d+)/i); return m ? `tc${m[1]}` : ''; };
 
 // Load the framework's "gate" (which cases are automated) from .ai-memory/capabilities.json on the
-// connected repo's main branch, and index it by normalized id + title for O(1) lookup. Cached.
+// connected repo's main branch. We keep the raw testIndex and match cases with the SAME title-based
+// logic the generator uses (localAgent.coveredSpecInIndex) — never by TC id alone, because ids are
+// NOT globally unique (a different test can reuse TC_009), which would show a false "Automated".
 async function loadGate(git) {
   const key = `${git.owner}/${git.repo}/${git.branch}`;
   const cached = gateCache.get(key);
   if (cached && Date.now() - cached.at < GATE_TTL_MS) return cached;
-  const ids = new Set();
-  const titles = new Set();
+  let testIndex = null;
   let ok = false;
   try {
     const raw = await githubAgent.getFileContent('.ai-memory/capabilities.json', git.branch, git);
     if (raw) {
       const man = JSON.parse(raw);
-      const idx = (man && man.testIndex) || {};
-      for (const [tid, arr] of Object.entries(idx)) {
-        const nid = normTcId(tid);
-        if (nid) ids.add(nid);
-        (Array.isArray(arr) ? arr : []).forEach((e) => { if (e && e.title) titles.add(normTitle(e.title)); });
-      }
+      testIndex = (man && man.testIndex) || {};
       ok = true;
     }
   } catch (err) {
     console.error('[coverage] gate load failed:', err.message);
   }
-  const entry = { at: Date.now(), ids, titles, ok };
+  const entry = { at: Date.now(), testIndex, ok };
   gateCache.set(key, entry);
   return entry;
 }
@@ -135,14 +129,15 @@ router.post('/coverage', auth, async (req, res) => {
     const { testCases } = req.body;
     if (!Array.isArray(testCases) || testCases.length === 0) return res.json({ coverage: {}, hasGate: false });
     const git = await resolveGitConnection(req.user.id);
-    let gate = { ids: new Set(), titles: new Set(), ok: false };
+    let gate = { testIndex: null, ok: false };
     if (git && git.token && git.owner && git.repo) gate = await loadGate(git);
     const coverage = {};
     testCases.forEach((tc) => {
       const id = tc.id || tc['SRL No.'];
       if (!id) return;
       const title = tc.title || tc['Test Case Title'] || '';
-      if (gate.ok && (gate.ids.has(normTcId(id)) || (title && gate.titles.has(normTitle(title))))) {
+      // Title-based match, identical to the generator — an id collision alone is NOT "automated".
+      if (gate.ok && localAgent.coveredSpecInIndex(gate.testIndex, { id, title })) {
         coverage[id] = 'automated';
       }
     });

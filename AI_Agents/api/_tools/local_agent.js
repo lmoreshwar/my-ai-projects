@@ -501,52 +501,59 @@ function groundingIndex(fw, job, budget) {
  * bare id collision with a different title must NOT count. Falls back to scanning
  * spec files when the manifest is missing/legacy.
  */
+/**
+ * Title-based coverage match against a parsed manifest testIndex
+ * ({ TC_id: [{domain,spec,title}] }). Returns the spec path where this case is already
+ * automated, or '' if genuinely new. TC ids are NOT globally unique, so matching is
+ * TITLE-first (never id-only): (1) normalized title-core substring either way, (2)
+ * distinctive-token overlap ≥0.8 across any entry, (3) same-id entry whose distinctive
+ * title overlaps ≥0.6. Exported and shared by BOTH the engine (caseCoveredAnywhere) and
+ * the /coverage badge endpoint, so the UI status can never disagree with what the
+ * generator actually does (an id collision with a different title is NOT "automated").
+ */
+function coveredSpecInIndex(testIndex, tc) {
+  if (!testIndex) return '';
+  // (1) title-core substring either way (across every entry — ids are not unique)
+  const want = normalizeText(titleCore(tc && tc.title));
+  if (want.length >= 6) {
+    for (const arr of Object.values(testIndex)) {
+      for (const e of (Array.isArray(arr) ? arr : [arr])) {
+        const have = normalizeText(titleCore(e.title));
+        if (have && (have.includes(want) || want.includes(have))) return e.spec;
+      }
+    }
+  }
+  // (2) distinctive-token overlap across EVERY entry (any id): catches a re-worded case
+  // whose identifying words match an existing test even when the id/wording differ.
+  const wantDist = distinctiveTokens(titleCore(tc && tc.title));
+  if (wantDist.length) {
+    for (const arr of Object.values(testIndex)) {
+      for (const e of (Array.isArray(arr) ? arr : [arr])) {
+        const haveDist = distinctiveTokens(titleCore(e.title));
+        if (!haveDist.length) continue;
+        const ov = distinctiveOverlap(titleCore(tc && tc.title), titleCore(e.title));
+        if (ov >= 0.8 && (wantDist.length >= 2 || haveDist.length <= 2)) return e.spec;
+      }
+    }
+  }
+  // (3) same-id entry whose distinctive title substantially overlaps (wording drift)
+  const rid = normId(tc && tc.id);
+  const arr = rid ? testIndex[rid] : null;
+  const list = arr ? (Array.isArray(arr) ? arr : [arr]) : [];
+  let best = null;
+  let bestScore = 0;
+  for (const e of list) {
+    const sc = distinctiveOverlap(titleCore(tc && tc.title), titleCore(e.title));
+    if (sc > bestScore) { bestScore = sc; best = e; }
+  }
+  if (best && bestScore >= 0.6) return best.spec;
+  return '';
+}
+
 function caseCoveredAnywhere(fw, tc) {
   if (!fw || !fs.existsSync(fw)) return '';
   const man = readManifest(fw);
-  if (man && man.testIndex) {
-    // testIndex values are ARRAYS ({domain,spec,title}[]) because TC ids are not globally
-    // unique. Match title-first (across every entry), then fall back to id + title overlap.
-    // Titles are stored WITH id-prefix + @tags — compare their CORE words only.
-    const want = normalizeText(titleCore(tc && tc.title));
-    if (want.length >= 6) {
-      for (const arr of Object.values(man.testIndex)) {
-        for (const e of (Array.isArray(arr) ? arr : [arr])) {
-          const have = normalizeText(titleCore(e.title));
-          if (have && (have.includes(want) || want.includes(have))) return e.spec;
-        }
-      }
-    }
-    // Distinctive-token match across EVERY entry (any id): catches a re-worded case whose
-    // identifying words match an existing test even when the id/wording differ — e.g.
-    // "Display exact locked-user error message" ↔ "Locked User Login Attempt" (both → {locked}).
-    // High threshold + a small-set guard keeps this precise: a genuinely-different case that
-    // merely shares one distinctive word with a rich unrelated title will NOT match.
-    const wantDist = distinctiveTokens(titleCore(tc && tc.title));
-    if (wantDist.length) {
-      for (const arr of Object.values(man.testIndex)) {
-        for (const e of (Array.isArray(arr) ? arr : [arr])) {
-          const haveDist = distinctiveTokens(titleCore(e.title));
-          if (!haveDist.length) continue;
-          const ov = distinctiveOverlap(titleCore(tc && tc.title), titleCore(e.title));
-          if (ov >= 0.8 && (wantDist.length >= 2 || haveDist.length <= 2)) return e.spec;
-        }
-      }
-    }
-    const rid = normId(tc && tc.id);
-    const arr = rid ? man.testIndex[rid] : null;
-    const list = arr ? (Array.isArray(arr) ? arr : [arr]) : [];
-    let best = null;
-    let bestScore = 0;
-    for (const e of list) {
-      // Distinctive overlap (not raw titleOverlap) so a shared id with only generic words
-      // in common ("…user login valid credentials") is NOT falsely reported as covered.
-      const sc = distinctiveOverlap(titleCore(tc && tc.title), titleCore(e.title));
-      if (sc > bestScore) { bestScore = sc; best = e; }
-    }
-    if (best && bestScore >= 0.6) return best.spec;
-    return '';
-  }
+  if (man && man.testIndex) return coveredSpecInIndex(man.testIndex, tc);
   for (const s of listSpecs(fw)) {
     if (caseCoveredInSpec(s.content, tc)) return s.rel;
   }
@@ -3435,34 +3442,33 @@ async function coreGenerate(fw, job, log, logs) {
       : '＋ created  ';
     log(`[local]   ${tag} ${w.path}${w.reason ? ` — ${w.reason}` : ''}`);
   };
-  // REPO-WIDE ID LEDGER: a NEW auto-added case must not reuse an id that already labels a
-  // DIFFERENT test in ANY spec — not just the resolved-domain spec. A cross-domain job
-  // (e.g. an InventoryAccess case reused alongside NEW Login cases) makes the LLM target a
-  // different, correct spec (login.spec.ts); a colliding id there would force it to either
-  // duplicate or renumber an existing test — both are rejected below and block the run.
-  const allSpecIds = new Set();
-  try {
-    const tdir = path.join(fw, 'src', 'tests');
-    for (const f of fs.readdirSync(tdir).filter((n) => n.endsWith('.spec.ts'))) {
-      specTestIds(safeRead(path.join(tdir, f), 200000)).forEach((id) => allSpecIds.add(id));
-    }
-  } catch { /* no specs yet — first automation in this repo */ }
+  // PER-SPEC ID LEDGER: TC ids are numbered INDEPENDENTLY within each spec file — login.spec.ts
+  // keeps its own TC_001… sequence, cart.spec.ts restarts at TC_001, etc. A new case only needs
+  // an id that is free in the SPEC IT WILL BE WRITTEN TO; the same id living in a DIFFERENT spec
+  // is fine (the manifest already stores ids as arrays for exactly this reason). So the collision
+  // check + next-free id are scoped to the TARGET spec, giving a clean per-file sequence
+  // (append to login.spec's TC_001..TC_015 → TC_016) instead of a confusing repo-wide jump.
+  const targetSpecRel = (resolveDomain(fw, job) || {}).specRel || '';
+  const specIds = (() => {
+    if (!targetSpecRel) return new Set();
+    try { return new Set(specTestIds(safeRead(path.join(fw, targetSpecRel), 200000))); } catch { return new Set(); }
+  })();
   for (let i = 0; i < newCases.length; i++) {
     const tc = { ...newCases[i] };
     const existNow = findDomainFiles(fw, job); // reflects writes from earlier cases this run
-    // COLLISION GUARD (root cause of renumbering): if the requested id already labels a
-    // DIFFERENT existing test ANYWHERE in the suite, the LLM would be forced to renumber or
-    // duplicate an existing test to keep ids unique. Deterministically reassign this new
-    // case to the next repo-wide-free id instead.
+    // COLLISION GUARD (root cause of the ugly renumber): if the requested id already labels a
+    // DIFFERENT existing test IN THE TARGET SPEC, keeping it would force the LLM to renumber or
+    // duplicate an existing test. Deterministically reassign to the next id free WITHIN that spec
+    // (TC_016), not a repo-wide max. Ids in other specs are irrelevant and never cause a jump.
     const wantId = String(tc.id || '').toUpperCase().replace(/-/g, '_');
-    if (wantId && allSpecIds.has(wantId)) {
-      const freeId = nextFreeTcId(allSpecIds);
-      log(`[local] ⚠ Requested id ${wantId} already exists as a different test — reassigning the new case to ${freeId} (existing tests are NEVER renumbered).`);
+    if (wantId && specIds.has(wantId)) {
+      const freeId = nextFreeTcId(specIds);
+      log(`[local] ⚠ Requested id ${wantId} already exists in ${targetSpecRel || 'this spec'} as a different test — reassigning the new case to ${freeId} (per-spec numbering; existing tests are NEVER renumbered).`);
       tc.id = freeId;
-      allSpecIds.add(freeId);
+      specIds.add(freeId);
     } else if (wantId) {
       tc.id = wantId;
-      allSpecIds.add(wantId);
+      specIds.add(wantId);
     }
     if (tc.id) requestedIds.push(String(tc.id).toUpperCase().replace(/-/g, '_'));
     log(`[local] Generating ${tc.id} "${tc.title || ''}" (${i + 1}/${newCases.length})…`);
@@ -4275,6 +4281,7 @@ module.exports = {
   isConfigured,
   buildPlan,
   generateAndRun,
+  coveredSpecInIndex,
   exploreAndAuthor,
   explore,
   exploreViaWorker,
