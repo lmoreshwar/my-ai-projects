@@ -99,10 +99,10 @@ const GATE_TTL_MS = 60 * 1000;
 // connected repo's main branch. We keep the raw testIndex and match cases with the SAME title-based
 // logic the generator uses (localAgent.coveredSpecInIndex) — never by TC id alone, because ids are
 // NOT globally unique (a different test can reuse TC_009), which would show a false "Automated".
-async function loadGate(git) {
+async function loadGate(git, force = false) {
   const key = `${git.owner}/${git.repo}/${git.branch}`;
   const cached = gateCache.get(key);
-  if (cached && Date.now() - cached.at < GATE_TTL_MS) return cached;
+  if (!force && cached && Date.now() - cached.at < GATE_TTL_MS) return cached;
   let testIndex = null;
   let ok = false;
   try {
@@ -126,11 +126,11 @@ async function loadGate(git) {
 //          so landing on the AI Native page instantly reflects live automation coverage.
 router.post('/coverage', auth, async (req, res) => {
   try {
-    const { testCases } = req.body;
+    const { testCases, force } = req.body;
     if (!Array.isArray(testCases) || testCases.length === 0) return res.json({ coverage: {}, hasGate: false });
     const git = await resolveGitConnection(req.user.id);
     let gate = { testIndex: null, ok: false };
-    if (git && git.token && git.owner && git.repo) gate = await loadGate(git);
+    if (git && git.token && git.owner && git.repo) gate = await loadGate(git, !!force);
     const coverage = {};
     testCases.forEach((tc) => {
       const id = tc.id || tc['SRL No.'];

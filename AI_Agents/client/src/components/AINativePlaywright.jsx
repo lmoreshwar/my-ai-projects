@@ -381,28 +381,29 @@ export default function AINativePlaywright({ apiBase, connections, generatedTest
   }, [rows, coverageMap, jobs]);
 
   // Ask the backend which of these cases are already automated in the framework (fast, cached 60s).
-  // Runs whenever the case set changes; failures leave everything as "Not automated" (never blocks).
+  // Extracted so both the on-mount effect AND the Refresh button can trigger it; `force` bypasses
+  // the server's 60s cache so Refresh always re-reads the framework's main branch live.
   const coverageKey = useMemo(
     () => cases.map((tc) => `${tc['SRL No.']}|${tc['Test Case Title'] || ''}`).join('§'),
     [cases],
   );
-  useEffect(() => {
-    if (!cases.length) { setCoverageMap({}); return undefined; }
-    let active = true;
+  const coverageReq = useRef(0);
+  const fetchCoverage = useCallback(async (force = false) => {
+    if (!cases.length) { setCoverageMap({}); return; }
+    const reqId = ++coverageReq.current;
     setCoverageLoading(true);
-    (async () => {
-      try {
-        const payload = cases.map((tc) => ({ id: tc['SRL No.'], title: tc['Test Case Title'] || '' }));
-        const data = await api(apiBase, '/coverage', { method: 'POST', body: { testCases: payload } });
-        if (active) setCoverageMap(data && data.coverage ? data.coverage : {});
-      } catch {
-        if (active) setCoverageMap({});
-      } finally {
-        if (active) setCoverageLoading(false);
-      }
-    })();
-    return () => { active = false; };
-  }, [apiBase, coverageKey]); // eslint-disable-line react-hooks/exhaustive-deps
+    try {
+      const payload = cases.map((tc) => ({ id: tc['SRL No.'], title: tc['Test Case Title'] || '' }));
+      const data = await api(apiBase, '/coverage', { method: 'POST', body: { testCases: payload, force } });
+      if (reqId === coverageReq.current) setCoverageMap(data && data.coverage ? data.coverage : {});
+    } catch {
+      if (reqId === coverageReq.current) setCoverageMap({});
+    } finally {
+      if (reqId === coverageReq.current) setCoverageLoading(false);
+    }
+  }, [apiBase, cases]);
+  // Auto-check on mount and whenever the selected case set changes (uses the cached gate).
+  useEffect(() => { fetchCoverage(false); }, [coverageKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadJobs = useCallback(async () => {
     try {
@@ -412,6 +413,12 @@ export default function AINativePlaywright({ apiBase, connections, generatedTest
       /* dashboard still works without job history */
     }
   }, [apiBase]);
+
+  // Refresh button: reload jobs AND force a fresh framework coverage check (bypasses the 60s cache),
+  // so a just-merged test flips to "Automated" without a full page reload.
+  const refreshAll = useCallback(async () => {
+    await Promise.all([loadJobs(), fetchCoverage(true)]);
+  }, [loadJobs, fetchCoverage]);
 
   // ── Test Artifacts pull ──────────────────────────────────────────────────
   const openArtifactPicker = useCallback(async () => {
@@ -807,9 +814,8 @@ export default function AINativePlaywright({ apiBase, connections, generatedTest
             className="w-full pl-8 pr-3 py-2 rounded-sm border border-outline-variant/40 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm"
           />
         </div>
-        <button onClick={loadJobs} className="px-3 py-2 rounded-sm border border-outline-variant/40 dark:border-slate-700 text-sm flex items-center gap-1 hover:bg-surface-container-high dark:hover:bg-slate-800">
-          <span className="material-symbols-outlined text-lg">refresh</span> Refresh
-        </button>
+        <button onClick={refreshAll} className="px-3 py-2 rounded-sm border border-outline-variant/40 dark:border-slate-700 text-sm flex items-center gap-1 hover:bg-surface-container-high dark:hover:bg-slate-800">
+          <span className={`material-symbols-outlined text-lg ${coverageLoading ? 'animate-spin' : ''}`}>refresh</span> {coverageLoading ? 'Checking…' : 'Refresh'}</button>
         <button onClick={openArtifactPicker} className="px-3 py-2 rounded-sm border border-outline-variant/40 dark:border-slate-700 text-sm flex items-center gap-1 hover:bg-surface-container-high dark:hover:bg-slate-800" title="Pull saved test cases from Test Artifacts and check which are already automated.">
           <span className="material-symbols-outlined text-lg">inventory_2</span> Load from Test Artifacts
         </button>

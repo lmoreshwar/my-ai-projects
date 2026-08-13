@@ -2157,7 +2157,8 @@ function sanitizeFiles(files) {
 /** Extract the test-case ids (TC_001, TC-2, …) each test() block is titled with. */
 function specTestIds(content) {
   const ids = [];
-  const re = /\btest\s*(?:\.\w+)?\s*\(\s*[`'"]\s*(TC[_-]?\d+[A-Za-z_]*)/g;
+  // Tolerate both plain "TC_001 ..." and bracketed "[TC_001] ..." title styles.
+  const re = /\btest\s*(?:\.\w+)?\s*\(\s*[`'"]\s*\[?\s*(TC[_-]?\d+[A-Za-z_]*)/g;
   let m;
   while ((m = re.exec(content || '')) !== null) ids.push(m[1].toUpperCase().replace(/-/g, '_'));
   return ids;
