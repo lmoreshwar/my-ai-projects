@@ -59,8 +59,8 @@ export default function Login({ onLogin }) {
           <div className="md:col-span-5 p-8 md:p-12 flex flex-col justify-between">
             <div>
               <div className="mb-12 flex items-center gap-3 blast-rise blast-rise-1">
-                <span className="grid place-items-center w-11 h-11 rounded-xl bg-gradient-to-br from-app-red to-primary text-white shadow-lg shadow-primary/30 blast-glow">
-                  <span className="material-symbols-outlined text-2xl" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
+                <span className="grid place-items-center w-11 h-11 rounded-xl bg-white shadow-lg shadow-primary/20 ring-1 ring-app-red/15 blast-glow">
+                  <img src="/blast-mark.png" alt="BLAST AIQA" className="w-8 h-8 object-contain" />
                 </span>
                 <div className="leading-none">
                   <span className="font-headline font-black text-2xl tracking-tighter bg-gradient-to-r from-app-red to-primary bg-clip-text text-transparent">BLAST</span>

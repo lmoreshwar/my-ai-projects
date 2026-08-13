@@ -83,14 +83,14 @@ export default function Sidebar({ activePage, onNavigate, onToggleDark, collapse
         <div className={`flex items-center ${collapsed ? 'justify-center' : 'justify-between'} px-4 h-16 border-b border-outline-variant/30 bg-white dark:bg-slate-900`}>
           {collapsed ? (
             <button onClick={onToggleCollapse} title="Expand sidebar" aria-label="Expand sidebar" className="group">
-              <span className="grid place-items-center w-9 h-9 rounded-lg bg-gradient-to-br from-app-red to-primary text-white shadow-md shadow-primary/30 transition-transform group-hover:scale-105">
-                <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
+              <span className="grid place-items-center w-9 h-9 rounded-lg bg-white ring-1 ring-app-red/15 shadow-sm transition-transform group-hover:scale-105">
+                <img src="/blast-mark.png" alt="BLAST AIQA" className="w-7 h-7 object-contain" />
               </span>
             </button>
           ) : (
             <div className="flex items-center gap-2.5 overflow-hidden">
-              <span className="grid place-items-center w-9 h-9 rounded-lg bg-gradient-to-br from-app-red to-primary text-white shadow-md shadow-primary/30 shrink-0">
-                <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
+              <span className="grid place-items-center w-9 h-9 rounded-lg bg-white ring-1 ring-app-red/15 shadow-sm shrink-0">
+                <img src="/blast-mark.png" alt="BLAST AIQA" className="w-7 h-7 object-contain" />
               </span>
               <div className="leading-none min-w-0">
                 <div className="whitespace-nowrap">

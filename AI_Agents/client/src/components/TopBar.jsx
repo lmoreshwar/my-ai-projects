@@ -25,8 +25,8 @@ export default function TopBar({ children, sidebarCollapsed }) {
       <div className="flex items-center gap-4">
         {children}
         <div className="flex items-center gap-3">
-          <span className="hidden sm:grid place-items-center w-9 h-9 rounded-lg bg-white/15 border border-white/20 text-white">
-            <span className="material-symbols-outlined text-xl" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
+          <span className="hidden sm:grid place-items-center w-9 h-9 rounded-lg bg-white shadow-sm ring-1 ring-white/40">
+            <img src="/blast-mark.png" alt="BLAST AIQA" className="w-7 h-7 object-contain" />
           </span>
           <div className="leading-tight">
             <h1 className="text-sm sm:text-lg font-black text-white tracking-tight font-headline">
