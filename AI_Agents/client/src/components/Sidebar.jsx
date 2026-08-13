@@ -81,24 +81,43 @@ export default function Sidebar({ activePage, onNavigate, onToggleDark, collapse
       >
         {/* Brand + Collapse Toggle */}
         <div className={`flex items-center ${collapsed ? 'justify-center' : 'justify-between'} px-4 h-16 border-b border-outline-variant/30 bg-white dark:bg-slate-900`}>
-          {!collapsed && (
-            <h2 className="text-lg font-black text-app-red font-headline tracking-tight whitespace-nowrap overflow-hidden">
-              BLAST AIQA
-            </h2>
+          {collapsed ? (
+            <button onClick={onToggleCollapse} title="Expand sidebar" aria-label="Expand sidebar" className="group">
+              <span className="grid place-items-center w-9 h-9 rounded-lg bg-gradient-to-br from-app-red to-primary text-white shadow-md shadow-primary/30 transition-transform group-hover:scale-105">
+                <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
+              </span>
+            </button>
+          ) : (
+            <div className="flex items-center gap-2.5 overflow-hidden">
+              <span className="grid place-items-center w-9 h-9 rounded-lg bg-gradient-to-br from-app-red to-primary text-white shadow-md shadow-primary/30 shrink-0">
+                <span className="material-symbols-outlined text-[20px]" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
+              </span>
+              <div className="leading-none min-w-0">
+                <div className="whitespace-nowrap">
+                  <span className="font-headline font-black text-lg tracking-tighter bg-gradient-to-r from-app-red to-primary bg-clip-text text-transparent">BLAST</span>
+                  <span className="font-headline font-black text-lg tracking-tighter text-on-surface dark:text-white ml-1">AIQA</span>
+                </div>
+                <span className="block text-[9px] font-bold uppercase tracking-[0.16em] text-on-surface-variant/70 dark:text-slate-500 mt-0.5 whitespace-nowrap">
+                  Autonomous QA Platform
+                </span>
+              </div>
+            </div>
           )}
           {/* Desktop collapse toggle */}
-          <button
-            className="p-1.5 hover:bg-surface-variant dark:hover:bg-slate-800 rounded-full transition-colors hidden lg:flex items-center justify-center"
-            onClick={onToggleCollapse}
-            title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            <span className="material-symbols-outlined text-app-red transition-transform duration-300" style={{ transform: collapsed ? 'rotate(180deg)' : 'rotate(0deg)' }}>
-              chevron_left
-            </span>
-          </button>
+          {!collapsed && (
+            <button
+              className="p-1.5 hover:bg-surface-variant dark:hover:bg-slate-800 rounded-full transition-colors hidden lg:flex items-center justify-center shrink-0"
+              onClick={onToggleCollapse}
+              title="Collapse sidebar"
+            >
+              <span className="material-symbols-outlined text-app-red">
+                chevron_left
+              </span>
+            </button>
+          )}
           {/* Mobile close */}
           <button
-            className="p-2 hover:bg-surface-variant dark:hover:bg-slate-800 rounded-full transition-colors lg:hidden"
+            className="p-2 hover:bg-surface-variant dark:hover:bg-slate-800 rounded-full transition-colors lg:hidden shrink-0"
             onClick={() => setMobileOpen(false)}
           >
             <span className="material-symbols-outlined">close</span>

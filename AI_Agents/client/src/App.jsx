@@ -132,6 +132,8 @@ function App() {
 
   // Track whether user is logged in so we can re-fetch connections after login
   const [isLoggedIn, setIsLoggedIn] = useState(() => !!localStorage.getItem('blast_token'));
+  // Bumped on each login to force a connections re-fetch even if isLoggedIn was already true
+  const [connReloadKey, setConnReloadKey] = useState(0);
 
   // Handler called by Login page after successful authentication
   const handleLogin = () => {
@@ -156,8 +158,9 @@ function App() {
     setVisitedPages(new Set(['connections']));
     // Clear persisted generated data so a fresh login never shows the previous user's test cases
     try { localStorage.removeItem(TC_STORAGE_KEY); localStorage.removeItem(LIFTED_STATE_KEY); } catch { /* ignore */ }
-    // Trigger re-fetch of the new user's saved connections from DB
-    setIsLoggedIn(prev => !prev); // toggle to trigger useEffect
+    // Mark logged in and trigger a re-fetch of the new user's saved connections from DB
+    setIsLoggedIn(true);
+    setConnReloadKey((k) => k + 1);
   };
 
   // ── Load saved connections from DB on mount AND after login ──
@@ -187,7 +190,7 @@ function App() {
     };
 
     fetchConnections();
-  }, [API_BASE, isLoggedIn, isLocal]);
+  }, [API_BASE, isLoggedIn, connReloadKey, isLocal]);
 
   // Persist generated test cases to localStorage
   useEffect(() => {
@@ -252,6 +255,21 @@ function App() {
           {visitedPages.has('saved-history') && <SavedHistory apiBase={API_BASE} />}
         </div>
       </main>
+
+      {/* App footer (desktop) */}
+      <footer className={`hidden lg:flex items-center justify-between gap-4 px-8 py-4 border-t border-outline-variant/20 dark:border-slate-800 bg-background dark:bg-slate-950 text-xs text-on-surface-variant dark:text-slate-500 transition-all duration-300 ${sidebarCollapsed ? 'lg:ml-[72px]' : 'lg:ml-80'}`}>
+        <div className="flex items-center gap-2">
+          <span className="grid place-items-center w-5 h-5 rounded bg-gradient-to-br from-app-red to-primary text-white">
+            <span className="material-symbols-outlined text-[13px]" style={{ fontVariationSettings: "'FILL' 1" }}>rocket_launch</span>
+          </span>
+          <span className="font-semibold text-on-surface dark:text-slate-300">BLAST AIQA</span>
+          <span className="opacity-60">· Browser-Level Autonomous Software Testing</span>
+        </div>
+        <div className="flex items-center gap-4">
+          <a href="https://blastaiqa.com" target="_blank" rel="noreferrer" className="hover:text-primary transition-colors">blastaiqa.com</a>
+          <span className="opacity-60">© 2026 · All rights reserved</span>
+        </div>
+      </footer>
 
       {/* Mobile Bottom Nav — scrollable to fit all pages */}
       <nav className="fixed bottom-0 left-0 w-full bg-app-blue dark:bg-app-dark-blue z-50 shadow-[0_-4px_12px_rgba(0,0,0,0.1)] lg:hidden">
