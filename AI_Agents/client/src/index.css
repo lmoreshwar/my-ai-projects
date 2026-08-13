@@ -128,67 +128,38 @@ body {
 .blast-rise-3 { animation-delay: 0.28s; }
 .blast-rise-4 { animation-delay: 0.38s; }
 
-/* Rocket zipping diagonally across the login background (subtle, decorative) */
-@keyframes rocket-zip {
-  0%   { transform: translate(-14vw, calc(88vh + var(--oy, 0vh))) rotate(45deg) scale(var(--sc, 1)); opacity: 0; }
-  12%  { opacity: 0.75; }
-  88%  { opacity: 0.75; }
-  100% { transform: translate(112vw, calc(-26vh + var(--oy, 0vh))) rotate(45deg) scale(var(--sc, 1)); opacity: 0; }
+/* Rocket launches from the click point, swings as it climbs, then fades */
+@keyframes rocket-launch {
+  0%   { transform: translate(-50%, -50%) rotate(0deg) scale(0.4); opacity: 0; }
+  10%  { transform: translate(-50%, -55%) rotate(calc(var(--sway, 0) * 4deg)) scale(1); opacity: 1; }
+  35%  { transform: translate(calc(-50% + var(--sway, 0) * 26px), -34vh) rotate(calc(var(--sway, 0) * -10deg)) scale(0.98); }
+  65%  { transform: translate(calc(-50% - var(--sway, 0) * 24px), -78vh) rotate(calc(var(--sway, 0) * 10deg)) scale(0.9); opacity: 1; }
+  100% { transform: translate(calc(-50% + var(--sway, 0) * 12px), -142vh) rotate(0deg) scale(0.7); opacity: 0; }
 }
-.rocket-zip {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 46px;
-  height: 62px;
+.rocket-launch {
+  position: fixed;
+  z-index: 50;
+  width: 44px;
+  height: 60px;
   pointer-events: none;
-  user-select: none;
   will-change: transform, opacity;
-  transform: translate(-14vw, 88vh) rotate(45deg);
-  animation: rocket-zip 10s linear infinite;
+  animation: rocket-launch 1.6s cubic-bezier(0.2, 0.7, 0.25, 1) forwards;
 }
-.rocket-craft { position: relative; width: 100%; height: 100%; }
-.rocket-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
-
-/* Flickering ignition flame at the rocket tail */
-.rocket-flame {
+.rocket-launch-img { width: 100%; height: 100%; display: block; }
+/* soft steady exhaust glow at the tail (no flicker) */
+.rocket-launch::after {
+  content: "";
   position: absolute;
   left: 50%;
-  bottom: -11px;
-  width: 13px;
-  height: 22px;
-  border-radius: 50% 50% 45% 45% / 35% 35% 65% 65%;
-  background: radial-gradient(circle at 50% 25%, #fff2b0 0%, #ffcf5c 32%, #ff8a1e 62%, #ff5722 100%);
-  filter: blur(0.4px);
-  transform-origin: 50% 0%;
-  animation: rocket-flame 0.14s ease-in-out infinite alternate;
-}
-@keyframes rocket-flame {
-  0%   { transform: translateX(-50%) scale(0.85, 0.8); opacity: 0.85; }
-  100% { transform: translateX(-50%) scale(1.05, 1.3); opacity: 1; }
-}
-
-/* Sparks trailing from the ignition */
-.rocket-spark {
-  position: absolute;
-  left: 50%;
-  bottom: -6px;
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: #ffb03a;
-  box-shadow: 0 0 3px #ff8a1e;
-  opacity: 0;
-  animation: rocket-spark 0.8s linear infinite;
-}
-.rocket-spark-1 { animation-delay: 0s;    --sx: -7px; }
-.rocket-spark-2 { animation-delay: 0.26s; --sx:  6px; }
-.rocket-spark-3 { animation-delay: 0.52s; --sx: -2px; }
-@keyframes rocket-spark {
-  0%   { transform: translate(-50%, 0) scale(1);   opacity: 1; }
-  100% { transform: translate(calc(-50% + var(--sx, 0px)), 30px) scale(0.2); opacity: 0; }
+  bottom: -8px;
+  transform: translateX(-50%);
+  width: 11px;
+  height: 30px;
+  border-radius: 50% 50% 45% 45% / 30% 30% 70% 70%;
+  background: linear-gradient(to bottom, rgba(255,138,30,0.6), rgba(255,87,34,0));
+  filter: blur(2px);
 }
 @media (prefers-reduced-motion: reduce) {
-  .rocket-zip { display: none; }
+  .rocket-launch { display: none; }
 }
 

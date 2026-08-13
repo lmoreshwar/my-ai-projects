@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 export default function Login({ onLogin }) {
@@ -6,21 +6,16 @@ export default function Login({ onLogin }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [rockets, setRockets] = useState([]);
   const navigate = useNavigate();
-  const rocketRef = useRef(null);
 
-  // Send the background rocket down a random lane/size on each fly-past
-  useEffect(() => {
-    const el = rocketRef.current;
-    if (!el) return;
-    const randomize = () => {
-      el.style.setProperty('--oy', (Math.random() * 46 - 22).toFixed(1) + 'vh');
-      el.style.setProperty('--sc', (0.8 + Math.random() * 0.5).toFixed(2));
-    };
-    randomize();
-    el.addEventListener('animationiteration', randomize);
-    return () => el.removeEventListener('animationiteration', randomize);
-  }, []);
+  // Blast a rocket off from wherever the user clicks (one per click)
+  const launchRocket = (e) => {
+    const id = Date.now() + Math.random();
+    const sway = (Math.random() * 2 - 1).toFixed(2); // -1..1 lean direction
+    setRockets((rs) => [...rs.slice(-5), { id, x: e.clientX, y: e.clientY, sway }]);
+  };
+  const removeRocket = (id) => setRockets((rs) => rs.filter((r) => r.id !== id));
 
   // Use relative URL in production, localhost in dev
   const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '';
@@ -67,18 +62,20 @@ export default function Login({ onLogin }) {
   };
 
   return (
-    <div className="bg-surface text-on-surface min-h-screen flex flex-col font-body">
+    <div className="bg-surface text-on-surface min-h-screen flex flex-col font-body" onClick={launchRocket}>
+      {/* Rockets launched from each click */}
+      {rockets.map((r) => (
+        <span
+          key={r.id}
+          className="rocket-launch"
+          style={{ left: r.x, top: r.y, '--sway': r.sway }}
+          onAnimationEnd={() => removeRocket(r.id)}
+          aria-hidden="true"
+        >
+          <img src="/rocket.svg" alt="" className="rocket-launch-img" />
+        </span>
+      ))}
       <main className="relative flex-grow flex items-center justify-center px-6 py-12 overflow-hidden">
-        {/* Decorative rocket zipping across the background */}
-        <div ref={rocketRef} className="rocket-zip" aria-hidden="true">
-          <div className="rocket-craft">
-            <img src="/rocket.svg" alt="" className="rocket-img" />
-            <span className="rocket-flame" />
-            <span className="rocket-spark rocket-spark-1" />
-            <span className="rocket-spark rocket-spark-2" />
-            <span className="rocket-spark rocket-spark-3" />
-          </div>
-        </div>
         <div className="relative z-10 w-full max-w-6xl grid grid-cols-1 md:grid-cols-12 gap-0 overflow-hidden rounded-2xl shadow-[0_24px_60px_-15px_rgba(230,0,18,0.25)] ring-1 ring-black/5 bg-surface-container-lowest blast-rise">
           <div className="md:col-span-5 p-8 md:p-12 flex flex-col justify-between">
             <div>
