@@ -49,6 +49,9 @@ async function resolveGitConnection(userId) {
     owner: selOwner || process.env.GITHUB_OWNER || '',
     repo: selRepo || process.env.GITHUB_REPO || '',
     branch: conn.selectedBranch || process.env.GITHUB_DEFAULT_BRANCH || 'main',
+    // True only when the user picked/provisioned THEIR OWN repo. Multi-tenant guards use this to
+    // block a dispatch that would otherwise fall back to the server owner's repo.
+    hasUserRepo: Boolean(selOwner && selRepo),
   };
 }
 

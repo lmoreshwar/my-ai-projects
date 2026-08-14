@@ -404,6 +404,15 @@ router.post('/jobs/:jobId/approve', auth, async (req, res) => {
     if (job.provider === 'github-actions') {
       try {
         const git = await resolveGitConnection(req.user.id);
+        // Multi-tenant guard: never dispatch into the server owner's fallback repo. Each user must
+        // connect + provision/select THEIR OWN framework repo so their PR lands in their account.
+        if (!git.hasUserRepo) {
+          job.status = 'Failed';
+          job.error = 'No framework repo selected. Open Connection Settings → GitHub and click "Create my BLAST framework repo" (or pick your repo), then try again.';
+          job.logs = [...(job.logs || []), `[error] ${job.error}`];
+          await persist(job);
+          return res.status(400).json({ msg: job.error, job });
+        }
         const dispatch = await githubAgent.dispatchWorkflow(job, git);
         job.status = 'Generating';
         job.provider = 'github-actions';
