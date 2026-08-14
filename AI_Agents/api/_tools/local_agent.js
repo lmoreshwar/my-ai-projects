@@ -2459,7 +2459,7 @@ function memberBlocks(src) {
   const out = [];
   const seen = new Set();
   const SKIP = new Set(['constructor', 'if', 'for', 'while', 'switch', 'catch', 'return', 'await', 'const', 'let', 'var', 'this']);
-  const re = /\n([ \t]+)(?:public\s+|private\s+|protected\s+|readonly\s+|static\s+|async\s+|get\s+|set\s+)*([a-zA-Z_]\w*)\s*(\(|=)/g;
+  const re = /\n([ \t]+)(?:public\s+|private\s+|protected\s+|readonly\s+|static\s+|async\s+|get\s+|set\s+)*([a-zA-Z_]\w*)\s*(?::\s*[\w.<>\[\],| ]+?)?\s*(\(|=)/g;
   let m;
   while ((m = re.exec(src))) {
     const name = m[2];
@@ -2490,7 +2490,10 @@ function memberBlocks(src) {
       }
       if (end < 0) continue;
       const seg = src.slice(lineStart, end);
-      if (!seg.includes('=>')) continue; // require an arrow function (a locator), skip plain fields
+      // Accept arrow-function locators (`= (…) => …`) AND plain/typed property locators
+      // (`name = this.page.locator(...)` / `getBy...`); skip other plain fields (scalars/object keys)
+      // to avoid mistaking an object-literal key inside a method body for a member.
+      if (!seg.includes('=>') && !/getBy[A-Za-z]+\s*\(|\.locator\s*\(|this\.page\b/.test(seg)) continue;
       text = seg;
     }
     if (text) { out.push({ name, text }); seen.add(name); }
@@ -2758,6 +2761,24 @@ function writeFiles(fw, files, baselines = null) {
         fs.writeFileSync(abs, mergedOut, 'utf8');
         report.overwritten += 1;
         written.push({ path: relFromRoot, layer: f.layer, reused: false, action: 'merged' });
+        continue;
+      }
+      // Files CREATED this run (no baseline entry) have NO cross-run coverage to protect. If the
+      // LLM's regeneration is non-destructive (keeps at least the existing members), OVERWRITE it
+      // verbatim so a compile-fix/heal ALWAYS lands — independent of which member format our parser
+      // recognizes (a fragile parser must never silently drop a real fix). The compile gate
+      // re-validates, so a bad overwrite is caught next round. Pre-existing files (baseline) still
+      // go through the surgical immutable merge below so already-passing tests can never regress.
+      if ((f.layer === 'page' || f.layer === 'module' || f.layer === 'spec')
+          && !(baselines && baselines[relFromRoot])
+          && !isDestructiveOverwrite(current, next, f.layer)) {
+        const bak = path.join(root, '.blast-backups', `${relFromRoot}.bak-${ts}`);
+        fs.mkdirSync(path.dirname(bak), { recursive: true });
+        fs.copyFileSync(abs, bak);
+        backups.push(path.relative(root, bak).replace(/\\/g, '/'));
+        fs.writeFileSync(abs, next, 'utf8');
+        report.overwritten += 1;
+        written.push({ path: relFromRoot, layer: f.layer, reused: false, action: 'rewritten' });
         continue;
       }
       // APPEND-ONLY for an existing Page/Module: the LLM must NEVER rewrite an existing
