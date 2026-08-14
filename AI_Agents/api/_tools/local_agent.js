@@ -2086,6 +2086,7 @@ function buildGeneratePrompt(job, g, snapshot, existing, liveWalk, liveTrace) {
     '- Module wiring (prevents "Cannot read properties of undefined"): a Module MUST create EVERY collaborator it calls in its CONSTRUCTOR from the injected `page` — its own Page object, its Actions/WaitHelper/WorkflowActions, AND any OTHER Module it delegates to (assign `this.<collaborator> = new <CollaboratorClass>(page)`). NEVER call `this.<x>.method()` unless `this.<x> = new <Class>(page)` is assigned in that class constructor. Do NOT rely on dependency injection between modules — each module self-initializes what it uses.',
     '- Methods you call MUST EXIST (prevents "TypeError: <obj>.<method> is not a function"). TWO cases: (a) the shared UTIL WRAPPERS (Actions/WaitHelper/WorkflowActions) have a FIXED API — call ONLY the exact methods/signatures in the Wrapper API contract above, NEVER add a method to a wrapper, and NEVER pass the wrong argument type (e.g. an object to `press(key: string)`); for browser navigation use the `page` object directly (`await this.page.goBack()`, `await this.page.waitForURL(...)`). (b) DOMAIN Pages/Modules MAY gain NEW methods — but if your spec calls a Page/Module method that is NOT already in the existing files or the Reusable API, you MUST emit the FULL extended Page/Module file that DEFINES that method in THIS SAME response. NEVER emit a spec that calls a Page/Module method you neither found in the existing API nor defined in a file you return now. Prefer ONE parameterized method (e.g. `sortBy(optionLabel)`) that every similar case reuses over several near-duplicate methods (sortByNameAsc/sortByNameDesc/sortByPriceAsc/…).',
     '- Pass every REQUIRED argument a method declares (prevents "expected string, got undefined"). If an existing Page/Module method requires a parameter (e.g. `goto(url: string)`), pass a CONCRETE value — never call it with no argument or an undefined variable. If you have no real value, use the navigation/method that needs none (e.g. click the on-page link) instead.',
+    '- Match the ARGUMENT COUNT of every wrapper call to its signature in the Wrapper API contract (prevents "TS2554: Expected N arguments, but got M"). A wrapper that declares `(target, value)` MUST be called with BOTH — e.g. always pass the value to fill/type/select; never call a two-argument wrapper with one argument.',
     '- NEVER modify the body or signature of an EXISTING Page/Module method — existing tests depend on it verbatim, and changing it (e.g. adding a wait/navigation to an existing navigate method) will BREAK already-passing tests. Only ADD new methods/locators. If a new case needs different behavior, write a NEW method; leave every existing method exactly as-is.',
     '- Test-data keys: every key the spec reads from testData.json MUST exist in the testData.json you emit — read `testData.<a>.<b>` ONLY if you also add `<a>.<b>` with a concrete valid value (a missing key throws "Cannot read properties of undefined"). Keep every existing key.',
     snapshot ? '- Base locators on the live snapshot above; do not invent selectors it does not support.' : '',
@@ -3631,7 +3632,7 @@ async function coreGenerate(fw, job, log, logs) {
   // missing keys ALL surface at once with exact file:line, and one heal fixes them together —
   // instead of discovering them one runtime crash at a time. Generic; skipped when TS is absent.
   if (hasTypeScript(fw)) {
-    const MAX_TS_ROUNDS = 2;
+    const MAX_TS_ROUNDS = 3;
     for (let tsr = 0; tsr <= MAX_TS_ROUNDS; tsr++) {
       const tsc = await typeCheck(fw);
       const ourErrors = tscErrorsForFiles(tsc.output, written.map((w) => w.path));
@@ -3671,7 +3672,7 @@ async function coreGenerate(fw, job, log, logs) {
   // 3) Self-heal up to MAX_HEAL_ROUNDS times — each round re-reads the failure and re-runs.
   // Capped at 2: each round re-runs the full Playwright suite (slow), and beyond 2 rounds the
   // LLM rarely converges — better to open a partial PR for what passes and defer the rest.
-  const MAX_HEAL_ROUNDS = 2;
+  const MAX_HEAL_ROUNDS = 3;
   for (let heal = 1; !run.passed && heal <= MAX_HEAL_ROUNDS; heal++) {
     const errorContext = readErrorContext(fw);
     // The exact per-test error from the JSON report — guarantees the heal sees the real
