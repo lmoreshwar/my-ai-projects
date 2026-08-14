@@ -241,8 +241,13 @@ function wrapperApi(fw, budget = 2200) {
     const instance = [...new Set(all.filter((s) => !s.isStatic).map((s) => s.sig))];
     if (instance.length) {
       const factory = statics.find((s) => /^create\b/.test(s)) || 'create(context)';
+      const stepSig = instance.find((s) => /^step\s*\(/.test(s));
+      const numericFirst = stepSig && /^step\s*\(\s*\w+\s*:\s*number\b/.test(stepSig);
+      const stepNote = numericFirst
+        ? ` NOTE: step() takes a NUMERIC first argument (the step index) then the message — e.g. \`this.logger.step(1, '<message>')\`. To log a plain message with NO step number, call \`this.logger.info('<message>')\` (one string). NEVER call \`.step('<message>')\` with only a message string — it will not compile.`
+        : '';
       blocks.push(
-        `Logger — CREATE ONCE via the STATIC factory \`Logger.${factory}\` and store it (e.g. \`private logger = Logger.${factory.replace(/\(.*/, '')}('<Context>')\`), then call these INSTANCE methods on \`this.logger\`. NEVER call step()/info() statically on \`Logger\` (Logger.step / Logger.info do NOT exist):\n  ` + instance.join('\n  '),
+        `Logger — CREATE ONCE via the STATIC factory \`Logger.${factory}\` and store it (e.g. \`private logger = Logger.${factory.replace(/\(.*/, '')}('<Context>')\`), then call these INSTANCE methods on \`this.logger\`. NEVER call step()/info() statically on \`Logger\` (Logger.step / Logger.info do NOT exist):\n  ` + instance.join('\n  ') + stepNote,
       );
     }
   } catch { /* no Logger in this framework — skip */ }
@@ -2180,7 +2185,10 @@ function loggerContract(fw) {
 function sanitizeFiles(files, fw) {
   const BARE_HOOK = /(^|[^.\w])(beforeAll|afterAll|beforeEach|afterEach)\s*\(/g;
   const { stepNumeric, hasInfo } = loggerContract(fw);
-  const stepMisuse = stepNumeric && hasInfo ? /\.step\(\s*(['"`])/g : null;
+  // Only rewrite INSTANCE `.step('msg')` (e.g. this.logger.step) — a leading NUMBER was omitted.
+  // Exclude the static class name (`Logger.step`), which is a different mistake and would still be
+  // wrong as `Logger.info` (info is instance-only). info() takes exactly the one message string.
+  const stepMisuse = stepNumeric && hasInfo ? /(?<!Logger)\.step\(\s*(['"`])/g : null;
   return files.map((f) => {
     let c = f.content;
     if (f.layer === 'spec') c = c.replace(BARE_HOOK, (_m, pre, hook) => `${pre}test.${hook}(`);
