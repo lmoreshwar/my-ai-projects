@@ -746,7 +746,34 @@ const DRIVE_SCRIPT = [
   '    }',
   "    return String(s || '').slice(0, 4000);",
   '  };',
-  '  const addState = async (page, label) => { if (states.length < MAX_STATES) states.push({ label, url: page.url(), snapshot: await snap(page) }); };',
+  '  // Generic, standards-based menu/dropdown reveal: open collapsed menus so items hidden until a',
+  '  // click (Logout, About, submenus, tabs) become discoverable in ANY app — uses only ARIA/HTML',
+  '  // semantics, never app-specific CSS, and never ACTIVATES destructive items (logout/delete).',
+  '  const revealMenus = async (p) => {',
+  '    const DESTRUCTIVE_R = /delete|remove|logout|sign ?out|reset|clear|cancel|discard|deactivate/i;',
+  "    const sel = '[aria-haspopup], [aria-expanded=\"false\"], [data-toggle=\"dropdown\"], [data-bs-toggle=\"dropdown\"], summary';",
+  '    const extra = [];',
+  '    try {',
+  '      const trg = p.locator(sel);',
+  '      const n = await trg.count().catch(() => 0);',
+  '      const startUrl = p.url();',
+  '      for (let i = 0; i < Math.min(n, 6); i++) {',
+  '        const t = trg.nth(i);',
+  '        if (!(await t.isVisible().catch(() => false))) continue;',
+  "        const txt = ((await t.innerText().catch(() => '')) || '').trim();",
+  '        if (DESTRUCTIVE_R.test(txt)) continue;',
+  '        await t.click({ timeout: 2500 }).catch(() => {});',
+  '        await p.waitForTimeout(250);',
+  "        if (p.url() !== startUrl) { await p.goto(startUrl, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(() => {}); continue; }",
+  "        const s = await p.locator('body').ariaSnapshot().catch(() => '');",
+  "        for (const ln of String(s).split('\\n')) { if (/\\b(menuitem|menuitemcheckbox|menuitemradio|option|tab)\\b/.test(ln)) extra.push(ln.trim()); }",
+  "        await p.keyboard.press('Escape').catch(() => {});",
+  '        await p.waitForTimeout(120);',
+  '      }',
+  '    } catch (e) { /* best-effort */ }',
+  "    return extra.length ? ('\\n' + [...new Set(extra)].slice(0, 60).join('\\n')) : '';",
+  '  };',
+  '  const addState = async (page, label) => { if (states.length < MAX_STATES) { const base = await snap(page); const menus = await revealMenus(page); states.push({ label, url: page.url(), snapshot: (base + menus).slice(0, 6000) }); } };',
   "  const primaryRe = /continue|finish|checkout|place order|submit|confirm|save|next|pay/i;",
   '  const primaryOf = (page) => page.getByRole(\'button\', { name: primaryRe }).first();',
   '  const grabMessages = async (page) => {',
@@ -1240,11 +1267,11 @@ function buildFeatureModel(snapshot, feature) {
     const name = (m[2] || '').trim();
     if (role === 'textbox' || role === 'searchbox' || role === 'spinbutton') {
       model.inputs.push({ role, name });
-    } else if (role === 'button' && name) {
+    } else if ((role === 'button' || role === 'menuitem' || role === 'menuitemcheckbox' || role === 'menuitemradio' || role === 'tab') && name) {
       model.buttons.push(name);
     } else if (role === 'link' && name) {
       model.links.push(name);
-    } else if (['checkbox', 'combobox', 'radio', 'switch', 'slider'].includes(role)) {
+    } else if (['checkbox', 'combobox', 'radio', 'switch', 'slider', 'option'].includes(role)) {
       model.controls.push({ role, name });
     } else if (['text', 'alert', 'heading'].includes(role) && name) {
       model.texts.push(name);
