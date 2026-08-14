@@ -659,6 +659,63 @@ async function getRunReportSummary(job, runId, git) {
   return (result && result.reportSummary) || null;
 }
 
+/** Return the account that owns the caller's token: { login }. Used to place a provisioned repo. */
+async function getAuthenticatedUser(git) {
+  try {
+    const { data } = await axios.get(`${API}/user`, { headers: headers(git), timeout: 12000 });
+    return { login: data.login || '' };
+  } catch (err) {
+    throw friendlyError(err, 'identify user');
+  }
+}
+
+/** True when the caller's account already has a repo named `name` (so we don't re-provision). */
+async function repoExists(git, owner, name) {
+  try {
+    await axios.get(`${API}/repos/${owner}/${name}`, { headers: headers(git), timeout: 12000 });
+    return true;
+  } catch (err) {
+    if (err.response && err.response.status === 404) return false;
+    throw friendlyError(err, `check ${owner}/${name}`);
+  }
+}
+
+/**
+ * Multi-tenant onboarding: create a fresh copy of the BLAST framework template in the caller's
+ * own account, so their generated tests + PRs land in THEIR clean-slate repo. Template location
+ * comes from env (BLAST_TEMPLATE_OWNER/BLAST_TEMPLATE_REPO) — nothing app-specific is hardcoded.
+ * Returns { owner, repo, fullName, htmlUrl, defaultBranch }.
+ */
+async function generateFromTemplate(git, opts = {}) {
+  const templateOwner = process.env.BLAST_TEMPLATE_OWNER || 'lmoreshwar';
+  const templateRepo = process.env.BLAST_TEMPLATE_REPO || 'blast-framework-template';
+  const owner = opts.owner;
+  const name = opts.name || 'blast-framework';
+  if (!owner) throw new Error('generateFromTemplate: target owner is required');
+  try {
+    const { data } = await axios.post(
+      `${API}/repos/${templateOwner}/${templateRepo}/generate`,
+      {
+        owner,
+        name,
+        description: opts.description || 'BLAST automation framework (provisioned from template)',
+        include_all_branches: false,
+        private: opts.private !== false,
+      },
+      { headers: headers(git), timeout: 20000 },
+    );
+    return {
+      owner: (data.owner && data.owner.login) || owner,
+      repo: data.name || name,
+      fullName: data.full_name || `${owner}/${name}`,
+      htmlUrl: data.html_url || '',
+      defaultBranch: data.default_branch || 'main',
+    };
+  } catch (err) {
+    throw friendlyError(err, 'provision framework from template');
+  }
+}
+
 module.exports = {
   isConfigured,
   findCopilotActor,
@@ -673,4 +730,7 @@ module.exports = {
   mergePr,
   getFileContent,
   listDir,
+  getAuthenticatedUser,
+  repoExists,
+  generateFromTemplate,
 };

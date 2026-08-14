@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef } from 'react';
 import CustomSelect from './CustomSelect';
 
 export default function ConnectionSettings({ connections, setConnections, apiBase, onResetGenerated }) {
   const [testing, setTesting] = useState({ jira: false, llm: false, zephyr: false, github: false });
   const [fetchingBranches, setFetchingBranches] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
+  const [provisioning, setProvisioning] = useState(false);
   const llmAbortRef = useRef(null);
 
   const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
@@ -76,7 +77,56 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
     setTimeout(() => setSavedMsg(''), 4000);
   };
 
-  // Recommended default model per LLM provider (first dropdown option for each).
+  // Multi-tenant onboarding: create the user's OWN fresh copy of the BLAST framework template
+  // (clean slate — no app content) and set it as the PR target. Saves the token first so the
+  // server-side endpoint can use it; the token is never sent in this provisioning request body.
+  const provisionFramework = async () => {
+    if (!connections.github?.token) {
+      setSavedMsg('Connect GitHub first (enter a token and Test Connection).');
+      setTimeout(() => setSavedMsg(''), 4000);
+      return;
+    }
+    setProvisioning(true);
+    setSavedMsg('Provisioning your BLAST framework repo…');
+    // Persist the token server-side first (the endpoint reads the saved connection).
+    await saveConnectionToDB('github', {
+      token: connections.github.token,
+      apiUrl: connections.github.apiUrl,
+      selectedRepo: connections.github.selectedRepo || '',
+      selectedBranch: connections.github.selectedBranch || 'main',
+    });
+    try {
+      const authToken = localStorage.getItem('blast_token');
+      const headers = { 'Content-Type': 'application/json' };
+      if (authToken) headers.Authorization = `Bearer ${authToken}`;
+      const res = await fetch(`${apiBase}/api/users/connections/github/provision`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (res.ok && data.repo) {
+        // Adopt the provisioned repo as the target and show it in the selector.
+        setConnections((prev) => {
+          const repos = prev.github.repos || [];
+          const has = repos.some((r) => r.name === data.repo);
+          return has ? prev : {
+            ...prev,
+            github: { ...prev.github, repos: [...repos, { name: data.repo, visibility: 'private', default_branch: 'main' }] },
+          };
+        });
+        // Select it + populate the Branch dropdown (auto-selects the default branch).
+        await fetchBranches(data.repo);
+        setSavedMsg(`Framework ready: ${data.repo}. Now click Save Connection.`);
+      } else {
+        setSavedMsg(data.msg || 'Provisioning failed.');
+      }
+    } catch {
+      setSavedMsg('Network error while provisioning.');
+    }
+    setProvisioning(false);
+    setTimeout(() => setSavedMsg(''), 6000);
+  };
   const LLM_DEFAULT_MODEL = {
     gemini: 'gemini-flash-latest',
     openai: 'gpt-5.6-luna',
@@ -287,10 +337,10 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
         </div>
       )}
 
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Connection Settings</h1>
-        <p className="text-on-surface-variant dark:text-slate-400 max-w-2xl font-medium leading-relaxed mt-2">
-          Configure and verify connections to third-party services like JIRA, LLMs, Zephyr, and GitHub to enable full-cycle test automation.
+      <div className="mb-6">
+        <h1 className="text-lg font-bold text-gray-900 dark:text-white">Connections</h1>
+        <p className="text-sm text-on-surface-variant dark:text-slate-400 mt-1">
+          Connect JIRA, LLM, Zephyr &amp; GitHub to power your automation.
         </p>
       </div>
 
@@ -606,15 +656,16 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                 Required scopes: <span className="font-semibold text-slate-500 dark:text-slate-400">repo</span>, <span className="font-semibold text-slate-500 dark:text-slate-400">workflow</span>, <span className="font-semibold text-slate-500 dark:text-slate-400">read:org</span> (optional for org repos)
               </p>
             </div>
-            <div className="space-y-1 p-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded">
-              <p className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500">Pull Request target</p>
-              <p className="text-sm font-semibold text-on-surface dark:text-white">
-                {connections.github?.selectedRepo
-                  ? `${connections.github.selectedRepo}${connections.github.selectedBranch ? ` @ ${connections.github.selectedBranch}` : ''}`
-                  : 'Server default (no repo selected)'}
-              </p>
-              <p className="text-[0.6rem] text-slate-400 dark:text-slate-600">BLAST opens the generated-tests Pull Request in this repo. It must contain the BLAST Playwright framework, the <span className="font-semibold">blast-runner.yml</span> workflow, and your Actions secrets.</p>
-            </div>
+            {/* Show the PR destination only once a repo is actually chosen (avoids noise for new users). */}
+            {connections.github?.selectedRepo && (
+              <div className="space-y-1 p-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded">
+                <p className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500">Pull Request target</p>
+                <p className="text-sm font-semibold text-on-surface dark:text-white">
+                  {connections.github.selectedRepo}{connections.github.selectedBranch ? ` @ ${connections.github.selectedBranch}` : ''}
+                </p>
+                <p className="text-[0.6rem] text-slate-400 dark:text-slate-600">Your generated tests open as a Pull Request here.</p>
+              </div>
+            )}
           </div>
 
           {/* Test Connection Button */}
@@ -658,6 +709,30 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                   </p>
                 </div>
               </div>
+              {/* Multi-tenant: one-click fresh framework repo (clean slate, no app content). */}
+              <div className="space-y-2 p-4 bg-app-red/5 border border-app-red/20 rounded-lg">
+                <p className="text-sm font-bold text-on-surface dark:text-white">New to BLAST? Create your framework</p>
+                <p className="text-[0.7rem] text-slate-500 dark:text-slate-400">
+                  Provisions a fresh, empty BLAST framework repo in your account. Your generated tests and Pull Requests land there — no setup, no old app content.
+                </p>
+                <button
+                  onClick={provisionFramework}
+                  disabled={provisioning || !connections.github?.token}
+                  className="w-full h-11 bg-app-red text-white font-bold text-sm rounded shadow-lg shadow-app-red/20 active:bg-app-dark-red transition-all disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {provisioning ? (
+                    <>
+                      <span className="material-symbols-outlined animate-spin text-base">progress_activity</span>
+                      Provisioning…
+                    </>
+                  ) : (
+                    <>
+                      <span className="material-symbols-outlined text-base">rocket_launch</span>
+                      Create my BLAST framework repo
+                    </>
+                  )}
+                </button>
+              </div>
               <div className="space-y-2">
                 <label className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500 ml-1">
                   Target repository (PR destination)
@@ -696,35 +771,12 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
         </section>
       </div>
 
-      {/* Info Cards */}
-      <div className="mt-10 sm:mt-16 grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8 mb-12">
-        <div className="md:col-span-2 bg-[#f0f4f9] dark:bg-slate-900 rounded-xl p-6 sm:p-10 flex flex-col justify-between border-l-8 border-app-blue">
-          <div>
-            <h4 className="text-xl font-bold text-on-surface dark:text-white mb-3">Automated Validation Logic</h4>
-            <p className="text-slate-600 dark:text-slate-400 text-sm mb-8 leading-relaxed max-w-lg">
-              Connections are verified against a 12-point health check including latency, token permission scope, and endpoint availability.
-            </p>
-          </div>
-          <div className="flex gap-10">
-            <div className="flex flex-col">
-              <span className="text-4xl font-black text-app-blue dark:text-blue-400 leading-none">24ms</span>
-              <span className="text-[0.6875rem] font-bold uppercase tracking-widest text-slate-500 mt-2">AVG LATENCY</span>
-            </div>
-            <div className="flex flex-col">
-              <span className="text-4xl font-black text-green-600 leading-none">STABLE</span>
-              <span className="text-[0.6875rem] font-bold uppercase tracking-widest text-slate-500 mt-2">HEALTH STATUS</span>
-            </div>
-          </div>
-        </div>
-        <div className="bg-app-blue rounded-xl p-6 sm:p-8 relative overflow-hidden flex flex-col justify-end text-white">
-          <div className="absolute top-0 right-0 p-6 opacity-10">
-            <span className="material-symbols-outlined text-7xl">security</span>
-          </div>
-          <h4 className="text-lg font-bold mb-3">Encrypted Storage</h4>
-          <p className="text-white/80 text-xs leading-relaxed">
-            All API keys are AES-256 encrypted at rest and never logged in plain text.
-          </p>
-        </div>
+      {/* Compact security note */}
+      <div className="mt-8 mb-10 flex items-center gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg">
+        <span className="material-symbols-outlined text-app-blue text-lg">lock</span>
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          Connections are validated on <span className="font-semibold text-slate-600 dark:text-slate-300">Test Connection</span>, and all keys are encrypted at rest — never logged in plain text.
+        </p>
       </div>
     </div>
   );
