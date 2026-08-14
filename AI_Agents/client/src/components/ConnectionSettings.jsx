@@ -5,7 +5,6 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
   const [testing, setTesting] = useState({ jira: false, llm: false, zephyr: false, github: false });
   const [fetchingBranches, setFetchingBranches] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
-  const [provisioning, setProvisioning] = useState(false);
   const llmAbortRef = useRef(null);
 
   const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
@@ -77,56 +76,6 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
     setTimeout(() => setSavedMsg(''), 4000);
   };
 
-  // Multi-tenant onboarding: create the user's OWN fresh copy of the BLAST framework template
-  // (clean slate — no app content) and set it as the PR target. Saves the token first so the
-  // server-side endpoint can use it; the token is never sent in this provisioning request body.
-  const provisionFramework = async () => {
-    if (!connections.github?.token) {
-      setSavedMsg('Connect GitHub first (enter a token and Test Connection).');
-      setTimeout(() => setSavedMsg(''), 4000);
-      return;
-    }
-    setProvisioning(true);
-    setSavedMsg('Provisioning your BLAST framework repo…');
-    // Persist the token server-side first (the endpoint reads the saved connection).
-    await saveConnectionToDB('github', {
-      token: connections.github.token,
-      apiUrl: connections.github.apiUrl,
-      selectedRepo: connections.github.selectedRepo || '',
-      selectedBranch: connections.github.selectedBranch || 'main',
-    });
-    try {
-      const authToken = localStorage.getItem('blast_token');
-      const headers = { 'Content-Type': 'application/json' };
-      if (authToken) headers.Authorization = `Bearer ${authToken}`;
-      const res = await fetch(`${apiBase}/api/users/connections/github/provision`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({}),
-      });
-      const data = await res.json();
-      if (res.ok && data.repo) {
-        // Adopt the provisioned repo as the target and show it in the selector.
-        setConnections((prev) => {
-          const repos = prev.github.repos || [];
-          const has = repos.some((r) => r.name === data.repo);
-          return has ? prev : {
-            ...prev,
-            github: { ...prev.github, repos: [...repos, { name: data.repo, visibility: 'private', default_branch: 'main' }] },
-          };
-        });
-        // Select it + populate the Branch dropdown (auto-selects the default branch).
-        await fetchBranches(data.repo);
-        setSavedMsg(`Framework ready: ${data.repo}. Now click Save Connection.`);
-      } else {
-        setSavedMsg(data.msg || 'Provisioning failed.');
-      }
-    } catch {
-      setSavedMsg('Network error while provisioning.');
-    }
-    setProvisioning(false);
-    setTimeout(() => setSavedMsg(''), 6000);
-  };
   const LLM_DEFAULT_MODEL = {
     gemini: 'gemini-flash-latest',
     openai: 'gpt-5.6-luna',
@@ -708,30 +657,6 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                     {(connections.github.repos || []).length} repositories found. Select the target repo + branch below, then <span className="font-bold">Save Connection</span>.
                   </p>
                 </div>
-              </div>
-              {/* Multi-tenant: one-click fresh framework repo (clean slate, no app content). */}
-              <div className="space-y-2 p-4 bg-app-red/5 border border-app-red/20 rounded-lg">
-                <p className="text-sm font-bold text-on-surface dark:text-white">New to BLAST? Create your framework</p>
-                <p className="text-[0.7rem] text-slate-500 dark:text-slate-400">
-                  Provisions a fresh, empty BLAST framework repo in your account. Your generated tests and Pull Requests land there — no setup, no old app content.
-                </p>
-                <button
-                  onClick={provisionFramework}
-                  disabled={provisioning || !connections.github?.token}
-                  className="w-full h-11 bg-app-red text-white font-bold text-sm rounded shadow-lg shadow-app-red/20 active:bg-app-dark-red transition-all disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {provisioning ? (
-                    <>
-                      <span className="material-symbols-outlined animate-spin text-base">progress_activity</span>
-                      Provisioning…
-                    </>
-                  ) : (
-                    <>
-                      <span className="material-symbols-outlined text-base">rocket_launch</span>
-                      Create my BLAST framework repo
-                    </>
-                  )}
-                </button>
               </div>
               <div className="space-y-2">
                 <label className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500 ml-1">
