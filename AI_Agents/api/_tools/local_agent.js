@@ -2766,7 +2766,9 @@ function writeFiles(fw, files, baselines = null) {
       // job-start baseline) VERBATIM; members ADDED this run stay correctable so the compile
       // gate / heal can fix a broken new method. If nothing changed, reuse untouched. Generic.
       if (f.layer === 'page' || f.layer === 'module') {
-        const baseNames = baselines ? baselines[relFromRoot] : null;
+        // A file with no baseline entry was CREATED this run → its members are all correctable
+        // (empty baseline), so compile-fix/heal can land fixes instead of protecting a broken file.
+        const baseNames = baselines ? (baselines[relFromRoot] || new Set()) : null;
         const merged = mergeExisting(current, next, f.layer, baseNames);
         if (merged && merged.trim() !== current.trim()) {
           const bak = path.join(root, '.blast-backups', `${relFromRoot}.bak-${ts}`);
@@ -2793,7 +2795,8 @@ function writeFiles(fw, files, baselines = null) {
         // is not a function` couldn't be corrected). Merge test-block-wise: keep baseline (job-start)
         // tests VERBATIM, swap in the corrected version of this-run tests, append any new tests.
         if (f.layer === 'spec') {
-          const baseTitles = baselines ? baselines[relFromRoot] : null;
+          // No baseline entry → spec created this run → all its tests are correctable (empty baseline).
+          const baseTitles = baselines ? (baselines[relFromRoot] || new Set()) : null;
           const specMerged = mergeExisting(current, next, 'spec', baseTitles);
           if (specMerged && specMerged.trim() !== current.trim()) {
             const bak = path.join(root, '.blast-backups', `${relFromRoot}.bak-${ts}`);
