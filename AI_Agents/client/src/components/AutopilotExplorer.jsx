@@ -25,7 +25,7 @@ const labelCls = 'block text-xs font-semibold text-on-surface-variant dark:text-
  */
 export default function AutopilotExplorer({ apiBase, connections }) {
   const [form, setForm] = useState({
-    url: 'https://www.saucedemo.com',
+    url: '',
     feature: '',
     username: '',
     password: '',
@@ -172,7 +172,7 @@ export default function AutopilotExplorer({ apiBase, connections }) {
             Autopilot — Explore &amp; Automate
           </h1>
           <p className="text-sm text-on-surface-variant dark:text-slate-400">
-            Give a screen. The AI designs the tests. Currently tuned for saucedemo.com.
+            Give a screen. The AI designs the tests. Works with any web application.
           </p>
         </div>
       </div>
@@ -183,7 +183,7 @@ export default function AutopilotExplorer({ apiBase, connections }) {
           <div>
             <label className={labelCls}>Application URL *</label>
             <input className={inputCls} value={form.url} onChange={(e) => set('url', e.target.value)}
-              placeholder="https://www.saucedemo.com" />
+              placeholder="https://your-app.com/login" />
           </div>
 
           <div>
@@ -205,7 +205,7 @@ export default function AutopilotExplorer({ apiBase, connections }) {
               <div>
                 <label className={labelCls}>Username</label>
                 <input className={inputCls} value={form.username} autoComplete="off"
-                  onChange={(e) => set('username', e.target.value)} placeholder="standard_user" />
+                  onChange={(e) => set('username', e.target.value)} placeholder="your-username" />
               </div>
               <div>
                 <label className={labelCls}>Password</label>
@@ -277,13 +277,13 @@ export default function AutopilotExplorer({ apiBase, connections }) {
               <div>
                 <label className={labelCls}>Login URL (optional — auth-gated exploration)</label>
                 <input className={inputCls} value={form.loginUrl}
-                  onChange={(e) => set('loginUrl', e.target.value)} placeholder="defaults to the app origin, e.g. https://www.saucedemo.com" />
+                  onChange={(e) => set('loginUrl', e.target.value)} placeholder="defaults to the app origin, e.g. https://your-app.com" />
               </div>
               <div>
                 <label className={labelCls}>Flow / step URLs (optional — one per line, for multi-step features)</label>
                 <textarea className={inputCls} rows={3} value={form.flowUrls}
                   onChange={(e) => set('flowUrls', e.target.value)}
-                  placeholder={'https://www.saucedemo.com/checkout-step-one.html\nhttps://www.saucedemo.com/checkout-step-two.html'} />
+                  placeholder={'https://your-app.com/step-one\nhttps://your-app.com/step-two'} />
               </div>
               <div>
                 <label className={labelCls}>Scope hint (route or CSS selector)</label>
