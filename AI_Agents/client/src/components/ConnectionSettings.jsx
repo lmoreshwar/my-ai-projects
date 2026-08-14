@@ -337,10 +337,10 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
         </div>
       )}
 
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Connection Settings</h1>
-        <p className="text-on-surface-variant dark:text-slate-400 max-w-2xl font-medium leading-relaxed mt-2">
-          Configure and verify connections to third-party services like JIRA, LLMs, Zephyr, and GitHub to enable full-cycle test automation.
+      <div className="mb-6">
+        <h1 className="text-lg font-bold text-gray-900 dark:text-white">Connections</h1>
+        <p className="text-sm text-on-surface-variant dark:text-slate-400 mt-1">
+          Connect JIRA, LLM, Zephyr &amp; GitHub to power your automation.
         </p>
       </div>
 
