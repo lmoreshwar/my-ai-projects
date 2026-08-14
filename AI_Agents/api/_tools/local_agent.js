@@ -1056,7 +1056,7 @@ function renderLiveTrace(trace) {
 }
 
 /** Ask the LLM for the SINGLE next live action, constrained to refs that exist on the page NOW. */
-async function llmNextAction(job, tc, trace, snapshotYaml, refs) {
+async function llmNextAction(job, tc, trace, snapshotYaml, refs, preAuth = false) {
   const refList = refs.map((r) => `- ref=${r.ref} ${r.role} "${r.name}"`).join('\n');
   const done = trace.length
     ? trace.map((t, i) => `${i + 1}. ${t.action} "${t.name}"${t.value ? ` = "${t.value}"` : ''}${t.navigated ? ` → ${t.url}` : ''}`).join('\n')
@@ -1072,6 +1072,11 @@ async function llmNextAction(job, tc, trace, snapshotYaml, refs) {
     steps = String(tc.steps);
   }
   const expected = Array.isArray(tc.expectedResults) ? tc.expectedResults.join('; ') : (tc.expectedResults || '');
+  // Credential rule depends on the mode: on the feature's own pre-auth screen (login/signup/search)
+  // the agent SHOULD exercise the form with safe/invalid values; past login it must never type creds.
+  const credRule = preAuth
+    ? 'This is the feature\'s OWN target screen (for example a login, signup, or search form). You MAY fill fields with SAMPLE or intentionally INVALID values and submit them to observe the form\'s validation or success behaviour — but NEVER type a REAL account username or password; use obviously-fake values such as "invalid_user" / "wrong_pass".'
+    : 'Login is ALREADY done — NEVER type a username or password.';
   const prompt = [
     'You are driving a REAL browser to reproduce ONE test case, choosing ONE next action at a time from the LIVE page.',
     `\n# Test case: ${tc.id || ''} ${tc.title || ''}`,
@@ -1082,7 +1087,7 @@ async function llmNextAction(job, tc, trace, snapshotYaml, refs) {
     `\n# Full page snapshot (context)\n${String(snapshotYaml || '').slice(0, 2500)}`,
     '\n# Return the SINGLE next action as STRICT JSON (no prose):',
     '{"action":"click|fill|select|check|done","ref":"eNN from the list above (empty when done)","value":"text for fill/select, else empty","note":"short human-readable intent"}',
-    'Rules: pick ONLY a ref that appears in the list above (never invent one). Do the MINIMUM to advance this case toward its expected result. Login is ALREADY done — NEVER type a username or password. When the case goal is reached or no useful action remains, return {"action":"done"}. Reply with JSON only.',
+    'Rules: pick ONLY a ref that appears in the list above (never invent one). Do the MINIMUM to advance this case toward its expected result. ' + credRule + ' When the case goal is reached or no useful action remains, return {"action":"done"}. Reply with JSON only.',
   ].filter(Boolean).join('\n');
   const raw = await llmGenerate(prompt, 'You are a precise browser-automation agent. Reply with STRICT JSON only.');
   try {
@@ -1104,44 +1109,70 @@ async function driveFeatureLive(fw, job, tc, auth, log, opts = {}) {
   const ver = await runCli(fw, 'l3-probe', ['--version'], 8000).catch(() => '');
   if (!ver || !/\d/.test(ver)) { log('[L3] @playwright/cli not available on this runner — skipping Level 3 (using standard evidence).'); return ''; }
 
+  const samePath = (a, b) => {
+    try { return new URL(a).pathname.replace(/\/+$/, '') === new URL(b).pathname.replace(/\/+$/, ''); }
+    catch { return false; }
+  };
+  const readSnap = async () => {
+    const rawSnap = await runCli(fw, session, ['snapshot']);
+    const yaml = (rawSnap.match(/```yaml\n([\s\S]*?)```/) || [, ''])[1] || rawSnap;
+    return { rawSnap, yaml, refs: parseCliRefs(yaml).slice(0, 60) };
+  };
+
   const stateFile = path.join(fw, '.blast-l3-state.json');
   try { fs.rmSync(stateFile, { force: true }); } catch { /* ignore */ }
-  log('[L3] Authenticating headlessly to capture a storage state (no credentials pass through the CLI)…');
-  try { await driveFlow(fw, [job.loginUrl || job.url], { auth, allowSubmit: false, stateFile }); } catch { /* best-effort */ }
-  const authed = fs.existsSync(stateFile);
-  log(authed ? '[L3] Storage state captured ✓ — the CLI session will be authenticated with no secrets in argv.' : '[L3] No storage state captured — continuing without auth (public pages only).');
 
-  // Start on the authenticated landing page (not the login root) so the agent has real controls.
-  const startUrl = (opts && opts.startUrl) || job.url;
+  const targetUrl = job.url;                              // the feature's OWN screen
+  const landingUrl = (opts && opts.startUrl) || job.url;  // authenticated landing (post-login)
   const session = `l3-${Date.now().toString(36)}`;
   const trace = [];
   const maxSteps = Number(process.env.BLAST_LEVEL3_STEPS) > 0 ? Number(process.env.BLAST_LEVEL3_STEPS) : 12;
+  // Never let a REAL credential travel through the CLI (its output echoes filled values).
+  const isCred = (v) => !!v && (v === auth.username || v === auth.password);
+  let currentUrl = targetUrl;
   try {
     await runCli(fw, session, ['open']);
-    if (authed) await runCli(fw, session, ['state-load', stateFile]);
-    const gotoOut = await runCli(fw, session, ['goto', startUrl]);
-    const landedUrl = extractPageUrl(gotoOut) || startUrl;
-    log(`[L3] Driving the live app for "${tc.title || tc.id || job.feature}" from ${startUrl} — verifying up to ${maxSteps} action(s)…`);
-    if (authed && /\/(login|index\.html)?$/i.test(landedUrl) && landedUrl !== startUrl) {
-      log(`[L3] After auth the CLI landed on ${landedUrl} (not ${startUrl}) — the storage state did not carry into the CLI session.`);
-    }
-    for (let step = 1; step <= maxSteps; step++) {
-      let rawSnap = await runCli(fw, session, ['snapshot']);
-      let yaml = (rawSnap.match(/```yaml\n([\s\S]*?)```/) || [, ''])[1] || rawSnap;
-      let refs = parseCliRefs(yaml).slice(0, 60);
-      // First snapshot can be empty if the page has not settled — re-navigate + retry ONCE before giving up.
-      if (!refs.length && step === 1) {
-        log(`[L3] First snapshot had 0 interactable refs (url=${extractPageUrl(rawSnap) || landedUrl}, ${yaml.length} chars) — settling and retrying once.`);
-        await runCli(fw, session, ['goto', startUrl]);
-        rawSnap = await runCli(fw, session, ['snapshot']);
-        yaml = (rawSnap.match(/```yaml\n([\s\S]*?)```/) || [, ''])[1] || rawSnap;
-        refs = parseCliRefs(yaml).slice(0, 60);
+
+    // 1) PRE-AUTH PROBE — is the feature's OWN screen reachable WITHOUT logging in first?
+    //    Login / signup / public-search forms live here. Level 3 used to always authenticate and
+    //    start PAST this screen, so a login feature captured nothing and dropped to Level 2. If the
+    //    target screen is reachable pre-auth and has controls, drive it LIVE with safe/invalid
+    //    values only (never real creds) to capture its real form locators + validation. Generic.
+    const probeOut = await runCli(fw, session, ['goto', targetUrl]);
+    let { rawSnap, yaml, refs } = await readSnap();
+    const probedUrl = extractPageUrl(probeOut) || extractPageUrl(rawSnap) || targetUrl;
+    const preAuth = samePath(probedUrl, targetUrl) && refs.length > 0;
+
+    if (preAuth) {
+      currentUrl = probedUrl;
+      log(`[L3] Feature screen ${targetUrl} is reachable pre-login — driving it LIVE (safe/invalid values only; real credentials are NEVER typed).`);
+    } else {
+      // 2) AUTHENTICATED FEATURE — the target needs a session. Capture a storage state via an
+      //    env-cred library login (no secret through the CLI), load it, start on the in-app page.
+      log('[L3] Feature requires a session — capturing a storage state (no credentials pass through the CLI)…');
+      try { await driveFlow(fw, [job.loginUrl || job.url], { auth, allowSubmit: false, stateFile }); } catch { /* best-effort */ }
+      const authed = fs.existsSync(stateFile);
+      log(authed ? '[L3] Storage state captured ✓ — the CLI session is authenticated with no secrets in argv.' : '[L3] No storage state captured — continuing on public pages only.');
+      if (authed) await runCli(fw, session, ['state-load', stateFile]);
+      const gotoOut = await runCli(fw, session, ['goto', landingUrl]);
+      currentUrl = extractPageUrl(gotoOut) || landingUrl;
+      ({ rawSnap, yaml, refs } = await readSnap());
+      if (!refs.length) {
+        // First snapshot can be empty if the page has not settled — re-navigate + retry ONCE.
+        log(`[L3] First snapshot had 0 interactable refs (url=${currentUrl}, ${yaml.length} chars) — settling and retrying once.`);
+        await runCli(fw, session, ['goto', landingUrl]);
+        ({ rawSnap, yaml, refs } = await readSnap());
       }
+    }
+    log(`[L3] Driving the live app for "${tc.title || tc.id || job.feature}" (${preAuth ? 'pre-auth target screen' : 'authenticated'}) — verifying up to ${maxSteps} action(s)…`);
+
+    for (let step = 1; step <= maxSteps; step++) {
+      if (step > 1) ({ rawSnap, yaml, refs } = await readSnap());
       if (!refs.length) {
         log(`[L3] No interactable elements in the live snapshot (${yaml.length} chars) — stopping the walk. Preview: ${yaml.slice(0, 200).replace(/\s+/g, ' ').trim()}`);
         break;
       }
-      const decision = await llmNextAction(job, tc, trace, yaml, refs);
+      const decision = await llmNextAction(job, tc, trace, yaml, refs, preAuth);
       if (!decision || String(decision.action || '').toLowerCase() === 'done' || !decision.ref) {
         log(`[L3] Journey complete after ${trace.length} verified step(s).`);
         break;
@@ -1149,11 +1180,11 @@ async function driveFeatureLive(fw, job, tc, auth, log, opts = {}) {
       const target = refs.find((r) => r.ref === decision.ref);
       if (!target) { log(`[L3] LLM picked ref ${decision.ref} not present live — stopping (anti-hallucination guard).`); break; }
       const act = String(decision.action || 'click').toLowerCase();
-      const beforeUrl = extractPageUrl(rawSnap) || startUrl;
+      const beforeUrl = extractPageUrl(rawSnap) || currentUrl;
       let cliOut = '';
       if (act === 'fill' || act === 'type') {
         const val = String(decision.value == null ? '' : decision.value);
-        if (auth.password && val === auth.password) { log('[L3] Refusing to type the password via the CLI (already authenticated) — skipping this action.'); continue; }
+        if (isCred(val)) { log('[L3] Refusing to type a real credential via the CLI — skipping this action.'); continue; }
         cliOut = await runCli(fw, session, ['fill', target.ref, val]);
       } else if (act === 'select') {
         cliOut = await runCli(fw, session, ['select', target.ref, String(decision.value == null ? '' : decision.value)]);
@@ -1164,6 +1195,7 @@ async function driveFeatureLive(fw, job, tc, auth, log, opts = {}) {
       }
       const locator = extractRanLocator(cliOut);
       const afterUrl = extractPageUrl(cliOut) || beforeUrl;
+      currentUrl = afterUrl;
       trace.push({
         intent: decision.note || `${act} ${target.role} "${target.name}"`,
         action: act,
