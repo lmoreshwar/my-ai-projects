@@ -2108,7 +2108,7 @@ function buildCompilePrompt(job, files, tscErrors, g) {
     '- "Property \'<m>\' does not exist on type \'<T>\'": you called a method/property that does not exist. If <T> is a UTIL WRAPPER (Actions/WaitHelper/WorkflowActions), replace it with a REAL method from the Wrapper API contract below, or use the `page` object. If <T> is a DOMAIN Page/Module, either call an existing method OR DEFINE <m> on that class and emit its FULL extended file. Never keep an invented call.',
     '- "Expected N arguments, but got M": pass every REQUIRED argument with a concrete value (e.g. `goto(url)` needs a real url); never call with a missing/undefined argument.',
     '- "Argument of type \'X\' is not assignable to parameter of type \'Y\'": pass the correct type (e.g. a string key to `press(key: string)`, not an object; a Locator where a Locator is expected).',
-    '- IF THE SAME CALL FLIP-FLOPS between "Expected 2 arguments, but got 1" and "type \'string\' is not assignable to parameter of type \'number\'" (i.e. adding a text 2nd argument then triggers a number error): you are calling the WRONG method. Its real 2nd parameter is a NUMBER (an index/timeout/count option), so it is NOT a method for entering text. Do NOT toggle the argument. Look up the Wrapper API contract and switch to the method whose signature actually takes the text VALUE — to type into a field use the fill/type method with a `(target, value: string)` signature — then pass the string once. Never keep oscillating.',
+    '- IF THE SAME CALL FLIP-FLOPS between "Expected 2 arguments, but got 1" and "type \'string\' is not assignable to parameter of type \'number\'" (adding an argument then triggers a number error): one of the parameters is a NUMBER and you are omitting it or putting a string in its slot. Look up the EXACT signature in the Wrapper API contract and pass the arguments in the RIGHT ORDER with the RIGHT types — do NOT toggle blindly. Two common cases: (a) LOGGER — `logger.step(stepNumber: number, description: string)` needs the step NUMBER FIRST, e.g. `this.logger.step(1, \'Open the login page\')`; if you have no step number, call `this.logger.info(\'Open the login page\')` instead (it takes ONE string). NEVER call `this.logger.step(\'...\')` with only a message. (b) TEXT ENTRY — to type into a field use the fill/type method with a `(target, value: string)` signature and pass the string once. Never keep oscillating.',
     '- "Cannot find name \'<n>\'" / "Cannot find module": add the missing import from the SAME path the exemplars use; do not invent a module path.',
     '- Property error on testData (e.g. testData.<a>.<b>): add `<a>.<b>` to the emitted testData.json with a concrete valid value; keep every existing key.',
     '- Type/return mismatches: make the signature and its usage agree; never use `any` or `// @ts-ignore` to silence an error — fix the real cause.',
@@ -2155,13 +2155,37 @@ function parseFiles(text) {
   return out;
 }
 
-/** Deterministically fix common LLM mistakes in spec files (bare test-runner hooks). */
-function sanitizeFiles(files) {
+/** Cache of the Logger contract per framework: does step() need a numeric first arg, and is info() present? */
+const _loggerContractCache = new Map();
+function loggerContract(fw) {
+  if (!fw) return { stepNumeric: false, hasInfo: false };
+  if (_loggerContractCache.has(fw)) return _loggerContractCache.get(fw);
+  let res = { stepNumeric: false, hasInfo: false };
+  try {
+    const src = fs.readFileSync(path.join(fw, 'src', 'utils', 'Logger.ts'), 'utf-8');
+    res = {
+      // step(<first>: number, …) — a leading numeric step index the LLM keeps omitting.
+      stepNumeric: /\bstep\s*\(\s*\w+\s*:\s*number\b/.test(src),
+      hasInfo: /\binfo\s*\(\s*\w+\s*:\s*string\b/.test(src),
+    };
+  } catch { /* no Logger — leave defaults */ }
+  _loggerContractCache.set(fw, res);
+  return res;
+}
+
+/** Deterministically fix common LLM mistakes: bare test-runner hooks in specs, and misuse of
+ * Logger.step (called with a message string but no leading step NUMBER — never compiles). When the
+ * framework's step() needs a number and info(message) exists, downgrade `.step('msg')` → `.info('msg')`
+ * (info takes exactly that one string). Framework-universal (Logger), no app specifics; can't oscillate. */
+function sanitizeFiles(files, fw) {
   const BARE_HOOK = /(^|[^.\w])(beforeAll|afterAll|beforeEach|afterEach)\s*\(/g;
+  const { stepNumeric, hasInfo } = loggerContract(fw);
+  const stepMisuse = stepNumeric && hasInfo ? /\.step\(\s*(['"`])/g : null;
   return files.map((f) => {
-    if (f.layer !== 'spec') return f;
-    const fixed = f.content.replace(BARE_HOOK, (_m, pre, hook) => `${pre}test.${hook}(`);
-    return fixed === f.content ? f : { ...f, content: fixed };
+    let c = f.content;
+    if (f.layer === 'spec') c = c.replace(BARE_HOOK, (_m, pre, hook) => `${pre}test.${hook}(`);
+    if (stepMisuse) c = c.replace(stepMisuse, '.info($1');
+    return c === f.content ? f : { ...f, content: c };
   });
 }
 
@@ -3519,7 +3543,7 @@ async function coreGenerate(fw, job, log, logs) {
         + 'Output ONLY the file(s) in the exact ===FILE:<path>|<layer>=== / ===ENDFILE=== format — no prose, no markdown, no explanation. '
         + 'Even if this case looks already covered, STILL emit the single spec test() for it so it can be de-duplicated automatically.';
       const genText = await llmGenerate(prompt, buildSystemPrompt());
-      batch = sanitizeFiles(parseFiles(genText));
+      batch = sanitizeFiles(parseFiles(genText), fw);
       if (batch.length) break;
       log(`[local] ⚠ ${tc.id}: LLM returned no parseable files (attempt ${attempt}/${GEN_ATTEMPTS})${attempt < GEN_ATTEMPTS ? ' — retrying…' : '.'}`);
     }
@@ -3680,7 +3704,7 @@ async function coreGenerate(fw, job, log, logs) {
       ourErrors.slice(0, 12).forEach((e) => log('    ' + e.trim()));
       const tsInput = findDomainFiles(fw, job);
       const fixText = await llmGenerate(buildCompilePrompt(job, tsInput.length ? tsInput : files, ourErrors.join('\n'), grounding), buildSystemPrompt());
-      const fixed = sanitizeFiles(parseFiles(fixText));
+      const fixed = sanitizeFiles(parseFiles(fixText), fw);
       if (!fixed.length) { log('[local] Compile-fix produced no parseable files — proceeding to run.'); break; }
       const cr = writeFiles(fw, fixed, baselines);
       cr.written.forEach((w) => { recordWrite(w); logWrite(w); });
@@ -3728,7 +3752,7 @@ async function coreGenerate(fw, job, log, logs) {
 
     const healInput = findDomainFiles(fw, job); // heal against the full spec on disk
     const healText = await llmGenerate(buildHealPrompt(job, healInput.length ? healInput : files, run.output, healContext, grounding), buildSystemPrompt());
-    const healed = sanitizeFiles(parseFiles(healText));
+    const healed = sanitizeFiles(parseFiles(healText), fw);
     if (!healed.length) { log('[local] Heal produced no parseable files.'); break; }
     const hr = writeFiles(fw, healed, baselines);
     hr.written.forEach((w) => { recordWrite(w); logWrite(w); });
