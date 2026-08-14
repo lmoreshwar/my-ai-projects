@@ -770,35 +770,12 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
         </section>
       </div>
 
-      {/* Info Cards */}
-      <div className="mt-10 sm:mt-16 grid grid-cols-1 md:grid-cols-3 gap-6 sm:gap-8 mb-12">
-        <div className="md:col-span-2 bg-[#f0f4f9] dark:bg-slate-900 rounded-xl p-6 sm:p-10 flex flex-col justify-between border-l-8 border-app-blue">
-          <div>
-            <h4 className="text-xl font-bold text-on-surface dark:text-white mb-3">Automated Validation Logic</h4>
-            <p className="text-slate-600 dark:text-slate-400 text-sm mb-8 leading-relaxed max-w-lg">
-              Connections are verified against a 12-point health check including latency, token permission scope, and endpoint availability.
-            </p>
-          </div>
-          <div className="flex gap-10">
-            <div className="flex flex-col">
-              <span className="text-4xl font-black text-app-blue dark:text-blue-400 leading-none">24ms</span>
-              <span className="text-[0.6875rem] font-bold uppercase tracking-widest text-slate-500 mt-2">AVG LATENCY</span>
-            </div>
-            <div className="flex flex-col">
-              <span className="text-4xl font-black text-green-600 leading-none">STABLE</span>
-              <span className="text-[0.6875rem] font-bold uppercase tracking-widest text-slate-500 mt-2">HEALTH STATUS</span>
-            </div>
-          </div>
-        </div>
-        <div className="bg-app-blue rounded-xl p-6 sm:p-8 relative overflow-hidden flex flex-col justify-end text-white">
-          <div className="absolute top-0 right-0 p-6 opacity-10">
-            <span className="material-symbols-outlined text-7xl">security</span>
-          </div>
-          <h4 className="text-lg font-bold mb-3">Encrypted Storage</h4>
-          <p className="text-white/80 text-xs leading-relaxed">
-            All API keys are AES-256 encrypted at rest and never logged in plain text.
-          </p>
-        </div>
+      {/* Compact security note */}
+      <div className="mt-8 mb-10 flex items-center gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg">
+        <span className="material-symbols-outlined text-app-blue text-lg">lock</span>
+        <p className="text-xs text-slate-500 dark:text-slate-400">
+          Connections are validated on <span className="font-semibold text-slate-600 dark:text-slate-300">Test Connection</span>, and all keys are encrypted at rest — never logged in plain text.
+        </p>
       </div>
     </div>
   );
