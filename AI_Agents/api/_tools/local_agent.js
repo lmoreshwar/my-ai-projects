@@ -2019,6 +2019,7 @@ function buildSystemPrompt() {
     'Never put business logic or methods in pages. Never put assertions in modules. Never use raw Playwright in specs. No `any`. Reuse existing files where the capabilities index shows them.',
     'LOGGER: call step()/info() ONLY on the instance `this.logger`. NEVER call `Logger.step(...)`/`Logger.info(...)` statically (they are instance methods; the static side only has create()). When adding a method to an EXISTING module, use ONLY collaborators its constructor already declares — do NOT reference this.waitHelper (or any field) that the constructor does not create.',
     'LOCATOR STANDARD (follow exactly): default to a SINGLE semantic strategy per element (getByRole/getByLabel/getByPlaceholder; app-owned data-test only when no role/label exists). Do NOT stack multiple locators by default. Add a SmartLocator.resolve fallback chain ONLY when an element is genuinely fragile, and then annotate it with a `// reason:` comment and use at most 3 strategies. Collections use plain Playwright locators, never SmartLocator.',
+    'LOCATOR DECLARATION (follow exactly — MATCH THE EXISTING PAGES IN THIS REPO): pick the ONE style the repo already uses and never mix them. (A) constructor-field style: `readonly <name>: Locator;` declared on the class AND assigned in the constructor `this.<name> = page.getByRole(...);` — EVERY declared field MUST be assigned in the constructor (strictPropertyInitialization: a declared `<name>: Locator;` with no `this.<name> = …` is a COMPILE ERROR). (B) arrow-getter style: `<name> = (): Locator => this.page.getByRole(...);` (store the page via `constructor(private readonly page: Page) {}`). NEVER leave a `Locator` field declared but uninitialized, and NEVER reference a `<page>.<name>` from a module/spec that the Page does not actually define.',
     'VALUE-INDEPENDENT LOCATORS (follow exactly): a locator must IDENTIFY an element, never encode the runtime VALUE it displays. NEVER bake a dynamic value (price, amount, total, count, date, name) into a getByText — e.g. do NOT write `getByText(\'<Label>: $12.34\')`; instead locate the element by its stable label/role/data-test (e.g. the `<label>`/row container) and ASSERT the value in the spec with `toHaveText`/`toContainText`. Baking the value into the locator makes a wrong value fail as "element not found" (unclear) and turns the spec assertion into a tautology.',
     'CALCULATED ASSERTIONS: when a value is DERIVED from others (e.g. total = subtotal + tax), do NOT assert three independently hardcoded strings. Read the parts from the page, parse the numbers, and assert the RELATIONSHIP in the spec (e.g. expect(total).toBeCloseTo(subtotal + tax)) so the test proves the computation, not a fixed snapshot. Keep any literal expected numbers in testData.json, never in a locator.',
     'DATA & CONFIG: never hardcode credentials/data. Valid credentials come from credentials(\'app\') (src/config). Negative/other data lives in src/testdata/testData.json — reuse existing keys; if you need NEW data, emit an EXTENDED testData.json (config layer) that KEEPS all existing keys and ADDS yours.',
@@ -3023,6 +3024,78 @@ function ensureReferencedLocators(fw, written, evidence = []) {
 }
 
 /**
+ * DETERMINISTIC TS2564 guarantee. Under strictPropertyInitialization every declared
+ * `X: Locator;` field MUST be assigned in the constructor. Terse models often DECLARE the field
+ * but forget `this.X = …` (and because a bare field reads as "already defined", the reference
+ * backfill skips it). This scans every written Page and, for any Locator field with no
+ * `this.X =` assignment, injects one into the constructor body — PROVEN role+name from crawl
+ * evidence when available, else name-inferred. The raw page param is in scope inside the body, so
+ * the assignment matches the page's own style. Additive to the constructor only (never rewrites a
+ * member), so it bypasses the protect-guard and the compile-fix LLM never sees the error. Generic.
+ * Returns { changed, fixed:[{page,field,proven}], backups:[relPath…] }.
+ */
+function ensurePageFieldsInitialized(fw, written, evidence = []) {
+  const root = path.resolve(fw);
+  const fixed = [];
+  const backups = [];
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+  const esc = (s) => String(s).replace(/'/g, "\\'");
+  const pageRels = [...new Set(written.filter((w) => w.layer === 'page').map((w) => w.path))];
+  for (const rel of pageRels) {
+    const abs = path.join(root, rel);
+    let src;
+    try { src = fs.readFileSync(abs, 'utf8'); } catch { continue; }
+    const ctor = /constructor\s*\(\s*(?:(?:public|private|protected|readonly)\s+)*(\w+)\s*:\s*Page\b[^)]*\)\s*\{/.exec(src);
+    if (!ctor) continue;
+    const pageParam = ctor[1];
+    const fieldRe = /\n[ \t]*(?:public\s+|private\s+|protected\s+|readonly\s+)*([a-zA-Z_]\w*)\s*:\s*Locator\s*;/g;
+    const fields = [];
+    let fm;
+    while ((fm = fieldRe.exec(src))) fields.push(fm[1]);
+    const uninit = fields.filter((f) => !new RegExp(`\\bthis\\.${f}\\s*=`).test(src));
+    if (!uninit.length) continue;
+    const bodyStart = src.indexOf('{', ctor.index);
+    let depth = 0;
+    let bodyEnd = -1;
+    for (let i = bodyStart; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}' && --depth === 0) { bodyEnd = i; break; }
+    }
+    if (bodyEnd < 0) continue;
+    const sel = (member) => {
+      const ev = bestEvidenceMatch(member, evidence);
+      const role = ev ? ev.role : inferLocatorTarget(member).role;
+      const name = ev ? ev.name : inferLocatorTarget(member).name;
+      return role
+        ? `${pageParam}.getByRole('${role}', { name: '${esc(name)}' })`
+        : `${pageParam}.getByText('${esc(name)}')`;
+    };
+    const inject = uninit.map((f) => `    this.${f} = ${sel(f)};`).join('\n');
+    const out = src.slice(0, bodyEnd) + '\n' + inject + '\n  ' + src.slice(bodyEnd);
+    const bakRel = path.join('.blast-backups', `${path.basename(rel)}.bak-${ts}`);
+    const bakAbs = path.join(root, bakRel);
+    fs.mkdirSync(path.dirname(bakAbs), { recursive: true });
+    fs.copyFileSync(abs, bakAbs);
+    fs.writeFileSync(abs, out.endsWith('\n') ? out : out + '\n', 'utf8');
+    backups.push(bakRel.replace(/\\/g, '/'));
+    for (const f of uninit) fixed.push({ page: rel, field: f, proven: !!bestEvidenceMatch(f, evidence) });
+  }
+  return { changed: fixed.length > 0, fixed, backups };
+}
+
+/** Run the deterministic field-initializer and fold its result into the run's write log/backups. */
+function applyFieldInit(fw, written, evidence, allBackups, recordWrite, log) {
+  const res = ensurePageFieldsInitialized(fw, written, evidence);
+  if (!res.changed) return;
+  allBackups.push(...res.backups);
+  const provenN = res.fixed.filter((a) => a.proven).length;
+  log(`[local]   ＋ initialized ${res.fixed.length} uninitialized Locator field(s) (${provenN} from live evidence): ${res.fixed.map((a) => `${a.field}→${a.page.split('/').pop()}`).join(', ')}`);
+  for (const page of new Set(res.fixed.map((a) => a.page))) {
+    recordWrite({ path: page, layer: 'page', reused: false, action: 'merged' });
+  }
+}
+
+/**
  * Safely write parsed files under FRAMEWORK_PATH/src.
  * - Refuses paths that escape the repo or src/.
  * - If a file already exists with identical content → REUSED (not rewritten).
@@ -3994,6 +4067,7 @@ async function coreGenerate(fw, job, log, logs) {
       recordWrite({ path: page, layer: 'page', reused: false, action: 'merged' });
     }
   }
+  applyFieldInit(fw, written, referencedEvidence, allBackups, recordWrite, log);
 
   const specPaths = () => written.filter((w) => w.layer === 'spec').map((w) => w.path);
   if (specPaths().length === 0) {
@@ -4059,6 +4133,7 @@ async function coreGenerate(fw, job, log, logs) {
           recordWrite({ path: page, layer: 'page', reused: false, action: 'merged' });
         }
       }
+      applyFieldInit(fw, written, referencedEvidence, allBackups, recordWrite, log);
       log(`[local] Applied compile-fix ${tsr + 1}/${MAX_TS_ROUNDS} to ${cr.written.length} file(s). Re-checking…`);
     }
     if (unresolvedCompileErrors.length) {
@@ -4131,6 +4206,7 @@ async function coreGenerate(fw, job, log, logs) {
         recordWrite({ path: page, layer: 'page', reused: false, action: 'merged' });
       }
     }
+    applyFieldInit(fw, written, referencedEvidence, allBackups, recordWrite, log);
     log(`[local] Applied heal ${heal}/${MAX_HEAL_ROUNDS} to ${hr.written.length} file(s). Re-running…`);
     run = await runPlaywright(fw, specPaths(), job, { applyScope: true });
     log(run.passed ? `[local] Re-run PASSED after heal ${heal}.` : `[local] Re-run ${heal} still FAILED.`);
@@ -4739,6 +4815,7 @@ module.exports = {
   ensureReferencedLocators,
   inferLocatorTarget,
   parseAriaElements,
+  ensurePageFieldsInitialized,
   pushBranch,
   discardBranch,
   resetFramework,
