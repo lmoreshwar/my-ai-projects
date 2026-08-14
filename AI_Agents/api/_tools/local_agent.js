@@ -2599,6 +2599,13 @@ function memberBlocks(src) {
     }
     if (text) { out.push({ name, text }); seen.add(name); }
   }
+  const locatorFieldRe = /\n([ \t]+)(?:public\s+|private\s+|protected\s+|readonly\s+)*([a-zA-Z_]\w*)\s*:\s*Locator\s*;/g;
+  while ((m = locatorFieldRe.exec(src))) {
+    const name = m[2];
+    if (seen.has(name)) continue;
+    out.push({ name, text: src.slice(m.index + 1, locatorFieldRe.lastIndex) });
+    seen.add(name);
+  }
   return out;
 }
 
@@ -2874,8 +2881,8 @@ function ensureReferencedLocators(fw, written, evidence = []) {
   const backups = [];
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
 
-  // Page members referenced this run, grouped by Page class name.
-  const wanted = new Map(); // className -> Set(member)
+  // Page members referenced this run, grouped by Page class name and access style.
+  const wanted = new Map(); // className -> Map(member -> { called, property })
   for (const w of written) {
     if (w.layer !== 'module' && w.layer !== 'spec') continue;
     const abs = path.join(root, w.path);
@@ -2888,7 +2895,6 @@ function ensureReferencedLocators(fw, written, evidence = []) {
     while ((d = declRe.exec(src))) varToClass.set(d[1], d[2]);
     const newRe = /\b(\w+)\s*=\s*new\s+([A-Z]\w*Page)\s*\(/g;
     while ((d = newRe.exec(src))) varToClass.set(d[1], d[2]);
-    // Page locators may be properties or getters.
     const refRe = /(?:this\.)?(\w+)\.([a-zA-Z_]\w*)\b/g;
     let r;
     while ((r = refRe.exec(src))) {
@@ -2896,8 +2902,11 @@ function ensureReferencedLocators(fw, written, evidence = []) {
       let cls = varToClass.get(varName);
       if (!cls && /Page$/.test(varName)) cls = varName.charAt(0).toUpperCase() + varName.slice(1); // fixture convention
       if (!cls || !/Page$/.test(cls)) continue;
-      if (!wanted.has(cls)) wanted.set(cls, new Set());
-      wanted.get(cls).add(member);
+      if (!wanted.has(cls)) wanted.set(cls, new Map());
+      const usage = wanted.get(cls).get(member) || { called: false, property: false };
+      if (/^\s*\(/.test(src.slice(refRe.lastIndex))) usage.called = true;
+      else usage.property = true;
+      wanted.get(cls).set(member, usage);
     }
   }
   if (!wanted.size) return { changed: false, added, backups };
@@ -2907,23 +2916,60 @@ function ensureReferencedLocators(fw, written, evidence = []) {
     let src;
     try { src = fs.readFileSync(abs, 'utf8'); } catch { continue; } // page not on disk — skip
     const have = new Set(memberBlocks(src).map((b) => b.name));
-    const missing = [...members].filter((m) => !have.has(m));
+    const missing = [...members.entries()].filter(([member]) => !have.has(member));
     if (!missing.length) continue;
-    const idx = src.lastIndexOf('}');
-    if (idx < 0) continue; // malformed page (no class body) — skip
-    const stubs = missing.map((m) => {
-      const ev = bestEvidenceMatch(m, evidence);
-      const role = ev ? ev.role : inferLocatorTarget(m).role;
-      const name = ev ? ev.name : inferLocatorTarget(m).name;
+    const constructor = /constructor\s*\(\s*(?:(?:public|private|protected|readonly)\s+)*(\w+)\s*:\s*Page\b[^)]*\)\s*\{/.exec(src);
+    if (!constructor) continue;
+    const pageParam = constructor[1];
+    const constructorParam = constructor[0].match(/\(\s*([^:)]+)\s*:\s*Page\b/);
+    const storesPage = constructorParam && /\b(?:public|private|protected|readonly)\b/.test(constructorParam[1]);
+    const properties = missing.filter(([, usage]) => usage.property);
+    const getters = missing.filter(([, usage]) => usage.called && !usage.property);
+    const selector = (member, pageRef) => {
+      const ev = bestEvidenceMatch(member, evidence);
+      const role = ev ? ev.role : inferLocatorTarget(member).role;
+      const name = ev ? ev.name : inferLocatorTarget(member).name;
       const esc = (s) => String(s).replace(/'/g, "\\'");
-      const sel = role
-        ? `this.page.getByRole('${role}', { name: '${esc(name)}' })`
-        : `this.page.getByText('${esc(name)}')`;
-      const note = ev ? 'from live evidence (proven role+name)' : 'inferred (no evidence match) — verify/heal';
-      added.push({ page: `src/pages/${cls}.ts`, member: m, proven: !!ev });
-      return `    // auto-added locator (${note})\n    ${m} = (): Locator => ${sel};`;
-    });
-    let out = src.slice(0, idx) + '\n' + stubs.join('\n\n') + '\n' + src.slice(idx);
+      return role
+        ? `${pageRef}.getByRole('${role}', { name: '${esc(name)}' })`
+        : `${pageRef}.getByText('${esc(name)}')`;
+    };
+    let out = src;
+    if (getters.length) {
+      if (!storesPage) {
+        const pageParamRe = new RegExp(`(constructor\\s*\\(\\s*)(?:(?:public|private|protected|readonly)\\s+)*${pageParam}\\s*:\\s*Page\\b`);
+        out = out.replace(pageParamRe, `$1private readonly ${pageParam}: Page`);
+      }
+      const idx = out.lastIndexOf('}');
+      if (idx < 0) continue;
+      const stubs = getters.map(([member]) => `    ${member} = (): Locator => ${selector(member, `this.${pageParam}`)};`);
+      out = out.slice(0, idx) + '\n' + stubs.join('\n\n') + '\n' + out.slice(idx);
+    }
+    if (properties.length) {
+      const currentConstructor = /constructor\s*\([^)]*\)\s*\{/.exec(out);
+      if (!currentConstructor) continue;
+      const bodyStart = out.indexOf('{', currentConstructor.index);
+      let depth = 0;
+      let bodyEnd = -1;
+      for (let index = bodyStart; index < out.length; index++) {
+        if (out[index] === '{') depth++;
+        if (out[index] === '}') {
+          depth--;
+          if (depth === 0) { bodyEnd = index; break; }
+        }
+      }
+      if (bodyEnd < 0) continue;
+      const fields = properties.map(([member]) => `    readonly ${member}: Locator;`);
+      const assignments = properties.map(([member]) => `        this.${member} = ${selector(member, pageParam)};`);
+      out = out.slice(0, bodyEnd) + '\n' + assignments.join('\n') + '\n    ' + out.slice(bodyEnd);
+      const classEnd = out.lastIndexOf('}');
+      if (classEnd < 0) continue;
+      out = out.slice(0, classEnd) + '\n' + fields.join('\n') + '\n' + out.slice(classEnd);
+    }
+    for (const [member] of missing) {
+      const ev = bestEvidenceMatch(member, evidence);
+      added.push({ page: `src/pages/${cls}.ts`, member, proven: !!ev });
+    }
     if (!/\bLocator\b/.test(out.slice(0, out.indexOf('export')))) {
       out = /import\s*\{[^}]*\bPage\b[^}]*\}\s*from\s*'@playwright\/test'/.test(out)
         ? out.replace(/(import\s*\{)([^}]*\bPage\b[^}]*)(\}\s*from\s*'@playwright\/test')/, (mm, a, b, c) => `${a}${/\bLocator\b/.test(b) ? b : ` Locator,${b}`}${c}`)
@@ -3890,6 +3936,9 @@ async function coreGenerate(fw, job, log, logs) {
     allBackups.push(...locReg.backups);
     const provenN = locReg.added.filter((a) => a.proven).length;
     log(`[local]   ＋ backfilled ${locReg.added.length} referenced-but-missing locator(s) (${provenN} from live evidence): ${locReg.added.map((a) => `${a.member}→${a.page.split('/').pop()}`).join(', ')}`);
+    for (const page of new Set(locReg.added.map((a) => a.page))) {
+      recordWrite({ path: page, layer: 'page', reused: false, action: 'merged' });
+    }
   }
 
   const specPaths = () => written.filter((w) => w.layer === 'spec').map((w) => w.path);
@@ -3905,6 +3954,7 @@ async function coreGenerate(fw, job, log, logs) {
   if (hasTypeScript(fw)) {
     const MAX_TS_ROUNDS = 3;
     const seenErrorSigs = new Set(); // fingerprints of prior error sets — detect no-progress/oscillation
+    let unresolvedCompileErrors = [];
     for (let tsr = 0; tsr <= MAX_TS_ROUNDS; tsr++) {
       const tsc = await typeCheck(fw);
       const ourErrors = tscErrorsForFiles(tsc.output, written.map((w) => w.path));
@@ -3918,11 +3968,13 @@ async function coreGenerate(fw, job, log, logs) {
       const sig = ourErrors.map((e) => e.trim()).sort().join('\n');
       if (seenErrorSigs.has(sig)) {
         log(`[local] Compile-fix made no progress (same ${ourErrors.length} error(s) recurring — stuck/oscillating) — stopping early to save time and proceeding to run.`);
+        unresolvedCompileErrors = ourErrors;
         break;
       }
       seenErrorSigs.add(sig);
       if (tsr === MAX_TS_ROUNDS) {
-        log(`[local] Type-check still failing after ${MAX_TS_ROUNDS} compile-fix round(s) — proceeding to run so Playwright can surface the runtime detail.`);
+        log(`[local] Type-check still failing after ${MAX_TS_ROUNDS} compile-fix round(s).`);
+        unresolvedCompileErrors = ourErrors;
         break;
       }
       log(`[local] ✗ Type-check found ${ourErrors.length} compile error(s) in generated code — fixing ALL before running:`);
@@ -3930,7 +3982,11 @@ async function coreGenerate(fw, job, log, logs) {
       const tsInput = findDomainFiles(fw, job);
       const fixText = await llmGenerate(buildCompilePrompt(job, tsInput.length ? tsInput : files, ourErrors.join('\n'), grounding), buildSystemPrompt());
       const fixed = sanitizeFiles(parseFiles(fixText), fw);
-      if (!fixed.length) { log('[local] Compile-fix produced no parseable files — proceeding to run.'); break; }
+      if (!fixed.length) {
+        log('[local] Compile-fix produced no parseable files.');
+        unresolvedCompileErrors = ourErrors;
+        break;
+      }
       const cr = writeFiles(fw, fixed, baselines);
       cr.written.forEach((w) => { recordWrite(w); logWrite(w); });
       allBackups.push(...cr.backups);
@@ -3945,8 +4001,26 @@ async function coreGenerate(fw, job, log, logs) {
       if (locC.changed) {
         allBackups.push(...locC.backups);
         log(`[local]   ＋ backfilled ${locC.added.length} referenced-but-missing locator(s) during compile-fix: ${locC.added.map((a) => a.member).join(', ')}`);
+        for (const page of new Set(locC.added.map((a) => a.page))) {
+          recordWrite({ path: page, layer: 'page', reused: false, action: 'merged' });
+        }
       }
       log(`[local] Applied compile-fix ${tsr + 1}/${MAX_TS_ROUNDS} to ${cr.written.length} file(s). Re-checking…`);
+    }
+    if (unresolvedCompileErrors.length) {
+      log(`[local] Type-check remains invalid — skipping Playwright and self-heal: ${unresolvedCompileErrors.length} generated error(s).`);
+      return {
+        generatedFiles: written,
+        reusedFiles: [],
+        backups: allBackups,
+        executionStatus: 'FAILED',
+        reportUrl: '',
+        reportSummary: null,
+        requestedCases: requestedIds,
+        missingCases: requestedIds,
+        verified: false,
+        logs,
+      };
     }
   }
 
@@ -3999,6 +4073,9 @@ async function coreGenerate(fw, job, log, logs) {
     if (locHeal.changed) {
       allBackups.push(...locHeal.backups);
       log(`[local]   ＋ backfilled ${locHeal.added.length} referenced-but-missing locator(s) during heal: ${locHeal.added.map((a) => a.member).join(', ')}`);
+      for (const page of new Set(locHeal.added.map((a) => a.page))) {
+        recordWrite({ path: page, layer: 'page', reused: false, action: 'merged' });
+      }
     }
     log(`[local] Applied heal ${heal}/${MAX_HEAL_ROUNDS} to ${hr.written.length} file(s). Re-running…`);
     run = await runPlaywright(fw, specPaths(), job, { applyScope: true });
