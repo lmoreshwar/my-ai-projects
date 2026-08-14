@@ -351,8 +351,10 @@ async function dispatchWorkflow(job, git) {
 
   try {
     const inputs = { job_id: String(job.jobId), job_payload: JSON.stringify(payload), browser: job.browser || 'Chrome' };
-    // Level 3 (agentic live-drive codegen) is opt-in per job; the runner only installs @playwright/cli + xvfb when on.
-    if (job.level3 === true || String(job.level3).toLowerCase() === 'true') inputs.level3 = 'true';
+    // Level 3 (agentic live-drive codegen) is ON by default — it mirrors the local agent's
+    // evidence-based, verify-before-write flow. Only an explicit false opts out.
+    if (job.level3 === false || String(job.level3).toLowerCase() === 'false') inputs.level3 = 'false';
+    else inputs.level3 = 'true';
     await axios.post(
       `${API}/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`,
       { ref, inputs },
