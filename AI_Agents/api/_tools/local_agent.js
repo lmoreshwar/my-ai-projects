@@ -2419,6 +2419,43 @@ function mergeNewTestsIntoSpec(prior, llmContent, wantId) {
 }
 
 /**
+ * FEATURE ISOLATION recovery. Each feature owns its OWN spec with its OWN TC_001, TC_002…
+ * sequence (login.spec.ts has its TC_001; logout/dashboard.spec.ts restarts at TC_001). Terse
+ * models sometimes write a genuinely-new feature's test into a DIFFERENT feature's existing spec
+ * (e.g. a Logout case dumped into login.spec.ts) and even reproduce that spec's tests, colliding
+ * ids. This keeps ONLY the genuinely-new block(s) — the ones that do NOT reproduce a test already
+ * in the invaded spec — and renumbers them to a fresh per-file TC_001… sequence so they can live
+ * in the feature's own spec. Returns the isolated spec content, or null if nothing new to move.
+ * Generic: pure id/block bookkeeping, no app-specific values.
+ */
+function isolateNewTestsToOwnSpec(emitted, invaded, ownSpecPrior) {
+  const blocks = specTestFullBlocks(emitted);
+  if (!blocks.length) return null;
+  const invadedTitles = specIdTitleMap(invaded);
+  const stripId = (t) => normalizeText(String(t).replace(/^\s*\[?\s*TC[_-]?\d+[A-Za-z_]*\]?\s*/i, ''));
+  // Drop blocks that merely reproduce a test already living in the invaded spec.
+  let content = emitted;
+  let kept = 0;
+  for (const b of blocks) {
+    const id = b.id ? normId(b.id) : '';
+    const reproduces = id && invadedTitles.has(id) && titleOverlap(stripId(b.title), invadedTitles.get(id)) >= 0.5;
+    if (reproduces) content = content.replace(b.source, () => '');
+    else kept++;
+  }
+  if (!kept) return null;
+  // Renumber the surviving tests to a fresh per-file sequence, continuing after any tests
+  // already present in the feature's own spec (append-only within its own file).
+  const used = new Set(specTestIds(ownSpecPrior || ''));
+  for (const b of specTestFullBlocks(content)) {
+    const free = nextFreeTcId(used);
+    used.add(free);
+    const nextSource = b.source.replace(/TC[_-]?\d+[A-Za-z_]*/i, () => free);
+    if (nextSource !== b.source) content = content.replace(b.source, () => nextSource);
+  }
+  return content.replace(/\n{3,}/g, '\n\n');
+}
+
+/**
  * Canonicalize a data-source expression to a stable key so two variables that point at
  * the SAME underlying record collapse to one identity. This is what lets a locked-user
  * case written as `testData.invalidLogins.find(l => l.username === 'locked_out_user')`
@@ -3824,13 +3861,30 @@ async function coreGenerate(fw, job, log, logs) {
     }
     batch = batch.filter((f) => {
       if (f.layer !== 'spec') return true;
+      // FEATURE ISOLATION: each feature owns its own spec with its own TC_001, TC_002… sequence.
+      // If the LLM wrote the new case into ANOTHER feature's existing spec (e.g. a Logout case
+      // dumped into login.spec.ts) instead of this feature's own spec, move ONLY the new test(s)
+      // to the feature's own spec (targetSpecRel) with fresh per-file numbering and leave the
+      // invaded spec completely untouched — never override or renumber another feature's tests.
+      if (targetSpecRel && f.rel !== targetSpecRel) {
+        const invaded = safeRead(path.join(fw, f.rel), 200000);
+        if (invaded) {
+          const ownPrior = safeRead(path.join(fw, targetSpecRel), 200000);
+          const isolated = isolateNewTestsToOwnSpec(f.content, invaded, ownPrior);
+          if (isolated) {
+            log(`[local] ↪ ${tc.id}: LLM wrote into ${f.rel} (another feature's spec) — moved the new case to its own spec ${targetSpecRel}; ${path.basename(f.rel)} left untouched.`);
+            f.rel = targetSpecRel;
+            f.content = isolated;
+          }
+        }
+      }
+      const priorForFile = safeRead(path.join(fw, f.rel), 200000);
       const dups = duplicateSpecIds(f.content);
       if (dups.length) { log(`[local] ⚠ ${tc.id}: rejected spec ${f.rel} — duplicate id(s) ${dups.join(', ')}.`); return false; }
       // APPEND-ONLY GUARD: compare against the CURRENT content of THIS SAME spec file, not
       // the resolved-domain spec. The LLM may legitimately target a different, correct spec
       // (e.g. login security cases → login.spec.ts even when the job's anchor domain is
       // InventoryAccess); comparing across files falsely flags unrelated tests as "removed".
-      const priorForFile = safeRead(path.join(fw, f.rel), 200000);
       const renamed = renumberedTests(priorForFile, f.content);
       if (renamed.length) {
         // RECOVERY: terse models (e.g. GPT-5.x) sometimes emit ONLY the new test,
