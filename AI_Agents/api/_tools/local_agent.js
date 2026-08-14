@@ -2793,6 +2793,106 @@ function ensureFixturesRegistered(fw, written) {
   return { changed: true, added, backup: bakRel };
 }
 
+/** Humanize a locator member name into a likely accessible name + role. `logoutButton` →
+ * {role:'button', name:'Logout'}; `usernameInput` → {role:'textbox', name:'Username'};
+ * `profileMenuTab` → {role:'tab', name:'Profile Menu'}. Generic — drives the stub selector below. */
+function inferLocatorTarget(member) {
+  const ROLE_SUFFIX = [
+    [/link$/i, 'link'], [/button$/i, 'button'], [/tab$/i, 'tab'],
+    [/menu ?item$|menuitem$/i, 'menuitem'], [/checkbox$/i, 'checkbox'], [/radio$/i, 'radio'],
+    [/(dropdown|combobox|select)$/i, 'combobox'], [/(textbox|input|field)$/i, 'textbox'],
+    [/(heading|title)$/i, 'heading'], [/option$/i, 'option'], [/(menu|icon|toggle)$/i, 'button'],
+  ];
+  let role = null;
+  let stripped = member;
+  for (const [re, r] of ROLE_SUFFIX) {
+    if (re.test(member)) { role = r; stripped = member.replace(re, ''); break; }
+  }
+  const words = stripped.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+  const name = words.map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+  return { role, name };
+}
+
+/**
+ * DETERMINISTIC locator backfill — closes the LLM gap where a generated Module/Spec references a
+ * Page getter that the Page class never defined (TS2339 "Property 'X' does not exist on type
+ * 'YPage'" → runtime "Cannot read properties of undefined"). Scans every written Module/Spec for
+ * `<var>.<member>(` / `this.<var>.<member>(` accesses on a `*Page` object, resolves the Page class
+ * (from the module's `private readonly <var>: <Class>;` decl or the `<var>Page`→`<Class>Page`
+ * fixture convention), and — for any referenced member missing from that Page — APPENDS a locator
+ * getter with an inferred role/name selector (real evidence is preferred upstream; this only
+ * prevents a hard compile/undefined crash, leaving a healable locator). Purely additive: never
+ * rewrites existing members, so it bypasses the protect-guard safely and is idempotent. Generic.
+ * Returns { changed, added:[{page,member}], backups:[relPath…] }.
+ */
+function ensureReferencedLocators(fw, written) {
+  const root = path.resolve(fw);
+  const pagesDir = path.join(root, 'src', 'pages');
+  const added = [];
+  const backups = [];
+  const ts = new Date().toISOString().replace(/[:.]/g, '-');
+
+  // Page members referenced this run, grouped by Page class name.
+  const wanted = new Map(); // className -> Set(member)
+  for (const w of written) {
+    if (w.layer !== 'module' && w.layer !== 'spec') continue;
+    const abs = path.join(root, w.path);
+    let src;
+    try { src = fs.readFileSync(abs, 'utf8'); } catch { continue; }
+    // var -> Class from `readonly headerPage: HeaderPage;` and `new HeaderPage(`.
+    const varToClass = new Map();
+    let d;
+    const declRe = /(?:private|protected|public|readonly|\s)*\b(\w+)\s*:\s*([A-Z]\w*Page)\b/g;
+    while ((d = declRe.exec(src))) varToClass.set(d[1], d[2]);
+    const newRe = /\b(\w+)\s*=\s*new\s+([A-Z]\w*Page)\s*\(/g;
+    while ((d = newRe.exec(src))) varToClass.set(d[1], d[2]);
+    // References: this.headerPage.menuButton( / headerPage.menuButton(
+    const refRe = /(?:this\.)?(\w+)\.([a-zA-Z_]\w*)\s*\(/g;
+    let r;
+    while ((r = refRe.exec(src))) {
+      const [, varName, member] = r;
+      let cls = varToClass.get(varName);
+      if (!cls && /Page$/.test(varName)) cls = varName.charAt(0).toUpperCase() + varName.slice(1); // fixture convention
+      if (!cls || !/Page$/.test(cls)) continue;
+      if (!wanted.has(cls)) wanted.set(cls, new Set());
+      wanted.get(cls).add(member);
+    }
+  }
+  if (!wanted.size) return { changed: false, added, backups };
+
+  for (const [cls, members] of wanted) {
+    const abs = path.join(pagesDir, `${cls}.ts`);
+    let src;
+    try { src = fs.readFileSync(abs, 'utf8'); } catch { continue; } // page not on disk — skip
+    const have = new Set(memberBlocks(src).map((b) => b.name));
+    const missing = [...members].filter((m) => !have.has(m));
+    if (!missing.length) continue;
+    const stubs = missing.map((m) => {
+      const { role, name } = inferLocatorTarget(m);
+      const sel = role
+        ? `this.page.getByRole('${role}', { name: '${name.replace(/'/g, "\\'")}' })`
+        : `this.page.getByText('${name.replace(/'/g, "\\'")}')`;
+      return `    // auto-added stub locator (no captured evidence) — verify/heal selector\n    ${m} = (): Locator => ${sel};`;
+    });
+    const idx = src.lastIndexOf('}');
+    if (idx < 0) continue;
+    let out = src.slice(0, idx) + '\n' + stubs.join('\n\n') + '\n' + src.slice(idx);
+    if (!/\bLocator\b/.test(out.slice(0, out.indexOf('export')))) {
+      out = /import\s*\{[^}]*\bPage\b[^}]*\}\s*from\s*'@playwright\/test'/.test(out)
+        ? out.replace(/(import\s*\{)([^}]*\bPage\b[^}]*)(\}\s*from\s*'@playwright\/test')/, (mm, a, b, c) => `${a}${/\bLocator\b/.test(b) ? b : ` Locator,${b}`}${c}`)
+        : `import { Locator } from '@playwright/test';\n${out}`;
+    }
+    const bakRel = path.join('.blast-backups', `${cls}.ts.bak-${ts}`);
+    const bakAbs = path.join(root, bakRel);
+    fs.mkdirSync(path.dirname(bakAbs), { recursive: true });
+    fs.copyFileSync(abs, bakAbs);
+    fs.writeFileSync(abs, out.endsWith('\n') ? out : out + '\n', 'utf8');
+    backups.push(bakRel.replace(/\\/g, '/'));
+    missing.forEach((m) => added.push({ page: `src/pages/${cls}.ts`, member: m }));
+  }
+  return { changed: added.length > 0, added, backups };
+}
+
 /**
  * Safely write parsed files under FRAMEWORK_PATH/src.
  * - Refuses paths that escape the repo or src/.
@@ -3734,6 +3834,15 @@ async function coreGenerate(fw, job, log, logs) {
     recordWrite({ path: 'src/fixtures/index.ts', layer: 'fixture', reused: false, action: 'overwritten' });
   }
 
+  // Deterministically backfill any Page locator that a generated Module/Spec references but the
+  // Page class never defined (LLM page/module drift) — prevents the TS2339 + runtime "undefined"
+  // crash that the protect-guard can't fix. Additive only; leaves a healable stub selector.
+  const locReg = ensureReferencedLocators(fw, written);
+  if (locReg.changed) {
+    allBackups.push(...locReg.backups);
+    log(`[local]   ＋ backfilled ${locReg.added.length} referenced-but-missing locator(s): ${locReg.added.map((a) => `${a.member}→${a.page.split('/').pop()}`).join(', ')}`);
+  }
+
   const specPaths = () => written.filter((w) => w.layer === 'spec').map((w) => w.path);
   if (specPaths().length === 0) {
     log('[local] No spec file generated (LLM output likely truncated) — requested case(s) NOT automated. Verification FAILED; no PR will be opened.');
@@ -3783,6 +3892,11 @@ async function coreGenerate(fw, job, log, logs) {
         log(`[local]   ＋ registered ${fxC.added.length} new fixture(s) during compile-fix: ${fxC.added.join(', ')}`);
         recordWrite({ path: 'src/fixtures/index.ts', layer: 'fixture', reused: false, action: 'overwritten' });
       }
+      const locC = ensureReferencedLocators(fw, written);
+      if (locC.changed) {
+        allBackups.push(...locC.backups);
+        log(`[local]   ＋ backfilled ${locC.added.length} referenced-but-missing locator(s) during compile-fix: ${locC.added.map((a) => a.member).join(', ')}`);
+      }
       log(`[local] Applied compile-fix ${tsr + 1}/${MAX_TS_ROUNDS} to ${cr.written.length} file(s). Re-checking…`);
     }
   }
@@ -3831,6 +3945,11 @@ async function coreGenerate(fw, job, log, logs) {
       if (fxHeal.backup) allBackups.push(fxHeal.backup);
       log(`[local]   ＋ registered ${fxHeal.added.length} new fixture(s) during heal: ${fxHeal.added.join(', ')}`);
       recordWrite({ path: 'src/fixtures/index.ts', layer: 'fixture', reused: false, action: 'overwritten' });
+    }
+    const locHeal = ensureReferencedLocators(fw, written);
+    if (locHeal.changed) {
+      allBackups.push(...locHeal.backups);
+      log(`[local]   ＋ backfilled ${locHeal.added.length} referenced-but-missing locator(s) during heal: ${locHeal.added.map((a) => a.member).join(', ')}`);
     }
     log(`[local] Applied heal ${heal}/${MAX_HEAL_ROUNDS} to ${hr.written.length} file(s). Re-running…`);
     run = await runPlaywright(fw, specPaths(), job, { applyScope: true });
@@ -4437,6 +4556,8 @@ module.exports = {
   buildFeatureModel,
   compactJourney,
   ensureFixturesRegistered,
+  ensureReferencedLocators,
+  inferLocatorTarget,
   pushBranch,
   discardBranch,
   resetFramework,
