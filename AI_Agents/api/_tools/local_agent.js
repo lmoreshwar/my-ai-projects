@@ -2108,6 +2108,7 @@ function buildCompilePrompt(job, files, tscErrors, g) {
     '- "Property \'<m>\' does not exist on type \'<T>\'": you called a method/property that does not exist. If <T> is a UTIL WRAPPER (Actions/WaitHelper/WorkflowActions), replace it with a REAL method from the Wrapper API contract below, or use the `page` object. If <T> is a DOMAIN Page/Module, either call an existing method OR DEFINE <m> on that class and emit its FULL extended file. Never keep an invented call.',
     '- "Expected N arguments, but got M": pass every REQUIRED argument with a concrete value (e.g. `goto(url)` needs a real url); never call with a missing/undefined argument.',
     '- "Argument of type \'X\' is not assignable to parameter of type \'Y\'": pass the correct type (e.g. a string key to `press(key: string)`, not an object; a Locator where a Locator is expected).',
+    '- IF THE SAME CALL FLIP-FLOPS between "Expected 2 arguments, but got 1" and "type \'string\' is not assignable to parameter of type \'number\'" (i.e. adding a text 2nd argument then triggers a number error): you are calling the WRONG method. Its real 2nd parameter is a NUMBER (an index/timeout/count option), so it is NOT a method for entering text. Do NOT toggle the argument. Look up the Wrapper API contract and switch to the method whose signature actually takes the text VALUE — to type into a field use the fill/type method with a `(target, value: string)` signature — then pass the string once. Never keep oscillating.',
     '- "Cannot find name \'<n>\'" / "Cannot find module": add the missing import from the SAME path the exemplars use; do not invent a module path.',
     '- Property error on testData (e.g. testData.<a>.<b>): add `<a>.<b>` to the emitted testData.json with a concrete valid value; keep every existing key.',
     '- Type/return mismatches: make the signature and its usage agree; never use `any` or `// @ts-ignore` to silence an error — fix the real cause.',
@@ -3654,6 +3655,7 @@ async function coreGenerate(fw, job, log, logs) {
   // instead of discovering them one runtime crash at a time. Generic; skipped when TS is absent.
   if (hasTypeScript(fw)) {
     const MAX_TS_ROUNDS = 3;
+    const seenErrorSigs = new Set(); // fingerprints of prior error sets — detect no-progress/oscillation
     for (let tsr = 0; tsr <= MAX_TS_ROUNDS; tsr++) {
       const tsc = await typeCheck(fw);
       const ourErrors = tscErrorsForFiles(tsc.output, written.map((w) => w.path));
@@ -3661,6 +3663,15 @@ async function coreGenerate(fw, job, log, logs) {
         if (tsr > 0) log('[local] Type-check clean ✓ — generated code compiles against the real framework API.');
         break;
       }
+      // Early-exit on no progress: if this exact error set was seen before, the compile-fix is
+      // stuck (identical repeat or an arity↔type oscillation) — more rounds only burn LLM time and
+      // suite re-runs without converging. Stop now and let Playwright surface the runtime detail.
+      const sig = ourErrors.map((e) => e.trim()).sort().join('\n');
+      if (seenErrorSigs.has(sig)) {
+        log(`[local] Compile-fix made no progress (same ${ourErrors.length} error(s) recurring — stuck/oscillating) — stopping early to save time and proceeding to run.`);
+        break;
+      }
+      seenErrorSigs.add(sig);
       if (tsr === MAX_TS_ROUNDS) {
         log(`[local] Type-check still failing after ${MAX_TS_ROUNDS} compile-fix round(s) — proceeding to run so Playwright can surface the runtime detail.`);
         break;
@@ -3694,6 +3705,7 @@ async function coreGenerate(fw, job, log, logs) {
   // Capped at 2: each round re-runs the full Playwright suite (slow), and beyond 2 rounds the
   // LLM rarely converges — better to open a partial PR for what passes and defer the rest.
   const MAX_HEAL_ROUNDS = 3;
+  const seenFailSigs = new Set(); // fingerprints of prior failure sets — detect no-progress heals
   for (let heal = 1; !run.passed && heal <= MAX_HEAL_ROUNDS; heal++) {
     const errorContext = readErrorContext(fw);
     // The exact per-test error from the JSON report — guarantees the heal sees the real
@@ -3703,7 +3715,17 @@ async function coreGenerate(fw, job, log, logs) {
       .map((t) => `### ${t.title}\n${String(t.error || '').trim()}`)
       .filter((s) => s.trim())
       .join('\n\n');
+    // Early-exit on no progress: if the same tests fail with the same errors as a prior round,
+    // the heal is stuck — re-running the full suite again just wastes time. Stop and open a
+    // partial PR for what already passes.
+    const failSig = failText.replace(/:\d+:\d+/g, '').replace(/\s+/g, ' ').trim();
+    if (failSig && seenFailSigs.has(failSig)) {
+      log('[local] Heal made no progress (same failure(s) recurring) — stopping early to save time.');
+      break;
+    }
+    if (failSig) seenFailSigs.add(failSig);
     const healContext = [failText, errorContext].filter(Boolean).join('\n\n');
+
     const healInput = findDomainFiles(fw, job); // heal against the full spec on disk
     const healText = await llmGenerate(buildHealPrompt(job, healInput.length ? healInput : files, run.output, healContext, grounding), buildSystemPrompt());
     const healed = sanitizeFiles(parseFiles(healText));
