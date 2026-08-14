@@ -998,9 +998,18 @@ async function captureCliEvidence(fw, urls, opts = {}) {
     }
     for (const url of list) {
       await runCli(fw, session, ['goto', url]);
-      const raw = await runCli(fw, session, ['snapshot']);
-      const m = raw.match(/```yaml\n([\s\S]*?)```/);
-      const snap = (m ? m[1] : raw).trim().slice(0, 4000);
+      // SPAs (OrangeHRM, Salesforce, most React/Angular apps) render AFTER navigation, so an
+      // immediate snapshot returns an empty aria tree ("0 screens"). Retry until the tree has
+      // real structure (or the budget runs out) so codegen gets PROVEN element refs.
+      let snap = '';
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const raw = await runCli(fw, session, ['snapshot']);
+        const m = raw.match(/```yaml\n([\s\S]*?)```/);
+        const s = (m ? m[1] : raw).trim();
+        snap = s.slice(0, 4000);
+        if (s.split('\n').filter((l) => /^\s*-\s+\w/.test(l)).length >= 3) break; // rendered
+        await new Promise((r) => setTimeout(r, 800));
+      }
       if (snap) { evidence.push({ url, snapshot: snap }); log(`[cli] Captured @playwright/cli snapshot for ${url} (${snap.length} chars).`); }
     }
   } catch { /* best-effort */ } finally {
@@ -2813,6 +2822,39 @@ function inferLocatorTarget(member) {
   return { role, name };
 }
 
+/** Parse {role, name} pairs from aria-snapshot text (the crawler's reveal-aware snapshots and the
+ * live walk both emit this). Used to ground backfilled locators in REAL observed elements. */
+function parseAriaElements(text) {
+  const out = [];
+  if (!text) return out;
+  const seen = new Set();
+  for (const line of String(text).split('\n')) {
+    const m = line.match(/^\s*-\s+([a-zA-Z]+)(?:\s+"([^"]*)")?/);
+    if (!m || !m[2]) continue;
+    const key = `${m[1]}|${m[2]}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ role: m[1], name: m[2] });
+  }
+  return out;
+}
+
+/** Find the observed element whose accessible name best matches a page-getter name. `logoutButton`
+ * → the real `menuitem "Logout"` (so the backfill uses the PROVEN role+name, not a guess). */
+function bestEvidenceMatch(member, evidence) {
+  if (!evidence || !evidence.length) return null;
+  const target = inferLocatorTarget(member).name.toLowerCase().replace(/\s+/g, '');
+  if (!target) return null;
+  let contains = null;
+  for (const e of evidence) {
+    if (!e.name) continue;
+    const en = e.name.toLowerCase().replace(/\s+/g, '');
+    if (en === target) return e;                                   // exact accessible-name match wins
+    if (!contains && (en.includes(target) || target.includes(en))) contains = e;
+  }
+  return contains;
+}
+
 /**
  * DETERMINISTIC locator backfill — closes the LLM gap where a generated Module/Spec references a
  * Page getter that the Page class never defined (TS2339 "Property 'X' does not exist on type
@@ -2820,12 +2862,12 @@ function inferLocatorTarget(member) {
  * `<var>.<member>(` / `this.<var>.<member>(` accesses on a `*Page` object, resolves the Page class
  * (from the module's `private readonly <var>: <Class>;` decl or the `<var>Page`→`<Class>Page`
  * fixture convention), and — for any referenced member missing from that Page — APPENDS a locator
- * getter with an inferred role/name selector (real evidence is preferred upstream; this only
- * prevents a hard compile/undefined crash, leaving a healable locator). Purely additive: never
- * rewrites existing members, so it bypasses the protect-guard safely and is idempotent. Generic.
- * Returns { changed, added:[{page,member}], backups:[relPath…] }.
+ * getter. When `evidence` (observed {role,name} from the crawl) contains a matching element the
+ * selector uses its PROVEN role+name; otherwise it falls back to name-suffix inference. Purely
+ * additive: never rewrites existing members, so it bypasses the protect-guard safely and is
+ * idempotent. Generic. Returns { changed, added:[{page,member,proven}], backups:[relPath…] }.
  */
-function ensureReferencedLocators(fw, written) {
+function ensureReferencedLocators(fw, written, evidence = []) {
   const root = path.resolve(fw);
   const pagesDir = path.join(root, 'src', 'pages');
   const added = [];
@@ -2867,15 +2909,20 @@ function ensureReferencedLocators(fw, written) {
     const have = new Set(memberBlocks(src).map((b) => b.name));
     const missing = [...members].filter((m) => !have.has(m));
     if (!missing.length) continue;
-    const stubs = missing.map((m) => {
-      const { role, name } = inferLocatorTarget(m);
-      const sel = role
-        ? `this.page.getByRole('${role}', { name: '${name.replace(/'/g, "\\'")}' })`
-        : `this.page.getByText('${name.replace(/'/g, "\\'")}')`;
-      return `    // auto-added stub locator (no captured evidence) — verify/heal selector\n    ${m} = (): Locator => ${sel};`;
-    });
     const idx = src.lastIndexOf('}');
-    if (idx < 0) continue;
+    if (idx < 0) continue; // malformed page (no class body) — skip
+    const stubs = missing.map((m) => {
+      const ev = bestEvidenceMatch(m, evidence);
+      const role = ev ? ev.role : inferLocatorTarget(m).role;
+      const name = ev ? ev.name : inferLocatorTarget(m).name;
+      const esc = (s) => String(s).replace(/'/g, "\\'");
+      const sel = role
+        ? `this.page.getByRole('${role}', { name: '${esc(name)}' })`
+        : `this.page.getByText('${esc(name)}')`;
+      const note = ev ? 'from live evidence (proven role+name)' : 'inferred (no evidence match) — verify/heal';
+      added.push({ page: `src/pages/${cls}.ts`, member: m, proven: !!ev });
+      return `    // auto-added locator (${note})\n    ${m} = (): Locator => ${sel};`;
+    });
     let out = src.slice(0, idx) + '\n' + stubs.join('\n\n') + '\n' + src.slice(idx);
     if (!/\bLocator\b/.test(out.slice(0, out.indexOf('export')))) {
       out = /import\s*\{[^}]*\bPage\b[^}]*\}\s*from\s*'@playwright\/test'/.test(out)
@@ -2888,7 +2935,6 @@ function ensureReferencedLocators(fw, written) {
     fs.copyFileSync(abs, bakAbs);
     fs.writeFileSync(abs, out.endsWith('\n') ? out : out + '\n', 'utf8');
     backups.push(bakRel.replace(/\\/g, '/'));
-    missing.forEach((m) => added.push({ page: `src/pages/${cls}.ts`, member: m }));
   }
   return { changed: added.length > 0, added, backups };
 }
@@ -3836,11 +3882,14 @@ async function coreGenerate(fw, job, log, logs) {
 
   // Deterministically backfill any Page locator that a generated Module/Spec references but the
   // Page class never defined (LLM page/module drift) — prevents the TS2339 + runtime "undefined"
-  // crash that the protect-guard can't fix. Additive only; leaves a healable stub selector.
-  const locReg = ensureReferencedLocators(fw, written);
+  // crash that the protect-guard can't fix. Grounded in the crawl's observed elements (reveal-aware
+  // snapshot + live walk/trace) so the selector uses the PROVEN role+name; additive only.
+  const referencedEvidence = parseAriaElements([snapshot, liveWalk, liveTrace].filter(Boolean).join('\n'));
+  const locReg = ensureReferencedLocators(fw, written, referencedEvidence);
   if (locReg.changed) {
     allBackups.push(...locReg.backups);
-    log(`[local]   ＋ backfilled ${locReg.added.length} referenced-but-missing locator(s): ${locReg.added.map((a) => `${a.member}→${a.page.split('/').pop()}`).join(', ')}`);
+    const provenN = locReg.added.filter((a) => a.proven).length;
+    log(`[local]   ＋ backfilled ${locReg.added.length} referenced-but-missing locator(s) (${provenN} from live evidence): ${locReg.added.map((a) => `${a.member}→${a.page.split('/').pop()}`).join(', ')}`);
   }
 
   const specPaths = () => written.filter((w) => w.layer === 'spec').map((w) => w.path);
@@ -3892,7 +3941,7 @@ async function coreGenerate(fw, job, log, logs) {
         log(`[local]   ＋ registered ${fxC.added.length} new fixture(s) during compile-fix: ${fxC.added.join(', ')}`);
         recordWrite({ path: 'src/fixtures/index.ts', layer: 'fixture', reused: false, action: 'overwritten' });
       }
-      const locC = ensureReferencedLocators(fw, written);
+      const locC = ensureReferencedLocators(fw, written, referencedEvidence);
       if (locC.changed) {
         allBackups.push(...locC.backups);
         log(`[local]   ＋ backfilled ${locC.added.length} referenced-but-missing locator(s) during compile-fix: ${locC.added.map((a) => a.member).join(', ')}`);
@@ -3946,7 +3995,7 @@ async function coreGenerate(fw, job, log, logs) {
       log(`[local]   ＋ registered ${fxHeal.added.length} new fixture(s) during heal: ${fxHeal.added.join(', ')}`);
       recordWrite({ path: 'src/fixtures/index.ts', layer: 'fixture', reused: false, action: 'overwritten' });
     }
-    const locHeal = ensureReferencedLocators(fw, written);
+    const locHeal = ensureReferencedLocators(fw, written, referencedEvidence);
     if (locHeal.changed) {
       allBackups.push(...locHeal.backups);
       log(`[local]   ＋ backfilled ${locHeal.added.length} referenced-but-missing locator(s) during heal: ${locHeal.added.map((a) => a.member).join(', ')}`);
@@ -4558,6 +4607,7 @@ module.exports = {
   ensureFixturesRegistered,
   ensureReferencedLocators,
   inferLocatorTarget,
+  parseAriaElements,
   pushBranch,
   discardBranch,
   resetFramework,
