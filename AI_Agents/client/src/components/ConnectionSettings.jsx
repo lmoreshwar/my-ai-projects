@@ -656,15 +656,16 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                 Required scopes: <span className="font-semibold text-slate-500 dark:text-slate-400">repo</span>, <span className="font-semibold text-slate-500 dark:text-slate-400">workflow</span>, <span className="font-semibold text-slate-500 dark:text-slate-400">read:org</span> (optional for org repos)
               </p>
             </div>
-            <div className="space-y-1 p-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded">
-              <p className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500">Pull Request target</p>
-              <p className="text-sm font-semibold text-on-surface dark:text-white">
-                {connections.github?.selectedRepo
-                  ? `${connections.github.selectedRepo}${connections.github.selectedBranch ? ` @ ${connections.github.selectedBranch}` : ''}`
-                  : 'Server default (no repo selected)'}
-              </p>
-              <p className="text-[0.6rem] text-slate-400 dark:text-slate-600">BLAST opens the generated-tests Pull Request in this repo. It must contain the BLAST Playwright framework, the <span className="font-semibold">blast-runner.yml</span> workflow, and your Actions secrets.</p>
-            </div>
+            {/* Show the PR destination only once a repo is actually chosen (avoids noise for new users). */}
+            {connections.github?.selectedRepo && (
+              <div className="space-y-1 p-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded">
+                <p className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500">Pull Request target</p>
+                <p className="text-sm font-semibold text-on-surface dark:text-white">
+                  {connections.github.selectedRepo}{connections.github.selectedBranch ? ` @ ${connections.github.selectedBranch}` : ''}
+                </p>
+                <p className="text-[0.6rem] text-slate-400 dark:text-slate-600">Your generated tests open as a Pull Request here.</p>
+              </div>
+            )}
           </div>
 
           {/* Test Connection Button */}
