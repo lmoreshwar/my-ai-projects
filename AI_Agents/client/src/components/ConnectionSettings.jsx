@@ -110,16 +110,13 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
         setConnections((prev) => {
           const repos = prev.github.repos || [];
           const has = repos.some((r) => r.name === data.repo);
-          return {
+          return has ? prev : {
             ...prev,
-            github: {
-              ...prev.github,
-              repos: has ? repos : [...repos, { name: data.repo, visibility: 'private', default_branch: 'main' }],
-              selectedRepo: data.repo,
-              selectedBranch: 'main',
-            },
+            github: { ...prev.github, repos: [...repos, { name: data.repo, visibility: 'private', default_branch: 'main' }] },
           };
         });
+        // Select it + populate the Branch dropdown (auto-selects the default branch).
+        await fetchBranches(data.repo);
         setSavedMsg(`Framework ready: ${data.repo}. Now click Save Connection.`);
       } else {
         setSavedMsg(data.msg || 'Provisioning failed.');
