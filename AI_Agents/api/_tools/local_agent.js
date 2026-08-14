@@ -2888,8 +2888,8 @@ function ensureReferencedLocators(fw, written, evidence = []) {
     while ((d = declRe.exec(src))) varToClass.set(d[1], d[2]);
     const newRe = /\b(\w+)\s*=\s*new\s+([A-Z]\w*Page)\s*\(/g;
     while ((d = newRe.exec(src))) varToClass.set(d[1], d[2]);
-    // References: this.headerPage.menuButton( / headerPage.menuButton(
-    const refRe = /(?:this\.)?(\w+)\.([a-zA-Z_]\w*)\s*\(/g;
+    // Page locators may be properties or getters.
+    const refRe = /(?:this\.)?(\w+)\.([a-zA-Z_]\w*)\b/g;
     let r;
     while ((r = refRe.exec(src))) {
       const [, varName, member] = r;
