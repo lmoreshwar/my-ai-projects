@@ -119,6 +119,12 @@ const AutomationJobSchema = new mongoose.Schema({
   logs: [{ type: String }],
   error: { type: String, default: '' },
 
+  // Multi-tenant target: the USER's own framework repo the worker clones + pushes the PR to.
+  // Empty = single-tenant/POC (worker uses its local FRAMEWORK_PATH). Credentials are NEVER stored
+  // here — the worker resolves a token (GitHub App installation token or the user's PAT) at run time.
+  repoUrl: { type: String, default: '' },       // e.g. https://github.com/<user>/<framework-repo>.git
+  repoBranch: { type: String, default: '' },    // optional base branch (default: repo default)
+
   createdAt: { type: Date, default: Date.now },
   updatedAt: { type: Date, default: Date.now },
 });

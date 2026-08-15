@@ -216,6 +216,12 @@ async function requestPushToGate(job, onLog) {
     const { compareUrl, branch, logs } = await localAgent.pushBranch(job, onLog);
     return { prUrl: compareUrl, branch, logs: logs || [] };
   }
+  if (provider() === 'runner') {
+    // The Copilot/runner path writes files without committing — capture them onto a
+    // feature-named branch, commit, and push, then hand back the PR-compare URL.
+    const { compareUrl, branch, logs } = await localAgent.commitAndPushBranch(job, onLog);
+    return { prUrl: compareUrl, branch, logs: logs || [] };
+  }
   if (AI_SERVICE_URL) {
     const { data } = await axios.post(
       `${AI_SERVICE_URL}/api/automation/push-to-gate`,

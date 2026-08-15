@@ -4602,6 +4602,83 @@ async function pushBranch(job, onLog) {
   return { branch, pushed: true, compareUrl, logs };
 }
 
+/**
+ * Derive a short, human-readable branch slug from the job's feature (falls back to project /
+ * first case title / jobId). Kebab-cased, ascii-only, capped so branch names stay sane.
+ */
+function featureSlug(job) {
+  const raw = String(
+    job.feature || job.project || (job.testCases && job.testCases[0] && job.testCases[0].title) || job.jobId || 'automation',
+  );
+  const slug = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60)
+    .replace(/-+$/g, '');
+  return slug || String(job.jobId || 'automation').toLowerCase();
+}
+
+/**
+ * Commit-and-push for the COPILOT/runner path. Unlike pushBranch (which only publishes an
+ * ALREADY-committed generation branch), the Copilot agent writes files directly on the working
+ * tree without committing — so here we capture those changes onto a fresh, feature-named branch,
+ * commit them with a bot identity, and push. Only ever runs after a PASSED run.
+ * Returns { branch, pushed, compareUrl, logs }.
+ */
+async function commitAndPushBranch(job, onLog) {
+  const { frameworkPath: fw } = config();
+  const logs = [];
+  const log = (m) => { logs.push(m); if (typeof onLog === 'function') { try { onLog(m); } catch { /* best-effort */ } } };
+  if (!fw || !fs.existsSync(fw)) throw new Error('FRAMEWORK_PATH is not set or does not exist on this machine.');
+
+  // Nothing to publish? Bail clearly rather than pushing an empty branch.
+  const dirty = await git(fw, ['status', '--porcelain']);
+  if (dirty.code === 0 && !dirty.output.trim()) {
+    throw new Error('No changes in the framework working tree to publish — nothing to commit for this run.');
+  }
+
+  const branch = (job.branch && String(job.branch).trim()) || `blast/${featureSlug(job)}`;
+  log(`[push] Capturing generated files onto ${branch}…`);
+  const baseline = await gitCurrentBranch(fw);
+  const co = await git(fw, ['checkout', '-B', branch]);
+  if (co.code !== 0) throw new Error(`git checkout -B ${branch} failed: ${co.output.slice(-200)}`);
+
+  const add = await git(fw, ['add', '-A']);
+  if (add.code !== 0) throw new Error(`git add failed: ${add.output.slice(-200)}`);
+
+  const feature = job.feature || job.project || job.jobId;
+  const msg = `test(automation): ${feature} (${job.jobId})`.replace(/"/g, "'");
+  const commit = await git(fw, [
+    '-c', '"user.name=BLAST Automation"',
+    '-c', '"user.email=blast-automation@users.noreply.github.com"',
+    'commit', '-m', `"${msg}"`,
+  ]);
+  if (commit.code !== 0 && !/nothing to commit/i.test(commit.output)) {
+    throw new Error(`git commit failed: ${commit.output.slice(-200)}`);
+  }
+  log('[push] Committed generated files.');
+
+  const push = await git(fw, ['push', '--no-verify', '-u', 'origin', branch]);
+  if (push.code !== 0) throw new Error(`git push failed: ${push.output.slice(-300)}`);
+  log('[push] Pushed to origin.');
+
+  // Return the framework to its baseline branch so the next job starts from a pristine tree.
+  if (baseline && baseline !== 'HEAD' && baseline !== branch) {
+    const back = await git(fw, ['checkout', baseline]);
+    if (back.code === 0) log(`[push] Restored baseline branch ${baseline}.`);
+  }
+
+  const remote = await git(fw, ['remote', 'get-url', 'origin']);
+  let compareUrl = '';
+  const url = (remote.output || '').trim();
+  const httpsMatch = url.match(/github\.com[:/](.+?)(?:\.git)?$/i);
+  if (httpsMatch) compareUrl = `https://github.com/${httpsMatch[1]}/compare/${branch}?expand=1`;
+  if (compareUrl) log(`[push] Open a PR: ${compareUrl}`);
+
+  return { branch, pushed: true, compareUrl, logs };
+}
+
 // ===================================================================
 // Copilot handoff — hand the job to the LOCAL VS Code Copilot agent.
 // B.L.A.S.T. writes a JSON brief + a prompt + a .bat that invokes
@@ -4672,51 +4749,39 @@ function buildCopilotPrompt(job, paths) {
       return detail.length ? [header, ...detail].join('\n') : `- ${tc.id} ${tc.title || ''}${tc.tags ? ` [${tc.tags}]` : ''}`;
     })
     .join('\n\n');
+  // Human-readable label so Copilot (and the PR) see the FEATURE, not just a job id.
+  const feature = fmt(job.feature) || fmt(job.project) || fmt(job.testCases && job.testCases[0] && job.testCases[0].title) || job.jobId;
+  // reason: the full rulebook lives in the ATTACHED AGENT.md + pw-new-automation skill; repeating it
+  //   here just burns tokens (a real risk on limited Copilot plans). Keep the inline brief minimal —
+  //   identity, the job, the approved plan, the cases, and the log markers the worker keys off.
   return [
-    '# B.L.A.S.T. → Copilot automation job',
+    `# B.L.A.S.T. automation job — ${feature}`,
     '',
-    'You are the **AI Native Playwright Engineer**. Implement automation for the attached job',
-    'brief by following the attached **pw-new-automation** skill and AGENT.md exactly.',
+    'You are the **AI Native Playwright Engineer**. Follow the attached **AGENT.md** and the',
+    '**pw-new-automation** skill EXACTLY: reuse-first (check `.ai-memory/capabilities.json` +',
+    'existing pages/modules/specs first), evidence-based locators via `@playwright/cli` (never guess),',
+    'strict 3-layer, no duplicate tests. Extend the existing domain spec — do not create parallel files.',
     '',
-    '## Non-negotiable',
-    '- Reuse-first: check `.ai-memory/capabilities.json` and existing pages/modules/specs before adding anything.',
-    '- Evidence-based locators: use `@playwright/cli` (open the URL → snapshot → save real refs) for any NEW/changed locator. Never guess.',
-    '- Strict 3-layer: pages = locators only, modules = workflows (Actions/WaitHelper/WorkflowActions + Logger.step), specs = assertions using fixtures.',
-    '- Locator standard: one semantic strategy by default; a fallback needs a `// reason:` (max 3); collections use plain Playwright locators.',
-    '- Do NOT create duplicate tests. If a case id already exists in the domain spec, reuse it — never add a second test for the same id.',
-    '- Group all cases into ONE domain spec; extend the existing spec, never a parallel file.',
-    '',
-    `## Job: ${job.jobId} — ${job.project || 'suite'} (${job.environment || 'QA'})`,
-    `Target URL: ${job.url || '(see brief)'}`,
+    `## Job: ${feature} (${job.jobId}) — ${job.environment || 'QA'}`,
+    `Target URL: ${job.url || '(see attached brief)'}`,
     '',
     ...(String(job.plan || '').trim()
-      ? ['## Approved implementation plan (follow this — the user reviewed/edited it)', '', String(job.plan).trim(), '']
+      ? ['## Approved plan (follow it — the user reviewed this)', '', String(job.plan).trim(), '']
       : []),
     '### Test cases',
     cases || '(see the attached brief)',
     '',
-    '## If you need more information (ask the user via B.L.A.S.T., do NOT guess)',
-    `- When you are blocked and need input, APPEND a line \`[copilot] NEEDS-INPUT <your question>\` to \`${paths.logRel}\` and pause.`,
-    `- Then READ \`${paths.inboxRel}\` for the user's reply (B.L.A.S.T. writes each answer there as a \`[user] ...\` line). Wait/re-read until a new \`[user]\` line appears, then continue and log \`[copilot] RESUMED\`.`,
-    '- Never fail the run just because you need input — ask and wait instead.',
+    '## Logging — REQUIRED (B.L.A.S.T. tails this file live)',
+    `Append concise progress to \`${paths.logRel}\` at each milestone (reuse analysis, locator snapshot,`,
+    'files written, test run, pass/fail). Keep secrets out. Finish with EXACTLY one final line:',
+    '- success (spec passes, lint 0, tsc 0): `[copilot] DONE PASSED`',
+    '- failed/blocked you could not fix: `[copilot] DONE FAILED <one-line reason>`',
+    '- aborted (cannot proceed): `[copilot] ERROR <one-line reason>`',
+    `Need input mid-run? Append \`[copilot] NEEDS-INPUT <question>\` to the log, then read \`${paths.inboxRel}\``,
+    'for a `[user]` reply and continue (log `[copilot] RESUMED`). Never fail just because you need input.',
     '',
     '## Definition of done',
-    '1. `npx playwright test <spec> --project=desktop-chrome` passes with zero regressions.',
-    '2. `npm run lint` → 0 and `npx tsc --noEmit` → 0.',
-    '3. `npm run index` to refresh the capabilities index.',
-    '',
-    '## IMPORTANT — stream your progress to B.L.A.S.T.',
-    `As you work, APPEND concise progress lines to \`${paths.logRel}\` (create it if missing) at each`,
-    'milestone: reuse analysis, locator snapshot, files written, each test run, pass/fail, and the',
-    'final report path. B.L.A.S.T. tails that file to show the live console. Also paste the tail of',
-    'the Playwright run output into that same log. Keep secrets out of the log.',
-    '',
-    '### Status markers (REQUIRED — the UI keys off these exact lines)',
-    'Write ONE of these as the LAST line when you finish or stop:',
-    '- On success (spec passed, lint+tsc clean): `[copilot] DONE PASSED`',
-    '- On a failing/blocked run you could not fix: `[copilot] DONE FAILED <one-line reason>`',
-    '- If you must abort (missing info, cannot proceed): `[copilot] ERROR <one-line reason>`',
-    'Emit a heartbeat line every major step so the console never looks frozen while you work.',
+    'Spec passes on `--project=desktop-chrome`, `npm run lint` → 0, `npx tsc --noEmit` → 0, `npm run index` refreshed.',
   ].join('\n');
 }
 
@@ -4746,10 +4811,17 @@ function writeCopilotHandoff(fw, job) {
   const skillRel = path.join('.github', 'skills', 'pw-new-automation', 'SKILL.md');
   const inline = `Follow the attached ${path.basename(paths.promptAbs)} exactly and implement this automation NOW: reuse-first, evidence-based locators via @playwright/cli, strict 3-layer, run the spec, and append your progress to ${paths.logRel}. Start immediately.`;
   const codeCli = resolveCodeCli();
+  // reason: `code chat --reuse-window` targets the LAST-ACTIVE VS Code window, which may be an
+  //   unrelated workspace. Open (or focus) THIS framework's folder first and let it settle so the
+  //   chat is guaranteed to land in the correct repo, not whatever window happened to be active.
   const bat = [
     '@echo off',
     'setlocal',
     `cd /d "${fw}"`,
+    'echo [blast] Opening the target framework workspace...',
+    `call "${codeCli}" --new-window "${fw}"`,
+    'echo [blast] Waiting for the workspace window to focus...',
+    'timeout /t 6 /nobreak >nul',
     'echo [blast] Launching VS Code Copilot agent for this job...',
     `call "${codeCli}" chat --mode "${agentMode}" --reuse-window --add-file "${paths.promptAbs}" --add-file "${jobJsonRel}" --add-file "${skillRel}" --add-file "AGENT.md" "${inline.replace(/"/g, "'")}"`,
     `if errorlevel 1 echo [copilot] ERROR VS Code CLI launch failed - ensure "code" is on PATH>> "${paths.logRel}"`,
@@ -4855,6 +4927,7 @@ module.exports = {
   parseCliRefs,
   mergeExisting,
   pushBranch,
+  commitAndPushBranch,
   discardBranch,
   resetFramework,
   config,
