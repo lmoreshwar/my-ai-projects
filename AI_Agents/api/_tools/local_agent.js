@@ -1045,23 +1045,37 @@ function modelFromStates(states, feature, observed) {
  * BASE_URL + creds are the only app-specific inputs.
  * ────────────────────────────────────────────────────────────────────────── */
 
-/** Parse `- role "name" [ref=eNN]` rows from a @playwright/cli snapshot → interactable refs. */
+/** Parse `- role "name" [ref=eNN]` rows from a @playwright/cli snapshot → interactable refs.
+ * Returns standard controls FIRST (prio 0), then menu OPENERS (avatars/icons, prio 1), then named
+ * non-standard containers (styled toggles, prio 2). Widening beyond the standard roles is what lets
+ * the crawl open profile/kebab/dropdown menus (whose toggle is a nameless <p>/<span>+avatar) so it
+ * can actually reach Logout/Settings and capture the REAL locator instead of the model guessing. */
 function parseCliRefs(snapshot) {
   const out = [];
   // Refs may be plain (`e15`) or frame-scoped (`f3e3`) — accept any alphanumeric ref token.
   const re = /^\s*-?\s*([a-zA-Z]+)(?:\s+"([^"]*)")?[^\n]*\[ref=([a-z0-9]+)\]/;
-  const keep = new Set(['textbox', 'searchbox', 'spinbutton', 'button', 'link', 'checkbox',
+  const interactable = new Set(['textbox', 'searchbox', 'spinbutton', 'button', 'link', 'checkbox',
     'combobox', 'radio', 'switch', 'slider', 'menuitem', 'menuitemcheckbox', 'tab', 'option', 'listitem']);
+  // Menu openers: an avatar/icon that toggles a dropdown but carries a non-interactable role.
+  const openerRoles = new Set(['img']);
+  // Named styled containers that are frequently the clickable menu toggle itself.
+  const namedContainerRoles = new Set(['generic', 'paragraph', 'group', 'menu', 'menubar', 'banner']);
   for (const line of String(snapshot || '').split('\n')) {
     const m = line.match(re);
     if (!m) continue;
     const role = m[1].toLowerCase();
-    if (!keep.has(role)) continue;
     const name = (m[2] || '').trim();
+    let prio;
+    if (interactable.has(role)) prio = 0;
+    else if (openerRoles.has(role)) prio = 1;
+    else if (name && namedContainerRoles.has(role)) prio = 2;
+    else continue;
     if (out.some((r) => r.ref === m[3])) continue;
-    out.push({ role, name, ref: m[3] });
+    out.push({ role, name, ref: m[3], prio });
   }
-  return out;
+  // Real controls first so the caller's ref cap never drops them; openers/containers fill the rest.
+  out.sort((a, b) => a.prio - b.prio);
+  return out.map(({ prio, ...r }) => r);
 }
 
 /** @playwright/cli echoes the REAL locator it ran inside a ```js …``` block — capture it. */
@@ -1124,6 +1138,7 @@ async function llmNextAction(job, tc, trace, snapshotYaml, refs, preAuth = false
     '\n# Return the SINGLE next action as STRICT JSON (no prose):',
     '{"action":"click|fill|select|check|done","ref":"eNN from the list above (empty when done)","value":"text for fill/select, else empty","note":"short human-readable intent"}',
     'Rules: pick ONLY a ref that appears in the list above (never invent one). Do the MINIMUM to advance this case toward its expected result. ' + credRule + ' When the case goal is reached or no useful action remains, return {"action":"done"}. Reply with JSON only.',
+    'REVEAL HIDDEN ITEMS: if the control you need next (e.g. Logout, Sign out, Settings, Profile, a menu entry) is NOT in the list above, it is almost certainly hidden inside a menu that must be OPENED first. Click the control that opens it — a user avatar / "profile picture" image, a ⋮/kebab/hamburger/caret icon, or a user-name/menu toggle in the top bar (these appear as img or named container refs) — and the revealed items will show up in the NEXT snapshot for you to click. Do NOT answer "done" just because the final item is not yet visible; open the menu first, then pick the item.',
   ].filter(Boolean).join('\n');
   const raw = await llmGenerate(prompt, 'You are a precise browser-automation agent. Reply with STRICT JSON only.');
   try {
@@ -2754,6 +2769,25 @@ function mergeExisting(current, next, layer, baseNames) {
     if (base.has(nb.name)) continue; // baseline member — never touch
     const cb = curByName.get(nb.name);
     if (cb && cb.text !== nb.text) { out = out.replace(cb.text, nb.text); changed = true; }
+  }
+  // 1b) PAGES (constructor-field style): the locator VALUE lives in the constructor (`this.X = …`),
+  // NOT in the `readonly X: Locator;` field block — so a heal/compile-fix that corrects a locator
+  // changes the constructor assignment, which the member-block diff in step 1 cannot see (the field
+  // block is byte-identical). Without this, a corrected locator is silently discarded ("🛡 kept") and
+  // the fix can NEVER land. Reconcile this-run assignments (baseline assignments stay immutable).
+  if (layer === 'page') {
+    const asgRe = /\n[ \t]*this\.(\w+)\s*=\s*[^;]+;/g;
+    const nextAsg = new Map();
+    let am;
+    while ((am = asgRe.exec(next)) !== null) if (!nextAsg.has(am[1])) nextAsg.set(am[1], am[0]);
+    asgRe.lastIndex = 0;
+    const curAsg = [];
+    while ((am = asgRe.exec(current)) !== null) curAsg.push({ name: am[1], text: am[0] });
+    for (const ca of curAsg) {
+      if (base.has(ca.name)) continue; // baseline locator — immutable
+      const na = nextAsg.get(ca.name);
+      if (na && na !== ca.text && out.includes(ca.text)) { out = out.replace(ca.text, na); changed = true; }
+    }
   }
   // 2) Append genuinely-new members (present in next, absent from current and baseline).
   const additions = blocksOf(next).filter((b) => !curNames.has(b.name) && !base.has(b.name));
@@ -4818,6 +4852,8 @@ module.exports = {
   inferLocatorTarget,
   parseAriaElements,
   ensurePageFieldsInitialized,
+  parseCliRefs,
+  mergeExisting,
   pushBranch,
   discardBranch,
   resetFramework,
