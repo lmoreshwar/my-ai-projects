@@ -4771,14 +4771,19 @@ function buildCopilotPrompt(job, paths) {
     '### Test cases',
     cases || '(see the attached brief)',
     '',
+    '## Work quietly — save tokens',
+    'Do the task and nothing else. Do NOT narrate steps, explain your reasoning, summarise, or restate the',
+    'plan in chat. No preamble, no recap. Just build it, run it, and emit only the log markers below.',
+    '',
     '## Logging — REQUIRED (B.L.A.S.T. tails this file live)',
-    `Append concise progress to \`${paths.logRel}\` at each milestone (reuse analysis, locator snapshot,`,
-    'files written, test run, pass/fail). Keep secrets out. Finish with EXACTLY one final line:',
-    '- success (spec passes, lint 0, tsc 0): `[copilot] DONE PASSED`',
-    '- failed/blocked you could not fix: `[copilot] DONE FAILED <one-line reason>`',
-    '- aborted (cannot proceed): `[copilot] ERROR <one-line reason>`',
+    `Append to \`${paths.logRel}\` ONLY these lines — nothing more:`,
+    '- ONE start line: `[copilot] START ' + `${job.jobId} — ${feature}\``,
+    '- the final result line (exactly one):',
+    '  - success (spec passes, lint 0, tsc 0): `[copilot] DONE PASSED`',
+    '  - failed/blocked you could not fix: `[copilot] DONE FAILED <one-line reason>`',
+    '  - aborted (cannot proceed): `[copilot] ERROR <one-line reason>`',
     `Need input mid-run? Append \`[copilot] NEEDS-INPUT <question>\` to the log, then read \`${paths.inboxRel}\``,
-    'for a `[user]` reply and continue (log `[copilot] RESUMED`). Never fail just because you need input.',
+    'for a `[user]` reply and continue. Do NOT log per-step progress — start + final marker only.',
     '',
     '## Definition of done',
     'Spec passes on `--project=desktop-chrome`, `npm run lint` → 0, `npx tsc --noEmit` → 0, `npm run index` refreshed.',
@@ -4809,7 +4814,7 @@ function writeCopilotHandoff(fw, job) {
   //   built-in generic 'agent' mode, so its persona + auto-loading skills (pw-new-automation) apply.
   const agentMode = 'AI Native Playwright Engineer';
   const skillRel = path.join('.github', 'skills', 'pw-new-automation', 'SKILL.md');
-  const inline = `Follow the attached ${path.basename(paths.promptAbs)} exactly and implement this automation NOW: reuse-first, evidence-based locators via @playwright/cli, strict 3-layer, run the spec, and append your progress to ${paths.logRel}. Start immediately.`;
+  const inline = `Follow the attached ${path.basename(paths.promptAbs)} exactly and implement this automation NOW: reuse-first, evidence-based locators via @playwright/cli, strict 3-layer, run the spec. Work quietly — do NOT narrate or summarise; append ONLY the start line and the final [copilot] marker to ${paths.logRel}. Start immediately.`;
   const codeCli = resolveCodeCli();
   // reason: `code chat --reuse-window` targets the LAST-ACTIVE VS Code window, which may be an
   //   unrelated workspace. Open (or focus) THIS framework's folder first and let it settle so the
