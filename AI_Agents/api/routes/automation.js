@@ -308,9 +308,44 @@ router.post('/explore', auth, async (req, res) => {
       updatedAt: now,
     };
 
-    // PHASE 1: explore the feature (headless snapshot), author +/- cases from the evidence,
-    // then build the SAME reuse-first plan the classic flow uses. Credentials are never persisted.
+    // PHASE 1: explore the feature, author cases, and build the reuse-first plan. Credentials
+    // are never persisted.
     job = await persist(job);
+
+    // PRODUCTION (github-actions): run PHASE 1 (explore + plan) as a headless cloud job. We do NOT
+    // crawl on a laptop worker or over a cloudflared tunnel — we dispatch the EXPLORE workflow,
+    // which drives the live app, verifies the flow, authors the proposed cases, and uploads them as
+    // a plan artifact. NO codegen and NO PR here: the website polls, shows the plan, and waits for
+    // the user to Approve, which triggers PHASE 2 (generate + PR). The approval gate is preserved.
+    if (job.provider === 'github-actions') {
+      try {
+        const dispatch = await githubAgent.dispatchExplore(job, git, exploreCreds);
+        job.phase = 'explore';
+        job.status = 'Exploring';
+        job.workflow = dispatch.workflow;
+        job.reportUrl = dispatch.runsUrl || '';
+        job.dispatchedAt = new Date().toISOString();
+        job.approved = false; // two-dispatch flow: keep the Preview → Approve gate
+        job.logs = [
+          ...(job.logs || []),
+          ...credLogs,
+          `[cloud] Dispatched explore workflow ${dispatch.workflow} on ${dispatch.ref} — drive the live app, verify the flow, and propose test cases (no code, no PR yet).`,
+          `[cloud] Track the run here: ${dispatch.runsUrl}`,
+        ];
+        job.dispatchLogs = [...job.logs];
+        const savedCloud = await persist(job);
+        return res.json(savedCloud);
+      } catch (dispatchErr) {
+        job.status = 'Failed';
+        job.error = dispatchErr.message || 'Cloud dispatch failed';
+        job.logs = [...(job.logs || []), ...credLogs, `[error] ${job.error}`];
+        await persist(job);
+        return res.status(502).json({ msg: job.error, job });
+      }
+    }
+
+    // LOCAL DEV/DEBUG ONLY (DEV_MODE): explore on this machine, then build the reuse-first plan
+    // for the WaitingForApproval preview. This path is never reached in production.
     const exploreLogs = [];
     let blocked = null;
     try {
@@ -420,14 +455,24 @@ router.post('/jobs/:jobId/approve', auth, async (req, res) => {
     if (job.provider === 'github-actions') {
       try {
         const git = await resolveGitConnection(req.user.id);
-        const dispatch = await githubAgent.dispatchWorkflow(job, git);
+        // Two-dispatch agent-loop flow: an explore (plan) run already produced the verified trace.
+        // Approving dispatches PHASE 2 (blast-approve.yml), which downloads that plan artifact and
+        // does codegen → verify → commit → PR. Fall back to the legacy blast-runner dispatch only
+        // for jobs that never went through the explore phase (pre-authored AI-Native cases).
+        const isAgentLoop = !!(job.exploreRunId || job.phase === 'explore');
+        const dispatch = isAgentLoop
+          ? await githubAgent.dispatchApprove(job, git)
+          : await githubAgent.dispatchWorkflow(job, git);
+        job.phase = isAgentLoop ? 'approve' : job.phase;
         job.status = 'Generating';
         job.provider = 'github-actions';
+        job.workflow = dispatch.workflow;
+        job.runId = null;           // resolve the NEW approve run on the next poll
         job.reportUrl = dispatch.runsUrl || '';
         job.dispatchedAt = new Date().toISOString();
         job.logs = [
           ...(job.logs || []),
-          `[cloud] Dispatched GitHub Actions workflow ${dispatch.workflow} on ${dispatch.ref}.`,
+          `[cloud] Approved — dispatched ${dispatch.workflow} on ${dispatch.ref} — generate → verify → open a Pull Request.`,
           `[cloud] Track the run + Pull Request here: ${dispatch.runsUrl}`,
         ];
         job.dispatchLogs = [...job.logs]; // preserved header; live steps are appended each poll
@@ -544,6 +589,11 @@ router.get('/jobs/:jobId/progress', auth, async (req, res) => {
       if (progress.runId) job.runId = progress.runId;
       if (progress.runHtmlUrl) job.reportUrl = progress.runHtmlUrl;
       if (progress.reportSummary) { job.reportSummary = progress.reportSummary; }
+      // Explore (plan) phase: surface the proposed cases + plan and remember the explore run id so
+      // Approve can dispatch phase 2 against the right artifact.
+      if (Array.isArray(progress.testCases)) job.testCases = progress.testCases;
+      if (progress.plan !== undefined) job.plan = progress.plan;
+      if (progress.exploreRunId) job.exploreRunId = progress.exploreRunId;
       if (Array.isArray(progress.snapshotLogs)) job.logs = progress.snapshotLogs; // full replace — no dup
       const savedCloud = await persist(job);
       return res.json(savedCloud);

@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const JOB_STATUSES = [
   'Pending',
   'Planning',
+  'Exploring',
   'WaitingForApproval',
   'Queued',
   'Generating',
@@ -93,6 +94,13 @@ const AutomationJobSchema = new mongoose.Schema({
 
   // Provider / coding-agent delegation (GitHub Copilot coding agent)
   provider: { type: String, enum: ['simulation', 'service', 'github', 'local', 'runner', 'github-actions'], default: 'simulation' },
+  // Cloud (GitHub Actions) two-dispatch orchestration state.
+  phase: { type: String, enum: ['', 'explore', 'approve'], default: '' },  // '' = legacy single dispatch
+  workflow: { type: String, default: '' },          // the workflow file this job was dispatched to
+  runId: { type: Number, default: null },            // the active GitHub Actions run being polled
+  exploreRunId: { type: Number, default: null },     // the phase-1 run that holds the plan artifact
+  dispatchedAt: { type: Date, default: null },       // when the current run was dispatched (poll floor)
+  dispatchLogs: [{ type: String }],                  // preserved dispatch header; live steps appended each poll
   // Runner (pull-based worker) claim metadata — set when a runner picks up a Queued job.
   claimedBy: { type: String, default: '' },
   claimedAt: { type: Date, default: null },

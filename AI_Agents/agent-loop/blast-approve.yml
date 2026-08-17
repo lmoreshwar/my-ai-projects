@@ -1,0 +1,94 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# blast-approve.yml — PHASE 2 of the two-dispatch BLAST flow (runs ONLY on Approve).
+#
+# One headless run downloads the `blast-plan-<job_id>` artifact PRODUCED BY the
+# explore run (phase 1), then turns the SAME verified trace into real framework files,
+# verifies the spec is green, and commits + opens a Pull Request.
+#
+#     download plan → codegen (Page/Module/Spec + reuse) → verify → commit → PR
+#
+# No exploration here — the verified trace from phase 1 is the authoritative evidence.
+#
+# CANONICAL COPY: place a copy at .github/workflows/blast-approve.yml in each framework repo.
+#
+# Required repo secrets:
+#   APP_USERNAME, APP_PASSWORD  app login (used by the green-before-PR verify run)
+#   OPENAI_API_KEY              LLM key   (OPENAI_MODEL / OPENAI_BASE_URL optional)
+#   BLAST_PAT                   PAT with: repo read on lmoreshwar/my-ai-projects (engine checkout),
+#                               actions:read on THIS repo (download the explore run's artifact),
+#                               and contents:write + pull_requests:write on THIS repo (push + PR).
+#                               USER_GH_TOKEN overrides for the push/PR attribution.
+# ─────────────────────────────────────────────────────────────────────────────
+name: BLAST Approve (Generate + PR)
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: BLAST job id (matches the plan artifact name)
+        required: true
+      explore_run_id:
+        description: The GitHub Actions run id of the explore (phase 1) run that produced the plan
+        required: true
+      feature_name:
+        description: Human feature name (for the branch/PR title)
+        required: true
+
+jobs:
+  approve:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # 1) The target framework (this repo) — checked out at the workspace root = FRAMEWORK_PATH.
+      - name: Checkout framework
+        uses: actions/checkout@v4
+
+      # 2) The BLAST engine (agent-loop lives here) into a subfolder.
+      - name: Checkout BLAST engine
+        uses: actions/checkout@v4
+        with:
+          repository: lmoreshwar/my-ai-projects
+          path: .blast-engine
+          token: ${{ secrets.BLAST_PAT }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 3) Download the plan (proposed cases + verified trace) from the EXPLORE run's artifact.
+      - name: Download plan
+        uses: actions/download-artifact@v4
+        with:
+          name: blast-plan-${{ inputs.job_id }}
+          run-id: ${{ inputs.explore_run_id }}
+          github-token: ${{ secrets.BLAST_PAT }}
+          path: ${{ github.workspace }}
+
+      - name: Install framework deps
+        run: npm ci || npm install
+
+      # Needed for the green-before-PR verify run (npx playwright test — headless, no xvfb).
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Install agent-loop deps
+        working-directory: .blast-engine/AI_Agents/agent-loop
+        run: npm install
+
+      # 4) CODEGEN from the verified trace → verify → commit → PR.
+      - name: Generate + verify + PR
+        working-directory: .blast-engine/AI_Agents/agent-loop
+        env:
+          FRAMEWORK_PATH: ${{ github.workspace }}
+          PLAN_FILE: ${{ github.workspace }}/blast-plan.json
+          BASE_BRANCH: ${{ github.ref_name }}
+          # App login — used by the spec's real login during the green-before-PR verify run.
+          APP_USERNAME: ${{ secrets.APP_USERNAME }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          # The push + PR use YOUR token so they are attributed to your account.
+          GITHUB_TOKEN: ${{ secrets.USER_GH_TOKEN || secrets.BLAST_PAT }}
+        run: npm run phase:approve

@@ -1,0 +1,109 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# blast-explore.yml — PHASE 1 of the two-dispatch BLAST flow (the APPROVAL GATE).
+#
+# One headless GitHub Actions run drives the live app with the agent-loop, VERIFIES
+# the feature flow, and AUTHORS the proposed test cases from that verified trace.
+# It writes blast-plan.json and uploads it as the `blast-plan-<job_id>` artifact.
+#
+#     explore (agent-loop live drive) → author proposed cases → upload plan artifact
+#
+# NO codegen, NO commit, NO PR here. The BLAST website polls this run, downloads the
+# plan artifact, shows the proposed cases, and waits for you to Approve — which
+# triggers PHASE 2 (blast-approve.yml).
+#
+# CANONICAL COPY: this template lives in the engine repo. Place a copy at
+# .github/workflows/blast-explore.yml in EACH framework repo you test.
+#
+# Required repo secrets:
+#   APP_USERNAME, APP_PASSWORD  app login (injected securely; never in logs)
+#   OPENAI_API_KEY              LLM key   (OPENAI_MODEL / OPENAI_BASE_URL optional)
+#   BLAST_PAT                   PAT with repo read on lmoreshwar/my-ai-projects (engine checkout)
+# ─────────────────────────────────────────────────────────────────────────────
+name: BLAST Explore (Plan)
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: BLAST job id (names the plan artifact)
+        required: true
+      app_url:
+        description: Feature URL to automate (the feature's own screen, not the login page)
+        required: true
+      feature_name:
+        description: Human feature name (e.g. "PIM employee search")
+        required: true
+      test_types:
+        description: Comma list e.g. "positive,negative"
+        required: false
+        default: positive
+      max_cases:
+        description: Max test cases to author
+        required: false
+        default: "3"
+
+jobs:
+  explore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      # 1) The target framework (this repo) — checked out at the workspace root = FRAMEWORK_PATH.
+      - name: Checkout framework
+        uses: actions/checkout@v4
+
+      # 2) The BLAST engine (agent-loop lives here) into a subfolder.
+      - name: Checkout BLAST engine
+        uses: actions/checkout@v4
+        with:
+          repository: lmoreshwar/my-ai-projects
+          path: .blast-engine
+          token: ${{ secrets.BLAST_PAT }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install framework deps
+        run: npm ci || npm install
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # The agentic driver: Microsoft @playwright/cli + xvfb so the headless browser can start.
+      - name: Install @playwright/cli + xvfb
+        run: |
+          npm install -g @playwright/cli@latest
+          sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Install agent-loop deps
+        working-directory: .blast-engine/AI_Agents/agent-loop
+        run: npm install
+
+      # 3) EXPLORE + author the plan (no code, no PR). Writes blast-plan.json at the workspace root.
+      - name: Explore + author plan
+        working-directory: .blast-engine/AI_Agents/agent-loop
+        env:
+          APP_URL: ${{ inputs.app_url }}
+          FEATURE_NAME: ${{ inputs.feature_name }}
+          TEST_TYPES: ${{ inputs.test_types }}
+          MAX_CASES: ${{ inputs.max_cases }}
+          FRAMEWORK_PATH: ${{ github.workspace }}
+          OUTPUT_DIR: ${{ github.workspace }}
+          # App login — injected into the browser securely; never reaches the LLM or logs.
+          AGENT_USERNAME: ${{ secrets.APP_USERNAME }}
+          AGENT_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+        run: xvfb-run -a npm run phase:explore
+
+      # 4) Hand the plan (proposed cases + verified trace) to the website via an artifact.
+      - name: Upload plan
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blast-plan-${{ inputs.job_id }}
+          path: ${{ github.workspace }}/blast-plan.json
+          if-no-files-found: warn
+          retention-days: 3

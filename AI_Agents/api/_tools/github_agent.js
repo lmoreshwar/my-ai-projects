@@ -383,6 +383,92 @@ async function dispatchWorkflow(job, git) {
 }
 
 /**
+ * PHASE 1 dispatch — trigger the EXPLORE workflow (blast-explore.yml). One headless run drives
+ * the live app with the agent-loop, VERIFIES the flow, authors the proposed test cases, and
+ * uploads them (plus the verified trace) as the `blast-plan-<jobId>` artifact. NO codegen, NO PR.
+ * The website then polls, downloads the plan, shows it, and waits for Approve (phase 2).
+ *
+ * SECURITY: app login credentials NEVER travel as workflow_dispatch inputs (inputs are plaintext
+ * in the Actions UI/logs). Fresh form creds are pushed as encrypted repo secrets FIRST
+ * (APP_USERNAME/APP_PASSWORD) using the SAME user token as the dispatch; the workflow reads them
+ * from secrets. No creds present → the run uses whatever secrets already exist on the repo.
+ *
+ * @param {object} job   the explore job (jobId, url, feature, testTypes, maxCases)
+ * @param {object} git   resolved GitHub connection { token, owner, repo, branch }
+ * @param {object} creds { username, password } transient form creds (never persisted/logged)
+ */
+async function dispatchExplore(job, git, creds) {
+  const { owner, repo, branch, token } = repoConfig(git);
+  const workflow = process.env.BLAST_EXPLORE_WORKFLOW || 'blast-explore.yml';
+  const ref = process.env.BLAST_WORKFLOW_REF || branch || 'main';
+
+  try {
+    if (creds && creds.username && creds.password) {
+      await setAppCredentialSecrets({ token, owner, repo }, creds);
+    }
+    const testTypes = Array.isArray(job.testTypes) ? job.testTypes.join(',') : String(job.testTypes || '');
+    const inputs = {
+      job_id: String(job.jobId),
+      app_url: job.url || '',
+      feature_name: job.feature || '',
+      test_types: testTypes || 'positive',
+      max_cases: String(job.maxCases > 0 ? job.maxCases : 3),
+    };
+    await axios.post(
+      `${API}/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`,
+      { ref, inputs },
+      { headers: headers(git) },
+    );
+    return {
+      dispatched: true,
+      ref,
+      workflow,
+      runsUrl: `https://github.com/${owner}/${repo}/actions/workflows/${workflow}`,
+    };
+  } catch (err) {
+    throw friendlyError(err, 'explore workflow dispatch');
+  }
+}
+
+/**
+ * PHASE 2 dispatch — trigger the APPROVE workflow (blast-approve.yml). One headless run downloads
+ * the `blast-plan-<jobId>` artifact produced by the EXPLORE run, turns the SAME verified trace into
+ * Page/Module/Spec, verifies the spec is green, then commits + opens a Pull Request. No exploration.
+ * Requires `job.exploreRunId` (the run id of the phase-1 run that holds the plan artifact).
+ *
+ * @param {object} job   the job (jobId, feature, exploreRunId)
+ * @param {object} git   resolved GitHub connection { token, owner, repo, branch }
+ */
+async function dispatchApprove(job, git) {
+  const { owner, repo, branch } = repoConfig(git);
+  const workflow = process.env.BLAST_APPROVE_WORKFLOW || 'blast-approve.yml';
+  const ref = process.env.BLAST_WORKFLOW_REF || branch || 'main';
+  const exploreRunId = job.exploreRunId || job.runId;
+  if (!exploreRunId) throw new Error('Cannot approve: no explore run id on the job (run the plan phase first).');
+
+  try {
+    const inputs = {
+      job_id: String(job.jobId),
+      explore_run_id: String(exploreRunId),
+      feature_name: job.feature || '',
+    };
+    await axios.post(
+      `${API}/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`,
+      { ref, inputs },
+      { headers: headers(git) },
+    );
+    return {
+      dispatched: true,
+      ref,
+      workflow,
+      runsUrl: `https://github.com/${owner}/${repo}/actions/workflows/${workflow}`,
+    };
+  } catch (err) {
+    throw friendlyError(err, 'approve workflow dispatch');
+  }
+}
+
+/**
  * Live progress for the cloud (GitHub Actions) path: resolve the dispatched run,
  * read its jobs/steps, and return a FULL log snapshot the caller replaces each poll
  * (so steps never duplicate). Returns { status, checksStatus, executionStatus,
@@ -390,7 +476,9 @@ async function dispatchWorkflow(job, git) {
  */
 async function getWorkflowRunProgress(job, git) {
   const { owner, repo, branch } = repoConfig(git);
-  const workflow = process.env.BLAST_WORKFLOW_FILE || 'blast-runner.yml';
+  // Poll whichever workflow this job was dispatched to (the one-job agent-loop workflow, or the
+  // legacy runner). job.workflow is set at dispatch time; env/legacy default is the fallback.
+  const workflow = job.workflow || process.env.BLAST_WORKFLOW_FILE || 'blast-runner.yml';
   const header = Array.isArray(job.dispatchLogs) && job.dispatchLogs.length
     ? job.dispatchLogs
     : (job.logs || []);
@@ -521,6 +609,129 @@ async function getWorkflowRunProgress(job, git) {
   }
 }
 
+/**
+ * PHASE 1 progress — poll the EXPLORE run and, once it finishes, download the plan artifact and
+ * surface the proposed test cases so the website can show them and wait for Approve.
+ *   • run still going            → { status: 'Exploring', … }
+ *   • run done + plan has cases  → { status: 'WaitingForApproval', testCases, plan, exploreRunId, … }
+ *   • run done + no cases/plan   → { status: 'Blocked', plan, … }  (nothing verified to automate)
+ *   • run failed                 → { status: 'Failed', … }
+ * Returns a FULL log snapshot the caller replaces each poll (steps never duplicate).
+ */
+async function getExploreRunProgress(job, git) {
+  const { owner, repo, branch } = repoConfig(git);
+  const workflow = job.workflow || process.env.BLAST_EXPLORE_WORKFLOW || 'blast-explore.yml';
+  const header = Array.isArray(job.dispatchLogs) && job.dispatchLogs.length ? job.dispatchLogs : (job.logs || []);
+  const snap = (lines) => [...header, ...(lines.length ? ['', '── Explore run ──', ...lines] : [])];
+
+  try {
+    // 1) Resolve the run id (cache it on the job after the first poll).
+    let runId = job.runId;
+    let runHtmlUrl = job.reportUrl || '';
+    if (!runId) {
+      const { data } = await axios.get(
+        `${API}/repos/${owner}/${repo}/actions/workflows/${encodeURIComponent(workflow)}/runs?event=workflow_dispatch&branch=${encodeURIComponent(branch || 'main')}&per_page=10`,
+        { headers: headers(git) },
+      );
+      const floor = job.dispatchedAt ? new Date(job.dispatchedAt).getTime() - 60000 : 0;
+      const run = (data.workflow_runs || [])
+        .filter((r) => new Date(r.created_at).getTime() >= floor)
+        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+      if (!run) return { status: 'Exploring', snapshotLogs: snap(['⟳ Waiting for the explore run to start…']) };
+      runId = run.id;
+      runHtmlUrl = run.html_url;
+    }
+
+    // 2) Read the run + its jobs/steps.
+    const [runRes, jobsRes] = await Promise.all([
+      axios.get(`${API}/repos/${owner}/${repo}/actions/runs/${runId}`, { headers: headers(git) }),
+      axios.get(`${API}/repos/${owner}/${repo}/actions/runs/${runId}/jobs`, { headers: headers(git) }),
+    ]);
+    const runData = runRes.data;
+    runHtmlUrl = runData.html_url || runHtmlUrl;
+
+    const lines = [];
+    const allSteps = [];
+    for (const j of runData_jobs(jobsRes.data)) {
+      lines.push(`▸ ${j.name} — ${j.status}${j.conclusion ? ` (${j.conclusion})` : ''}`);
+      for (const s of (j.steps || [])) {
+        allSteps.push(s);
+        const icon = s.conclusion === 'success' ? '✓'
+          : s.conclusion === 'failure' ? '✗'
+          : s.conclusion === 'skipped' ? '⊘'
+          : s.status === 'in_progress' ? '⟳' : '•';
+        lines.push(`   ${icon} ${s.name}`);
+      }
+    }
+
+    const isTeardown = (name) => /^Post\b/i.test(name || '') || /^Complete job$/i.test(name || '');
+    const substantive = allSteps.filter((s) => !isTeardown(s.name));
+    const substantiveDone = substantive.length > 0 && substantive.every((s) => s.status === 'completed');
+    const substantiveFailed = substantive.some((s) => ['failure', 'timed_out', 'cancelled'].includes(s.conclusion));
+    const done = runData.status === 'completed' || substantiveDone;
+
+    if (!done) {
+      return { status: 'Exploring', runId, runHtmlUrl, snapshotLogs: snap(lines) };
+    }
+
+    if (substantiveFailed && runData.conclusion !== 'success') {
+      lines.push('', '✗ Exploration run failed — no plan was produced. Review the run logs and retry.');
+      return { status: 'Failed', runId, runHtmlUrl, snapshotLogs: snap(lines) };
+    }
+
+    // 3) Run finished — pull the plan artifact (proposed cases + verified trace).
+    const plan = await getPlanArtifact(job, runId, git);
+    if (!plan) {
+      lines.push('', '⟳ Run finished — waiting for the plan artifact…');
+      return { status: 'Exploring', runId, runHtmlUrl, snapshotLogs: snap(lines) };
+    }
+    const cases = Array.isArray(plan.cases) ? plan.cases : [];
+    if (!cases.length) {
+      lines.push('', 'ℹ Exploration did not find a flow it could verify — no test cases to propose.',
+        `   ${plan.summary || ''}`.trimEnd());
+      return { status: 'Blocked', runId, runHtmlUrl, plan: renderPlan(plan), snapshotLogs: snap(lines) };
+    }
+
+    const testCases = cases.map((c, i) => ({
+      id: c.id || `TC_${String(i + 1).padStart(3, '0')}`,
+      title: c.title || `Case ${i + 1}`,
+      tags: c.type ? [c.type] : [],
+      complexity: '',
+      description: c.expectedResults || '',
+      preconditions: '',
+      testData: '',
+      steps: Array.isArray(c.steps) ? c.steps.join('\n') : (c.steps || ''),
+      expectedResults: c.expectedResults || '',
+      comments: '',
+    }));
+    lines.push('', `✓ Exploration verified the flow — ${testCases.length} test case(s) proposed. Review and Approve to generate.`);
+    return {
+      status: 'WaitingForApproval',
+      runId,
+      runHtmlUrl,
+      exploreRunId: runId,
+      testCases,
+      plan: renderPlan(plan),
+      snapshotLogs: snap(lines),
+    };
+  } catch (err) {
+    return { status: job.status, snapshotLogs: snap([`⚠ Could not read explore status: ${friendlyError(err, 'explore progress').message}`]) };
+  }
+}
+
+/** Render a plan (feature + proposed cases with steps) as a readable text block for the console. */
+function renderPlan(plan) {
+  const out = [`Feature: ${plan.feature || ''}`, `URL: ${plan.url || ''}`, ''];
+  const cases = Array.isArray(plan.cases) ? plan.cases : [];
+  cases.forEach((c, i) => {
+    out.push(`${i + 1}. [${c.type || 'positive'}] ${c.title || `Case ${i + 1}`}`);
+    (Array.isArray(c.steps) ? c.steps : []).forEach((s) => out.push(`     ${s}`));
+    if (c.expectedResults) out.push(`     Expected: ${c.expectedResults}`);
+    out.push('');
+  });
+  return out.join('\n').trimEnd();
+}
+
 function runData_jobs(data) {
   return Array.isArray(data && data.jobs) ? data.jobs : [];
 }
@@ -631,6 +842,39 @@ async function listDir(dirPath, ref) {  const { owner, repo, branch } = repoConf
 }
 
 /**
+ * Download the EXPLORE run's `blast-plan-<jobId>` artifact and return the parsed blast-plan.json
+ * (feature, url, testTypes, maxCases, status, summary, cases, trace). Returns null when unavailable.
+ * Same artifact-download+unzip pattern as getRunResult (PizZip — no extra dependency).
+ */
+async function getPlanArtifact(job, runId, git) {
+  const { owner, repo } = repoConfig(git);
+  const id = runId || job.exploreRunId || job.runId;
+  if (!id) return null;
+  try {
+    const { data } = await axios.get(
+      `${API}/repos/${owner}/${repo}/actions/runs/${id}/artifacts?per_page=100`,
+      { headers: headers(git), timeout: 12000 },
+    );
+    const arts = data.artifacts || [];
+    const art = arts.find((a) => a.name === `blast-plan-${job.jobId}`)
+      || arts.find((a) => a.name.startsWith('blast-plan-'));
+    if (!art || art.expired) return null;
+    const zipRes = await axios.get(art.archive_download_url, {
+      headers: headers(git),
+      responseType: 'arraybuffer',
+      maxRedirects: 5,
+      timeout: 20000,
+    });
+    const zip = new PizZip(Buffer.from(zipRes.data));
+    const entry = zip.file('blast-plan.json');
+    if (!entry) return null;
+    return JSON.parse(entry.asText());
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Download the run's `blast-result-<jobId>` artifact and return the FULL parsed
  * blast-ci-result.json (verified, missingCases, changedPaths, executionStatus,
  * reportSummary, …). Returns null when unavailable.
@@ -679,7 +923,11 @@ module.exports = {
   getProgress,
   repoConfig,
   dispatchWorkflow,
+  dispatchExplore,
+  dispatchApprove,
   getWorkflowRunProgress,
+  getExploreRunProgress,
+  getPlanArtifact,
   getRunReportSummary,
   getRunResult,
   findBlastPr,

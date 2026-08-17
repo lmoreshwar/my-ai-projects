@@ -8,6 +8,8 @@
     "start": "tsx agent-loop.ts",
     "explore": "tsx agent-loop.ts",
     "generate": "tsx generate.ts",
+    "phase:explore": "tsx explore.ts",
+    "phase:approve": "tsx approve.ts",
     "build": "tsc -p tsconfig.json",
     "setup:cli": "npm i -g @playwright/cli && npx playwright install --with-deps chromium"
   },

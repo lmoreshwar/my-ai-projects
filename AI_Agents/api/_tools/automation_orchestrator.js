@@ -20,27 +20,30 @@ const AI_SERVICE_URL = (process.env.AI_SERVICE_URL || '').replace(/\/$/, '');
 const AI_TIMEOUT = Number(process.env.AI_SERVICE_TIMEOUT_MS || 120000);
 
 /**
- * Resolve the active provider:
- *   'github'     → delegate to the GitHub Copilot coding agent (real, async, paid)
- *   'local'      → generate with the local LLM + run Playwright locally (real, sync)
- *   'service'    → delegate to a self-hosted AI Service (real, sync REST)
- *   'simulation' → local demo flow
- * An explicit AUTOMATION_PROVIDER wins; otherwise the best real provider is used.
+ * Resolve the active provider.
+ *
+ * PRODUCTION IS ALWAYS 'github-actions': one headless GitHub Actions job runs the whole
+ * flow (explore → codegen → verify → commit → PR). There is NO laptop worker, NO
+ * cloudflared tunnel, and NO external always-on service — the same agent-loop code runs
+ * identically on a laptop, a VM, or an Actions runner.
+ *
+ * The other providers ('runner', 'local', 'service', 'simulation') are LOCAL DEV/DEBUG
+ * conveniences ONLY. They are reachable exclusively when DEV_MODE=true (or the explicit
+ * BLAST_ALLOW_DEV_PROVIDERS=1 escape hatch), so Render/production can never fall into the
+ * laptop-worker path. Setting AUTOMATION_PROVIDER on Render therefore only ever means
+ * 'github-actions'.
  */
 function provider() {
   const forced = (process.env.AUTOMATION_PROVIDER || '').toLowerCase();
-  // 'runner' = pull-based worker model: the API only enqueues; a separate runner
-  // process claims the job and executes it, reporting logs/results back over REST.
-  if (forced === 'runner') return 'runner';
-  // 'github-actions' = cloud runner: the API triggers a GitHub Actions workflow
-  // that generates + runs the tests and opens a PR. No laptop/worker needed.
-  if (forced === 'github-actions') return 'github-actions';
-  if (forced === 'github' && githubAgent.isConfigured()) return 'github';
-  if (forced === 'local' && localAgent.isConfigured()) return 'local';
-  if (forced === 'service' && AI_SERVICE_URL) return 'service';
-  if (localAgent.isConfigured()) return 'local';
-  if (AI_SERVICE_URL) return 'service';
-  return 'simulation';
+  const allowDevProviders = process.env.DEV_MODE === 'true' || process.env.BLAST_ALLOW_DEV_PROVIDERS === '1';
+  if (allowDevProviders) {
+    if (forced === 'runner') return 'runner';
+    if (forced === 'github' && githubAgent.isConfigured()) return 'github';
+    if (forced === 'local' && localAgent.isConfigured()) return 'local';
+    if (forced === 'service' && AI_SERVICE_URL) return 'service';
+    if (forced === 'simulation') return 'simulation';
+  }
+  return 'github-actions';
 }
 
 // Map a skill label to the AI Service REST endpoint.
@@ -197,6 +200,11 @@ async function requestProgress(job, git) {
     return githubAgent.getProgress(job);
   }
   if (prov === 'github-actions') {
+    // Two-dispatch flow: while in the explore (plan) phase, poll the explore run and surface
+    // the proposed cases → WaitingForApproval. Once approved, poll the approve run → PR/pass/fail.
+    if (job && job.phase === 'explore') {
+      return githubAgent.getExploreRunProgress(job, git);
+    }
     return githubAgent.getWorkflowRunProgress(job, git);
   }
   return { status: job.status, prUrl: job.prUrl || '', checksStatus: job.checksStatus || '', executionStatus: job.executionStatus || '', logs: [] };

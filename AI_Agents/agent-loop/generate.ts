@@ -92,7 +92,7 @@ function slug(feature: string): string {
 }
 
 /** Commit the generated files to a new branch and open a PR. Returns the PR URL (or throws). */
-async function commitAndOpenPr(fw: string, feature: string, files: string[]): Promise<string> {
+export async function commitAndOpenPr(fw: string, feature: string, files: string[]): Promise<string> {
   // GITHUB_TOKEN MUST be the CONNECTED USER's own OAuth token / GitHub App installation token
   // (the workflow maps their token here — NOT the default github-actions[bot] GITHUB_TOKEN), so
   // the push + PR are attributed to their account and respect their repo permissions.
@@ -129,7 +129,7 @@ async function commitAndOpenPr(fw: string, feature: string, files: string[]): Pr
 }
 
 /** Run the generated spec headless; resolve true when it passes (gates the PR). */
-async function verifySpec(fw: string, specRel: string): Promise<boolean> {
+export async function verifySpec(fw: string, specRel: string): Promise<boolean> {
   if (process.env.SKIP_VERIFY === '1') return true;
   const project = process.env.PLAYWRIGHT_PROJECT || 'desktop-chrome';
   log(`[generate] Verifying ${specRel} on project ${project}…`);

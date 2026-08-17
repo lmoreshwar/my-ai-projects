@@ -36,6 +36,15 @@ export interface GeneratedArtifacts {
   reusedExisting: boolean;
 }
 
+/** A proposed test case shown to the user for approval BEFORE any code is written. */
+export interface PlanCase {
+  id: string;
+  title: string;
+  type: string;
+  steps: string[];
+  expectedResults: string;
+}
+
 interface LlmArtifacts {
   domain: string;
   page: { file: string; content: string };
@@ -243,4 +252,68 @@ export async function generateFromTrace(
   log('[codegen] Capability index refreshed (.ai-memory written back).');
 
   return { domain: art.domain || feat.toLowerCase(), files, reusedExisting: !!(art.reusedFrom && art.reusedFrom.length) };
+}
+
+/**
+ * Author the PROPOSED test cases for the approval gate — NO files are written.
+ * Runs after the agent-loop has VERIFIED the flow, so every case references only
+ * controls/actions that were actually observed in the trace (anti-hallucination).
+ * Returns a list the website shows the user; on Approve, `generateFromTrace` turns
+ * the SAME trace into code. Never throws — returns [] if the model reply is unusable.
+ */
+export async function authorPlanFromTrace(
+  fw: string,
+  job: CodegenJob,
+  trace: AgentStep[],
+  log: (l: string) => void = console.log,
+): Promise<PlanCase[]> {
+  if (!trace.length) return [];
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
+  const model = job.model || process.env.OPENAI_MODEL || 'gpt-4o';
+  const types = (job.testTypes && job.testTypes.length) ? job.testTypes.join(', ') : 'positive (happy path)';
+  const maxCases = job.maxCases && job.maxCases > 0 ? job.maxCases : 3;
+
+  const prompt = [
+    `Propose the test cases to automate for the feature "${job.feature}" at ${job.url}.`,
+    `Cover ONLY these test types: ${types}. Propose at most ${maxCases} case(s).`,
+    '',
+    '## Verified live actions (EVIDENCE — the flow was actually driven and confirmed)',
+    renderTrace(trace),
+    '',
+    '## Rules',
+    '- Author a case ONLY when the verified actions/observations support it — never invent a control, message, or a test type just to reach a count. Fewer real cases is correct.',
+    '- Each case must have numbered, human-readable steps that follow the verified flow and one clear expected result.',
+    '',
+    '## Output — STRICT JSON only (no prose, no markdown fences):',
+    '{ "cases": [ { "title": "<short title>", "type": "<positive|negative|boundary|security|accessibility>", "steps": ["1. …", "2. …"], "expectedResults": "<one clear expected outcome>" } ] }',
+  ].join('\n');
+
+  try {
+    log('[plan] Authoring proposed test cases from the verified trace…');
+    const completion = await client.chat.completions.create({
+      model,
+      messages: [
+        { role: 'system', content: 'You are a senior QA engineer. Propose only test cases the evidence supports. Reply with STRICT JSON only.' },
+        { role: 'user', content: prompt },
+      ],
+      temperature: 0,
+    });
+    const raw = completion.choices[0]?.message?.content || '';
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) return [];
+    const parsed = JSON.parse(match[0]) as { cases?: Array<Partial<PlanCase>> };
+    const cases = Array.isArray(parsed.cases) ? parsed.cases : [];
+    const out = cases.slice(0, maxCases).map((c, i): PlanCase => ({
+      id: `TC_${String(i + 1).padStart(3, '0')}`,
+      title: String(c.title || `Case ${i + 1}`).trim(),
+      type: String(c.type || 'positive').trim().toLowerCase(),
+      steps: Array.isArray(c.steps) ? c.steps.map((s) => String(s)) : [],
+      expectedResults: String(c.expectedResults || '').trim(),
+    })).filter((c) => c.title);
+    log(`[plan] Proposed ${out.length} case(s).`);
+    return out;
+  } catch (e) {
+    log(`[plan] Could not author cases: ${(e as Error).message}`);
+    return [];
+  }
 }
