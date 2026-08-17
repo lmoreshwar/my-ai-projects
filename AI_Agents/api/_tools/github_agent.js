@@ -17,6 +17,7 @@
  */
 const axios = require('axios');
 const PizZip = require('pizzip');
+const { setAppCredentialSecrets } = require('./github_secrets');
 
 const API = 'https://api.github.com';
 const GRAPHQL = 'https://api.github.com/graphql';
@@ -318,7 +319,7 @@ async function getProgress(job) {
  * GITHUB_REPO. Returns { dispatched, ref, workflow, runsUrl }.
  */
 async function dispatchWorkflow(job, git) {
-  const { owner, repo, branch } = repoConfig(git);
+  const { owner, repo, branch, token } = repoConfig(git);
   const workflow = process.env.BLAST_WORKFLOW_FILE || 'blast-runner.yml';
   const ref = process.env.BLAST_WORKFLOW_REF || branch || 'main';
 
@@ -350,6 +351,16 @@ async function dispatchWorkflow(job, git) {
   };
 
   try {
+    // SECURITY: app login credentials must NEVER travel as workflow_dispatch inputs (inputs are
+    // plain text in the Actions UI/logs). If the caller passed fresh form creds on the transient
+    // job.appCredentials, push them as encrypted repo secrets FIRST — the job reads
+    // secrets.AGENT_USERNAME / secrets.AGENT_PASSWORD. Uses the SAME user token as the dispatch.
+    // No creds present → no-op (the env-based single-tenant path is unchanged).
+    const appCreds = job.appCredentials;
+    if (appCreds && appCreds.username && appCreds.password) {
+      await setAppCredentialSecrets({ token, owner, repo }, appCreds);
+    }
+
     const inputs = { job_id: String(job.jobId), job_payload: JSON.stringify(payload), browser: job.browser || 'Chrome' };
     // Level 3 (agentic live-drive codegen) is ON by default — it mirrors the local agent's
     // evidence-based, verify-before-write flow. Only an explicit false opts out.

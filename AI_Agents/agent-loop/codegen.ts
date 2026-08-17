@@ -1,0 +1,246 @@
+/**
+ * codegen.ts
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Turn a VERIFIED action trace (from agent-loop.ts) into real framework files:
+ * a Page Object (locators only), a Module (workflow), and a Spec (assertions),
+ * matching the repo's 3-layer conventions.
+ *
+ * CAPABILITY / MEMORY REUSE (`.ai-memory/`)
+ *   BEFORE writing anything it loads `.ai-memory/capabilities.json` + the domain
+ *   shards and hands the model the existing pages/modules/methods so it REUSES a
+ *   matching locator/method instead of duplicating one. AFTER writing it runs the
+ *   repo's `npm run index` so the capability JSON is regenerated (write-back) and
+ *   the next run reuses the new artifacts.
+ *
+ * The proven locators from the trace are the highest-priority evidence: the model
+ * copies them verbatim into the Page so generated locators provably exist.
+ */
+
+import { spawn } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import OpenAI from 'openai';
+import type { AgentStep } from './agent-loop';
+
+export interface CodegenJob {
+  feature: string;
+  url: string;
+  testTypes?: string[];
+  maxCases?: number;
+  model?: string;
+}
+
+export interface GeneratedArtifacts {
+  domain: string;
+  files: string[];
+  reusedExisting: boolean;
+}
+
+interface LlmArtifacts {
+  domain: string;
+  page: { file: string; content: string };
+  module: { file: string; content: string };
+  spec: { file: string; content: string };
+  testData?: Record<string, unknown>;
+  reusedFrom?: string[];
+}
+
+const safeRead = (p: string): string => { try { return readFileSync(p, 'utf8'); } catch { return ''; } };
+const safeJson = (p: string): Record<string, unknown> | null => { try { return JSON.parse(readFileSync(p, 'utf8')); } catch { return null; } };
+
+/** Load the reuse index: existing pages/modules + their methods, fixtures, and the global testIndex. */
+function loadCapabilities(fw: string): string {
+  const root = safeJson(join(fw, '.ai-memory', 'capabilities.json'));
+  if (!root) return '(no .ai-memory/capabilities.json — this is a fresh index)';
+  const shardDir = join(fw, String(root.shardDir || '.ai-memory/domains'));
+  const lines: string[] = [];
+  lines.push(`Fixtures already registered: ${(root.fixtures as string[] || []).join(', ') || '(none)'}`);
+  if (existsSync(shardDir)) {
+    for (const f of readdirSync(shardDir).filter((x) => x.endsWith('.json'))) {
+      const shard = safeJson(join(shardDir, f));
+      if (!shard) continue;
+      const pages = (shard.pages as Array<{ class: string; methods: string[] }> || [])
+        .map((p) => `${p.class}: ${p.methods.join(', ')}`).join(' | ');
+      const modules = (shard.modules as Array<{ class: string; methods: string[] }> || [])
+        .map((m) => `${m.class}: ${m.methods.join(', ')}`).join(' | ');
+      lines.push(`Domain "${shard.domain}" — pages [${pages}] modules [${modules}]`);
+    }
+  }
+  return lines.join('\n');
+}
+
+/** Pull public method signatures from a wrapper util so the model calls only real methods. */
+function wrapperSignatures(fw: string, rel: string): string {
+  const src = safeRead(join(fw, rel));
+  if (!src) return '';
+  const sigs: string[] = [];
+  const re = /^\s*(?:public\s+)?(?:async\s+)?([a-zA-Z_]\w*)\s*\(([^)]*)\)/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) {
+    if (['constructor', 'if', 'for', 'while', 'switch', 'catch', 'return'].includes(m[1])) continue;
+    sigs.push(`${m[1]}(${m[2].replace(/\s+/g, ' ').trim()})`);
+  }
+  return sigs.length ? `${rel}: ${[...new Set(sigs)].join('; ')}` : '';
+}
+
+/** Read one representative Page/Module/Spec so generated files match the repo's exact style. */
+function readExemplars(fw: string): { page: string; module: string; spec: string } {
+  const pick = (dir: string, prefer: RegExp): string => {
+    const d = join(fw, dir);
+    if (!existsSync(d)) return '';
+    const files = readdirSync(d).filter((f) => f.endsWith('.ts'));
+    const chosen = files.find((f) => prefer.test(f)) || files[0];
+    return chosen ? safeRead(join(d, chosen)) : '';
+  };
+  return {
+    page: pick('src/pages', /login/i),
+    module: pick('src/modules', /login/i),
+    spec: pick('src/tests', /login/i),
+  };
+}
+
+/** Render the proven trace as authoritative locator evidence. */
+function renderTrace(trace: AgentStep[]): string {
+  if (!trace.length) return '(no verified actions captured)';
+  return trace.map((t, i) => {
+    const loc = t.locator ? t.locator.replace(/\s*\n\s*/g, ' ').slice(0, 220) : '(no locator)';
+    const val = t.args && (t.args.value ?? t.args.text);
+    return `${i + 1}. ${t.tool}${val ? ` "${val}"` : ''} → ${loc}${t.url ? `   [url: ${t.url}]` : ''}`;
+  }).join('\n');
+}
+
+function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
+  const ex = readExemplars(fw);
+  const wrappers = ['src/utils/Actions.ts', 'src/utils/WaitHelper.ts', 'src/utils/Logger.ts', 'src/utils/WorkflowActions.ts']
+    .map((r) => wrapperSignatures(fw, r)).filter(Boolean).join('\n');
+  const caps = loadCapabilities(fw);
+  const types = (job.testTypes && job.testTypes.length) ? job.testTypes.join(', ') : 'positive (happy path)';
+  return [
+    `Generate Playwright test files for the feature "${job.feature}" at ${job.url}.`,
+    `Cover these test types only: ${types}. Author at most ${job.maxCases || 3} test case(s).`,
+    '',
+    '## Verified live actions (HIGHEST-PRIORITY EVIDENCE — copy these EXACT locators verbatim)',
+    renderTrace(trace),
+    '',
+    '## Reuse index (.ai-memory) — REUSE these before creating anything new; never duplicate',
+    caps,
+    '',
+    '## Wrapper API contract (call ONLY these methods; never invent a wrapper method)',
+    wrappers || '(no wrapper utils found)',
+    '',
+    '## Style exemplars — match this EXACT structure',
+    '### Page (locators ONLY — no workflows, no assertions)',
+    ex.page.slice(0, 2200),
+    '### Module (workflow via Actions + Logger — instantiate its own Page + Actions in the constructor)',
+    ex.module.slice(0, 2200),
+    '### Spec (assertions; import { test, expect } from "../fixtures")',
+    ex.spec.slice(0, 2200),
+    '',
+    '## Rules',
+    '- Page = locators only, arrow getters returning Locator, constructor(private readonly page: Page). Copy locators VERBATIM from the verified actions above.',
+    '- Module = workflow methods using this.actions.* and this.logger.step(); construct its Page + Actions from the page in the constructor. Never put a raw locator or an assertion in a Module.',
+    '- Spec = import { test, expect } from "../fixtures"; instantiate the new Module directly with the test\'s page, e.g. `const m = new <Feature>Module(page)`. Put all assertions here.',
+    '- For login, the Module\'s login method takes (username, password); the spec passes credentials("app"). Do NOT hardcode credentials.',
+    '- Reuse an existing Page/Module method from the reuse index when one already does the job.',
+    '',
+    '## Output — STRICT JSON only (no prose, no markdown fences):',
+    '{',
+    '  "domain": "<kebab domain name>",',
+    '  "page":   { "file": "src/pages/<Feature>Page.ts",   "content": "<full file>" },',
+    '  "module": { "file": "src/modules/<Feature>Module.ts","content": "<full file>" },',
+    '  "spec":   { "file": "src/tests/<feature>.spec.ts",   "content": "<full file>" },',
+    '  "testData": { <any new keys the spec reads, or omit> },',
+    '  "reusedFrom": ["<existing class/method you reused>"]',
+    '}',
+  ].join('\n');
+}
+
+/** Deep-merge new testData keys into the existing file (union — never drop existing keys). */
+function mergeTestData(fw: string, additions?: Record<string, unknown>): string | null {
+  if (!additions || !Object.keys(additions).length) return null;
+  const p = join(fw, 'src', 'testdata', 'testData.json');
+  const current = safeJson(p) || {};
+  const merge = (a: Record<string, unknown>, b: Record<string, unknown>): Record<string, unknown> => {
+    const out: Record<string, unknown> = { ...a };
+    for (const [k, v] of Object.entries(b)) {
+      if (v && typeof v === 'object' && !Array.isArray(v) && out[k] && typeof out[k] === 'object' && !Array.isArray(out[k])) {
+        out[k] = merge(out[k] as Record<string, unknown>, v as Record<string, unknown>);
+      } else if (!(k in out)) {
+        out[k] = v;
+      }
+    }
+    return out;
+  };
+  writeFileSync(p, JSON.stringify(merge(current, additions), null, 4) + '\n');
+  return p;
+}
+
+/** Run the repo's capability indexer so `.ai-memory` is regenerated (write-back). Best-effort. */
+function refreshIndex(fw: string): Promise<void> {
+  return new Promise((resolve) => {
+    const child = spawn('npm', ['run', 'index'], { cwd: fw, shell: true });
+    const timer = setTimeout(() => { child.kill('SIGKILL'); resolve(); }, 90000);
+    child.on('close', () => { clearTimeout(timer); resolve(); });
+    child.on('error', () => { clearTimeout(timer); resolve(); });
+  });
+}
+
+/** Keep a generated path inside the repo's src/ tree (prevents path traversal from the LLM). */
+function safePath(fw: string, rel: string, fallback: string): string {
+  const clean = String(rel || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const target = clean.startsWith('src/') && !clean.includes('..') ? clean : fallback;
+  return join(fw, target);
+}
+
+/**
+ * Generate the Page/Module/Spec from a verified trace, reusing existing capabilities and writing
+ * new artifacts + refreshing the index. Returns the files written. Throws on an unusable LLM reply.
+ */
+export async function generateFromTrace(
+  fw: string,
+  job: CodegenJob,
+  trace: AgentStep[],
+  log: (l: string) => void = console.log,
+): Promise<GeneratedArtifacts> {
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
+  const model = job.model || process.env.OPENAI_MODEL || 'gpt-4o';
+
+  log('[codegen] Loading reuse index + exemplars and asking the model for files…');
+  const completion = await client.chat.completions.create({
+    model,
+    messages: [
+      { role: 'system', content: 'You are a senior Playwright/TypeScript engineer. Reuse existing framework code, copy proven locators verbatim, and reply with STRICT JSON only.' },
+      { role: 'user', content: buildPrompt(fw, job, trace) },
+    ],
+    temperature: 0,
+  });
+
+  const raw = completion.choices[0]?.message?.content || '';
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('Codegen: model did not return JSON.');
+  let art: LlmArtifacts;
+  try { art = JSON.parse(match[0]); } catch (e) { throw new Error(`Codegen: invalid JSON (${(e as Error).message}).`); }
+  if (!art.page?.content || !art.module?.content || !art.spec?.content) {
+    throw new Error('Codegen: reply missing page/module/spec content.');
+  }
+
+  const files: string[] = [];
+  const feat = (job.feature || 'Feature').replace(/[^a-zA-Z0-9]/g, '') || 'Feature';
+  const writes: Array<[string, string]> = [
+    [safePath(fw, art.page.file, `src/pages/${feat}Page.ts`), art.page.content],
+    [safePath(fw, art.module.file, `src/modules/${feat}Module.ts`), art.module.content],
+    [safePath(fw, art.spec.file, `src/tests/${feat.toLowerCase()}.spec.ts`), art.spec.content],
+  ];
+  for (const [abs, content] of writes) {
+    writeFileSync(abs, content.endsWith('\n') ? content : content + '\n');
+    files.push(abs.replace(fw, '').replace(/^[\\/]/, '').replace(/\\/g, '/'));
+  }
+  const td = mergeTestData(fw, art.testData);
+  if (td) files.push(td.replace(fw, '').replace(/^[\\/]/, '').replace(/\\/g, '/'));
+
+  log(`[codegen] Wrote ${files.length} file(s). Refreshing capability index…`);
+  await refreshIndex(fw);
+  log('[codegen] Capability index refreshed (.ai-memory written back).');
+
+  return { domain: art.domain || feat.toLowerCase(), files, reusedExisting: !!(art.reusedFrom && art.reusedFrom.length) };
+}

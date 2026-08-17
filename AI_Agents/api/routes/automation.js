@@ -8,6 +8,7 @@ const orchestrator = require('../_tools/automation_orchestrator');
 const localAgent = require('../_tools/local_agent');
 const githubAgent = require('../_tools/github_agent');
 const { resolveGitConnection } = require('../_tools/git_connection');
+const { setAppCredentialSecrets } = require('../_tools/github_secrets');
 const runnerAuth = require('../middleware/runnerAuth');
 // Dev-mode local store (used when MongoDB is unreachable / DEV_MODE=true).
 const DEV_JOBS_FILE = path.join(__dirname, '..', '..', 'dev-automation-jobs.json');
@@ -251,6 +252,21 @@ router.post('/explore', auth, async (req, res) => {
     const now = new Date().toISOString();
     const git = await resolveGitConnection(req.user.id);
 
+    // SECURITY: push the fresh form credentials to the user's repo as encrypted Actions secrets
+    // (APP_USERNAME/APP_PASSWORD) so the later cloud GENERATE reads them from secrets — never from
+    // plaintext workflow_dispatch inputs. Done here (the only point the raw creds exist); they
+    // persist on the repo until the dispatch. Best-effort: a failure (e.g. token lacks Secrets:write)
+    // is logged, not fatal — explore still runs.
+    const credLogs = [];
+    if (exploreCreds.username && exploreCreds.password && git.token && git.owner && git.repo) {
+      try {
+        await setAppCredentialSecrets({ token: git.token, owner: git.owner, repo: git.repo }, exploreCreds);
+        credLogs.push('[secure] App credentials set as encrypted repo secrets (APP_USERNAME/APP_PASSWORD) for the cloud run.');
+      } catch (secErr) {
+        credLogs.push(`[secure] Could not set credential secrets (the cloud run will use existing repo secrets): ${secErr.message}`);
+      }
+    }
+
     let job = {
       jobId,
       userId: req.user.id,
@@ -302,7 +318,7 @@ router.post('/explore', auth, async (req, res) => {
       const { testCases, featureModel } = result;
       blocked = result.blocked || null;
       job.testCases = testCases;
-      job.logs = [...(job.logs || []), ...exploreLogs];
+      job.logs = [...(job.logs || []), ...credLogs, ...exploreLogs];
       job.featureSummary = featureModel
         ? `${featureModel.inputs.length} input(s), ${featureModel.buttons.length} button(s), ${featureModel.links.length} link(s)`
         : '';
@@ -310,7 +326,7 @@ router.post('/explore', auth, async (req, res) => {
       // self-establish preconditions instead of re-guessing a multi-page flow.
       job.journey = localAgent.compactJourney(featureModel);
     } catch (e) {
-      job.logs = [...(job.logs || []), ...exploreLogs, `[explore] error: ${e.message}`];
+      job.logs = [...(job.logs || []), ...credLogs, ...exploreLogs, `[explore] error: ${e.message}`];
     }
 
     // BLOCKED: exploration could not capture the requested screen (bad URL / login / feature).
