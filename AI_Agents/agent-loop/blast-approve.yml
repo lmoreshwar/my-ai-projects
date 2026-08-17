@@ -41,6 +41,10 @@ jobs:
   approve:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Grant the automatic GITHUB_TOKEN write scope (the PR push prefers BLAST_PAT/USER_GH_TOKEN).
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       # 1) The target framework (this repo) — checked out at the workspace root = FRAMEWORK_PATH.
       - name: Checkout framework
