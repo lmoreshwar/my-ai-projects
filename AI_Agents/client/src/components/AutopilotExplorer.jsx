@@ -459,6 +459,14 @@ export default function AutopilotExplorer({ apiBase, connections }) {
                     Proceed — generate scripts
                   </button>
                 )}
+                {/* A failed/partial generation keeps the SAME plan — one click retries codegen without re-exploring. */}
+                {(job.status === 'Failed' || job.status === 'Partial') && (
+                  <button onClick={proceed} disabled={proceeding}
+                    className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-white bg-green-600 hover:bg-green-700 disabled:opacity-60 transition">
+                    <span className="material-symbols-outlined text-[18px]">refresh</span>
+                    Retry — generate scripts
+                  </button>
+                )}
                 {(proceeding || job.status === 'Generating' || job.status === 'Executing') && (
                   <div className="flex items-center gap-2 text-sm text-indigo-600 dark:text-indigo-300 py-2">
                     <span className="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
