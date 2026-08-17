@@ -38,6 +38,11 @@ async function main(): Promise<void> {
 
   const specRel = art.files.find((f) => f.includes('/tests/')) || '';
   if (specRel && !(await verifySpec(fw, specRel))) {
+    // Dump the generated files so the written locators can be compared against the verified trace.
+    for (const rel of art.files) {
+      try { log(`\n───── generated ${rel} ─────\n${readFileSync(join(fw, rel), 'utf8')}`); }
+      catch { /* unreadable file — skip */ }
+    }
     console.error('[approve] Generated spec did not pass — no PR opened.');
     process.exit(1);
   }

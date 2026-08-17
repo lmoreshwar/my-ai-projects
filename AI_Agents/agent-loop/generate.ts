@@ -134,7 +134,14 @@ export async function verifySpec(fw: string, specRel: string): Promise<boolean> 
   const project = process.env.PLAYWRIGHT_PROJECT || 'desktop-chrome';
   log(`[generate] Verifying ${specRel} on project ${project}…`);
   const { code, out } = await run('npx', ['playwright', 'test', specRel, `--project=${project}`], fw, true);
-  log(out.split('\n').slice(-12).join('\n'));
+  if (code === 0) {
+    log(out.split('\n').slice(-12).join('\n'));
+  } else {
+    // Print the FULL Playwright output so the real error (locator/assertion) reaches the CI log,
+    // not just the trace-attachment footer that a short tail would capture.
+    log('[generate] Verification FAILED — full Playwright output below:');
+    log(out);
+  }
   return code === 0;
 }
 
