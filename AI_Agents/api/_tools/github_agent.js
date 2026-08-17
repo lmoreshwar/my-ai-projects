@@ -494,9 +494,7 @@ async function getWorkflowRunProgress(job, git) {
         { headers: headers(git) },
       );
       const floor = job.dispatchedAt ? new Date(job.dispatchedAt).getTime() - 60000 : 0;
-      const run = (data.workflow_runs || [])
-        .filter((r) => new Date(r.created_at).getTime() >= floor)
-        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+      const run = matchRunForJob(data.workflow_runs, job, floor);
       if (!run) {
         return { status: 'Generating', snapshotLogs: snap(['⟳ Waiting for the workflow run to start…']) };
       }
@@ -634,9 +632,7 @@ async function getExploreRunProgress(job, git) {
         { headers: headers(git) },
       );
       const floor = job.dispatchedAt ? new Date(job.dispatchedAt).getTime() - 60000 : 0;
-      const run = (data.workflow_runs || [])
-        .filter((r) => new Date(r.created_at).getTime() >= floor)
-        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+      const run = matchRunForJob(data.workflow_runs, job, floor);
       if (!run) return { status: 'Exploring', snapshotLogs: snap(['⟳ Waiting for the explore run to start…']) };
       runId = run.id;
       runHtmlUrl = run.html_url;
@@ -734,6 +730,22 @@ function renderPlan(plan) {
 
 function runData_jobs(data) {
   return Array.isArray(data && data.jobs) ? data.jobs : [];
+}
+
+// Resolve WHICH dispatched run belongs to THIS job. Multiple concurrent explore/approve dispatches
+// share the same workflow file + branch, so recency alone can latch onto the wrong run (e.g. an
+// earlier feature). Prefer a run whose run-name/title carries this job id (set via `run-name:` in
+// the workflow); fall back to the most-recent run after the dispatch floor for older runs.
+function matchRunForJob(runs, job, floor) {
+  const list = (runs || [])
+    .filter((r) => new Date(r.created_at).getTime() >= floor)
+    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  const jid = String((job && job.jobId) || '');
+  if (jid) {
+    const exact = list.find((r) => `${r.name || ''} ${r.display_title || ''}`.includes(jid));
+    if (exact) return exact;
+  }
+  return list[0] || null;
 }
 
 /**

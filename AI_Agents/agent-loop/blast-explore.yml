@@ -21,6 +21,9 @@
 # ─────────────────────────────────────────────────────────────────────────────
 name: BLAST Explore (Plan)
 
+# Tag the run with the job id so the website can match THIS job's run (not just the newest one).
+run-name: BLAST Explore ${{ inputs.job_id }} — ${{ inputs.feature_name }}
+
 on:
   workflow_dispatch:
     inputs:

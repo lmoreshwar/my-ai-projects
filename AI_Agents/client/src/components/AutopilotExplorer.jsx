@@ -12,6 +12,9 @@ const TEST_TYPES = ['Positive', 'Negative', 'Boundary', 'Security-lite', 'Access
 // Default to Positive only; the user opts into Negative/Boundary/Security/Accessibility manually.
 const DEFAULT_TYPES = ['Positive'];
 const TERMINAL = new Set(['Passed', 'Partial', 'Failed', 'Completed', 'PushedToGate', 'Merged', 'Discarded']);
+// States where polling should PAUSE: terminal outcomes plus states that need a user decision
+// (the plan is ready to Approve, info is needed, or exploration was blocked).
+const STOP_POLLING = new Set([...TERMINAL, 'WaitingForApproval', 'Pending', 'Blocked']);
 
 const inputCls =
   'w-full px-3 py-2 rounded-lg border border-outline-variant/50 dark:border-slate-700 bg-white dark:bg-slate-800 text-on-surface dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-app-red/40 transition';
@@ -114,11 +117,20 @@ export default function AutopilotExplorer({ apiBase, connections }) {
         const data = await res.json().catch(() => ({}));
         if (res.ok && data && data.jobId) {
           setJob(data);
-          if (TERMINAL.has(data.status)) { stopPoll(); setProceeding(false); }
+          if (STOP_POLLING.has(data.status)) { stopPoll(); setProceeding(false); }
         }
       } catch { /* transient — keep polling */ }
     }, 2000);
   }, [apiBase]);
+
+  // Auto-poll whenever a job is in an active (non-terminal, non-waiting) state — this covers BOTH
+  // the Explore phase (after Preview Plan) and the Approve phase, and resumes after a remount.
+  // Without this the UI would freeze on "Exploring" because the run finishes server-side but the
+  // client never asks for the result.
+  useEffect(() => {
+    if (job && job.jobId && !STOP_POLLING.has(job.status)) pollProgress(job.jobId);
+    else stopPoll();
+  }, [job?.jobId, job?.status, pollProgress]);
 
   // Approve the plan → generate + run the scripts (existing pipeline), then stream progress.
   const proceed = useCallback(async () => {
@@ -140,12 +152,17 @@ export default function AutopilotExplorer({ apiBase, connections }) {
     }
   }, [apiBase, job, pollProgress]);
 
-  // Discard the attempt — deletes the orphan generation branch so a fresh run starts from scratch.
+  // Discard the attempt — clears a pending (Exploring/WaitingForApproval) job's lock, or deletes
+  // the orphan generation branch after a run, so a fresh run can start.
   const discard = useCallback(async () => {
     if (!job) return;
+    const pending = job.status === 'Exploring' || job.status === 'WaitingForApproval';
     const deleteRemote = job.status === 'PushedToGate' &&
       window.confirm('A branch was already pushed to origin. Also delete the REMOTE branch? This cannot be undone.');
-    if (!window.confirm('Discard this attempt and delete the generation branch? Any un-merged generated tests will be removed.')) return;
+    const confirmMsg = pending
+      ? 'Cancel and discard this attempt? This clears the pending job so you can start a new one.'
+      : 'Discard this attempt and delete the generation branch? Any un-merged generated tests will be removed.';
+    if (!window.confirm(confirmMsg)) return;
     setError('');
     setDiscarding(true);
     try {
@@ -492,11 +509,13 @@ export default function AutopilotExplorer({ apiBase, connections }) {
                     ) : null}
                   </div>
                 )}
-                {(job.status === 'Failed' || job.status === 'Partial' || job.status === 'PushedToGate') && (
+                {(job.status === 'Exploring' || job.status === 'WaitingForApproval' || job.status === 'Failed' || job.status === 'Partial' || job.status === 'PushedToGate') && (
                   <button onClick={discard} disabled={discarding}
                     className="mt-2 w-full flex items-center justify-center gap-2 px-4 py-2 rounded-xl font-semibold text-on-surface-variant dark:text-slate-300 border border-outline-variant/50 dark:border-slate-700 hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60 transition">
                     <span className="material-symbols-outlined text-[18px]">{discarding ? 'progress_activity' : 'delete_sweep'}</span>
-                    {discarding ? 'Discarding…' : 'Discard attempt'}
+                    {discarding
+                      ? 'Discarding…'
+                      : (job.status === 'Exploring' || job.status === 'WaitingForApproval' ? 'Cancel & discard' : 'Discard attempt')}
                   </button>
                 )}
               </div>
