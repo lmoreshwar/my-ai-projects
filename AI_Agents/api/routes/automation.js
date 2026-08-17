@@ -735,7 +735,26 @@ router.post('/jobs/:jobId/merge-pr', auth, async (req, res) => {
   }
 });
 
-// @route   POST /api/automation/jobs/:jobId/run-copilot
+// @route   POST /api/automation/jobs/:jobId/run-smoke
+// @desc    After a merge, trigger a SCOPED @Smoke run of the framework CI (not the full suite)
+router.post('/jobs/:jobId/run-smoke', auth, async (req, res) => {
+  try {
+    const job = await findJob(req.params.jobId);
+    if (!job) return res.status(404).json({ msg: 'Job not found' });
+    if (job.provider !== 'github-actions') {
+      return res.status(400).json({ msg: 'Smoke run is only available for cloud (GitHub Actions) jobs.' });
+    }
+    const result = await githubAgent.dispatchSmoke(job, await resolveGitConnection(req.user.id));
+    job.logs = [...(job.logs || []), `[smoke] Dispatched @Smoke run → ${result.runsUrl}`];
+    const saved = await persist(job);
+    res.json({ ...(saved.toObject?.() ?? saved), smokeRunUrl: result.runsUrl });
+  } catch (err) {
+    console.error('run-smoke error:', err.message);
+    res.status(500).json({ msg: err.message || 'Server Error' });
+  }
+});
+
+
 // @desc    Hand the job to the LOCAL VS Code Copilot agent via a generated .bat
 router.post('/jobs/:jobId/run-copilot', auth, async (req, res) => {  try {
     const job = await findJob(req.params.jobId);

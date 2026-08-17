@@ -93,6 +93,8 @@ jobs:
           FRAMEWORK_PATH: ${{ github.workspace }}
           PLAN_FILE: ${{ github.workspace }}/blast-plan.json
           BASE_BRANCH: ${{ github.ref_name }}
+          # Job id → deterministic PR branch blast/auto-<jobId> so the API can find & merge this PR.
+          JOB_ID: ${{ inputs.job_id }}
           # App login — used by the spec's real login during the green-before-PR verify run.
           APP_USERNAME: ${{ secrets.APP_USERNAME }}
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}

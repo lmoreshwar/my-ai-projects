@@ -48,6 +48,8 @@ export default function AutopilotExplorer({ apiBase, connections }) {
   const [job, setJob] = useState(null);
   const [proceeding, setProceeding] = useState(false);
   const [discarding, setDiscarding] = useState(false);
+  const [merging, setMerging] = useState(false);
+  const [smoking, setSmoking] = useState(false);
   const fileInputRef = useRef(null);
   const pollRef = useRef(null);
 
@@ -176,6 +178,45 @@ export default function AutopilotExplorer({ apiBase, connections }) {
       setError(e.message || 'Could not discard the attempt.');
     } finally {
       setDiscarding(false);
+    }
+  }, [apiBase, job]);
+
+  // Merge the BLAST pull request via the GitHub connection (same token used to open it).
+  const mergePr = useCallback(async () => {
+    if (!job) return;
+    setError('');
+    setMerging(true);
+    try {
+      const res = await fetch(`${apiBase}/api/automation/jobs/${job.jobId}/merge-pr`, {
+        method: 'POST', headers: authHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.msg || `Merge failed (${res.status})`);
+      setJob(data);
+    } catch (e) {
+      setError(e.message || 'Could not merge the pull request.');
+    } finally {
+      setMerging(false);
+    }
+  }, [apiBase, job]);
+
+  // After a merge, trigger a SCOPED @Smoke CI run (not the full suite) and open the Actions run.
+  const runSmoke = useCallback(async () => {
+    if (!job) return;
+    setError('');
+    setSmoking(true);
+    try {
+      const res = await fetch(`${apiBase}/api/automation/jobs/${job.jobId}/run-smoke`, {
+        method: 'POST', headers: authHeaders(),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.msg || `Smoke run failed (${res.status})`);
+      setJob(data);
+      if (data.smokeRunUrl) window.open(data.smokeRunUrl, '_blank', 'noopener');
+    } catch (e) {
+      setError(e.message || 'Could not start the smoke run.');
+    } finally {
+      setSmoking(false);
     }
   }, [apiBase, job]);
 
@@ -481,6 +522,48 @@ export default function AutopilotExplorer({ apiBase, connections }) {
                       <a href={`${apiBase}${job.reportUrl}`} target="_blank" rel="noreferrer"
                         className="underline text-app-red ml-1">View report</a>
                     ) : null}
+                  </div>
+                )}
+
+                {/* Merge PR — appears once a pull request exists and is not yet merged. */}
+                {job.prUrl && !job.prMerged && job.status !== 'Merged' &&
+                  (job.status === 'Passed' || job.status === 'Completed' || job.status === 'PushedToGate' || job.status === 'Partial') && (
+                  <div className="mt-1 space-y-2">
+                    <a href={job.prUrl} target="_blank" rel="noreferrer"
+                      className="text-xs underline text-app-red flex items-center gap-1">
+                      <span className="material-symbols-outlined text-[16px]">open_in_new</span>
+                      View pull request{job.prNumber ? ` #${job.prNumber}` : ''}
+                    </a>
+                    <button onClick={mergePr} disabled={merging}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-white bg-purple-600 hover:bg-purple-700 disabled:opacity-60 transition">
+                      <span className="material-symbols-outlined text-[18px]">{merging ? 'progress_activity' : 'merge'}</span>
+                      {merging ? 'Merging…' : 'Merge PR'}
+                    </button>
+                    {job.prMergeable === false && (
+                      <div className="text-xs text-error flex items-center gap-1">
+                        <span className="material-symbols-outlined text-[16px]">warning</span>
+                        Not mergeable ({job.prMergeableState || 'conflict'}) — resolve on GitHub first.
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Merged — show the merge + a scoped smoke run (NOT the full suite). */}
+                {(job.status === 'Merged' || job.prMerged) && (
+                  <div className="mt-1 space-y-2">
+                    <div className="text-sm text-green-700 dark:text-green-300 flex items-center gap-2 py-1">
+                      <span className="material-symbols-outlined text-[18px]">merge</span>
+                      Merged{job.prNumber ? ` #${job.prNumber}` : ''}.
+                      {job.prUrl ? (
+                        <a href={job.prUrl} target="_blank" rel="noreferrer"
+                          className="underline text-app-red ml-1">View PR</a>
+                      ) : null}
+                    </div>
+                    <button onClick={runSmoke} disabled={smoking}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 transition">
+                      <span className="material-symbols-outlined text-[18px]">{smoking ? 'progress_activity' : 'bolt'}</span>
+                      {smoking ? 'Starting smoke run…' : 'Run Smoke Tests'}
+                    </button>
                   </div>
                 )}
                 {job.status === 'Partial' && (

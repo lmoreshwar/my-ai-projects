@@ -101,7 +101,11 @@ export async function commitAndOpenPr(fw: string, feature: string, files: string
   const repo = await deriveRepo(fw);
   if (!repo) throw new Error('Could not determine owner/repo from the framework git remote.');
   const base = process.env.BASE_BRANCH || 'main';
-  const branch = `blast/${slug(feature)}`;
+  // Use the deterministic job-scoped branch when the job id is available so the API's findBlastPr
+  // (which reconstructs `blast/auto-<jobId>`) can locate this PR to merge it. Fall back to the
+  // feature slug for ad-hoc/local runs that have no job id.
+  const jobId = process.env.JOB_ID || '';
+  const branch = jobId ? `blast/auto-${jobId}` : `blast/${slug(feature)}`;
 
   // Stage only the generated files + the regenerated capability index — nothing else.
   await run('git', ['checkout', '-B', branch], fw);

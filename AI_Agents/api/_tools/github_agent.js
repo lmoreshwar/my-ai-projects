@@ -439,6 +439,39 @@ async function dispatchExplore(job, git, creds) {
  * @param {object} job   the job (jobId, feature, exploreRunId)
  * @param {object} git   resolved GitHub connection { token, owner, repo, branch }
  */
+/**
+ * Dispatch a SCOPED smoke run of the framework's own CI workflow (playwright.yml) via
+ * workflow_dispatch, filtered to @Smoke-tagged tests only. Used after a BLAST PR is merged so the
+ * user can validate the merged suite without triggering the full regression run. Generic: the
+ * workflow file + tag are configurable; nothing app-specific here.
+ */
+async function dispatchSmoke(job, git) {
+  const { owner, repo, branch } = repoConfig(git);
+  const workflow = process.env.BLAST_SMOKE_WORKFLOW || 'playwright.yml';
+  const ref = process.env.BLAST_WORKFLOW_REF || branch || 'main';
+  const inputs = {
+    environment: process.env.BLAST_SMOKE_ENV || 'qa',
+    test_grep: process.env.BLAST_SMOKE_GREP || '@Smoke',
+    browser: 'desktop-chrome',
+    generate_allure: 'true',
+  };
+  try {
+    await axios.post(
+      `${API}/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`,
+      { ref, inputs },
+      { headers: headers(git) },
+    );
+    return {
+      dispatched: true,
+      workflow,
+      ref,
+      runsUrl: `https://github.com/${owner}/${repo}/actions/workflows/${workflow}`,
+    };
+  } catch (err) {
+    throw friendlyError(err, 'smoke workflow dispatch');
+  }
+}
+
 async function dispatchApprove(job, git) {
   const { owner, repo, branch } = repoConfig(git);
   const workflow = process.env.BLAST_APPROVE_WORKFLOW || 'blast-approve.yml';
@@ -960,6 +993,7 @@ module.exports = {
   dispatchWorkflow,
   dispatchExplore,
   dispatchApprove,
+  dispatchSmoke,
   getWorkflowRunProgress,
   getExploreRunProgress,
   getPlanArtifact,
