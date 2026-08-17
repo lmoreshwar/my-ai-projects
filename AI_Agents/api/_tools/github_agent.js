@@ -854,6 +854,37 @@ async function listDir(dirPath, ref) {  const { owner, repo, branch } = repoConf
 }
 
 /**
+ * Download a run artifact zip as a Buffer. GitHub's `archive_download_url` 302-redirects to a
+ * short-lived SIGNED storage URL; that host rejects the GitHub `Authorization` header, so we
+ * resolve the redirect WITH auth (maxRedirects: 0) and then fetch the signed URL WITHOUT auth.
+ * Throws on real failures so the caller can log the reason.
+ */
+async function fetchArtifactBuffer(archiveUrl, git) {
+  let signedUrl = null;
+  try {
+    const first = await axios.get(archiveUrl, {
+      headers: headers(git),
+      responseType: 'arraybuffer',
+      maxRedirects: 0,
+      timeout: 20000,
+      validateStatus: (s) => (s >= 200 && s < 300) || s === 301 || s === 302 || s === 307 || s === 308,
+    });
+    if (first.status >= 200 && first.status < 300) return Buffer.from(first.data); // some hosts return the zip directly
+    signedUrl = first.headers && first.headers.location;
+  } catch (err) {
+    const r = err.response;
+    if (r && [301, 302, 307, 308].includes(r.status) && r.headers && r.headers.location) {
+      signedUrl = r.headers.location;
+    } else {
+      throw err;
+    }
+  }
+  if (!signedUrl) throw new Error('artifact redirect returned no Location');
+  const res = await axios.get(signedUrl, { responseType: 'arraybuffer', maxRedirects: 5, timeout: 20000 });
+  return Buffer.from(res.data);
+}
+
+/**
  * Download the EXPLORE run's `blast-plan-<jobId>` artifact and return the parsed blast-plan.json
  * (feature, url, testTypes, maxCases, status, summary, cases, trace). Returns null when unavailable.
  * Same artifact-download+unzip pattern as getRunResult (PizZip — no extra dependency).
@@ -871,17 +902,13 @@ async function getPlanArtifact(job, runId, git) {
     const art = arts.find((a) => a.name === `blast-plan-${job.jobId}`)
       || arts.find((a) => a.name.startsWith('blast-plan-'));
     if (!art || art.expired) return null;
-    const zipRes = await axios.get(art.archive_download_url, {
-      headers: headers(git),
-      responseType: 'arraybuffer',
-      maxRedirects: 5,
-      timeout: 20000,
-    });
-    const zip = new PizZip(Buffer.from(zipRes.data));
+    const buf = await fetchArtifactBuffer(art.archive_download_url, git);
+    const zip = new PizZip(buf);
     const entry = zip.file('blast-plan.json');
     if (!entry) return null;
     return JSON.parse(entry.asText());
-  } catch {
+  } catch (err) {
+    console.error(`getPlanArtifact failed for ${job.jobId}: ${err.message}`);
     return null;
   }
 }
@@ -904,17 +931,13 @@ async function getRunResult(job, runId, git) {
     const art = arts.find((a) => a.name === `blast-result-${job.jobId}`)
       || arts.find((a) => a.name.startsWith('blast-result-'));
     if (!art || art.expired) return null;
-    const zipRes = await axios.get(art.archive_download_url, {
-      headers: headers(git),
-      responseType: 'arraybuffer',
-      maxRedirects: 5,
-      timeout: 20000,
-    });
-    const zip = new PizZip(Buffer.from(zipRes.data));
+    const buf = await fetchArtifactBuffer(art.archive_download_url, git);
+    const zip = new PizZip(buf);
     const entry = zip.file('blast-ci-result.json');
     if (!entry) return null;
     return JSON.parse(entry.asText());
-  } catch {
+  } catch (err) {
+    console.error(`getRunResult failed for ${job.jobId}: ${err.message}`);
     return null;
   }
 }
