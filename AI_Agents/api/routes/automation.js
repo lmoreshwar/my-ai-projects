@@ -62,6 +62,30 @@ async function findJob(jobId) {
   return doc ? doc.toObject() : null;
 }
 
+// Autopilot pending-job lock. A repo holds ONE pair of app-credential secrets
+// (APP_USERNAME/APP_PASSWORD), so a second credentialed explore would overwrite the creds a
+// still-pending job needs for its approve step. Allow only one active Autopilot job per user at a
+// time. A job with no fresh activity for PENDING_LOCK_HOURS is treated as abandoned (tab closed /
+// explore failed / never approved) and no longer holds the lock, so the repo is never locked out.
+const PENDING_LOCK_HOURS = 6;
+const ACTIVE_PENDING_STATUSES = ['Exploring', 'WaitingForApproval'];
+
+function jobAgeMs(job) {
+  const t = job.dispatchedAt || job.updatedAt || job.createdAt;
+  const ms = t ? Date.now() - new Date(t).getTime() : Infinity;
+  return Number.isFinite(ms) ? ms : Infinity;
+}
+
+async function findPendingJobForUser(userId) {
+  const fresh = (j) => jobAgeMs(j) < PENDING_LOCK_HOURS * 3600 * 1000;
+  if (isDev()) {
+    return loadDevJobs().find((j) => j.userId === userId && ACTIVE_PENDING_STATUSES.includes(j.status) && fresh(j)) || null;
+  }
+  const docs = await AutomationJob.find({ userId, status: { $in: ACTIVE_PENDING_STATUSES } })
+    .sort({ updatedAt: -1 }).lean();
+  return docs.find(fresh) || null;
+}
+
 // @route   GET /api/automation/jobs
 // @desc    List automation jobs for the current user
 router.get('/jobs', auth, async (req, res) => {
@@ -246,6 +270,20 @@ router.post('/explore', auth, async (req, res) => {
     };
     if (!url || !String(url).trim()) return res.status(400).json({ msg: 'Application URL is required.' });
     if (!feature || !String(feature).trim()) return res.status(400).json({ msg: 'Feature / widget name is required.' });
+
+    // One active credentialed Autopilot job per user: a second explore that carries creds would
+    // overwrite the repo secrets (APP_USERNAME/APP_PASSWORD) the pending job needs for its approve
+    // step. Abandoned jobs stop holding the lock after PENDING_LOCK_HOURS (see findPendingJobForUser).
+    if (exploreCreds.username && exploreCreds.password && orchestrator.provider() === 'github-actions') {
+      const pending = await findPendingJobForUser(req.user.id);
+      if (pending) {
+        return res.status(409).json({
+          msg: `You already have a pending Autopilot job (${pending.jobId}, ${pending.status}). Approve it, or Discard it, before starting a new one — pending jobs auto-expire after ${PENDING_LOCK_HOURS}h.`,
+          jobId: pending.jobId,
+          status: pending.status,
+        });
+      }
+    }
 
     const existing = isDev() ? loadDevJobs() : [];
     const jobId = isDev() ? nextJobId(existing) : `AUTO-${Date.now()}`;
