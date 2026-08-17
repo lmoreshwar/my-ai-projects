@@ -199,6 +199,77 @@ app.post('/github-branches', async (req, res) => {
     }
 });
 
+// GitHub – Provision a NEW automation repo from the BLAST template repository.
+// Additive onboarding: a new user creates their OWN copy of the framework (holding the
+// blast-explore/blast-approve workflows) in one click, then it becomes their target repo.
+// Template source is env-driven (never app-specific): BLAST_TEMPLATE_OWNER/BLAST_TEMPLATE_REPO.
+app.post('/github-create-from-template', async (req, res) => {
+    try {
+        const { token, apiUrl, name } = req.body;
+        const isPrivate = req.body.private !== false; // default to a private repo
+        const axios = require('axios');
+        const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
+        const authHeader = `Bearer ${token}`;
+
+        const repoName = String(name || '').trim();
+        if (!repoName) {
+            return res.status(400).json({ status: 'error', message: 'A repository name is required.' });
+        }
+        if (!/^[A-Za-z0-9._-]+$/.test(repoName)) {
+            return res.status(400).json({ status: 'error', message: 'Use only letters, numbers, hyphens, underscores or dots in the repo name.' });
+        }
+
+        const templateOwner = process.env.BLAST_TEMPLATE_OWNER || 'lmoreshwar';
+        const templateRepo = process.env.BLAST_TEMPLATE_REPO || 'PLAYWRIGHT_BLAST_FRAMEWORK';
+
+        // Resolve the authenticated user — the new repo is created under THEIR account.
+        const userRes = await axios.get(`${baseUrl}/user`, {
+            headers: { Authorization: authHeader, Accept: 'application/vnd.github+json' },
+            timeout: 10000,
+        });
+        const owner = userRes.data.login;
+
+        const genRes = await axios.post(
+            `${baseUrl}/repos/${templateOwner}/${templateRepo}/generate`,
+            {
+                owner,
+                name: repoName,
+                description: 'AI Native Playwright automation — generated from the BLAST template.',
+                private: isPrivate,
+                include_all_branches: false,
+            },
+            {
+                headers: { Authorization: authHeader, Accept: 'application/vnd.github+json' },
+                timeout: 20000,
+            }
+        );
+
+        const created = genRes.data;
+        console.log(`GitHub: created ${created.full_name} from ${templateOwner}/${templateRepo}`);
+        return res.json({
+            status: 'success',
+            message: `Created ${created.full_name}`,
+            full_name: created.full_name,
+            default_branch: created.default_branch || 'main',
+            visibility: created.private ? 'Private' : 'Public',
+            html_url: created.html_url,
+        });
+    } catch (error) {
+        const status = error.response?.status;
+        const apiMsg = error.response?.data?.message || error.message;
+        let msg = status ? `GitHub API ${status}: ${apiMsg}` : apiMsg;
+        if (status === 422 && /name already exists|already exists/i.test(apiMsg)) {
+            msg = 'A repository with that name already exists on your account. Pick a different name.';
+        } else if (status === 404) {
+            msg = 'Template repository not found or not marked as a template. Ask the admin to enable "Template repository" on it.';
+        } else if (status === 403) {
+            msg = 'Your token lacks permission to create repositories. It needs the "repo" (and workflow) scope.';
+        }
+        console.error('GitHub create-from-template error:', status, apiMsg);
+        return res.status(400).json({ status: 'error', message: msg });
+    }
+});
+
 // GitHub – Create a new branch from an existing one
 app.post('/github-create-branch', async (req, res) => {
     try {

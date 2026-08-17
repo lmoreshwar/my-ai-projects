@@ -5,6 +5,9 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
   const [testing, setTesting] = useState({ jira: false, llm: false, zephyr: false, github: false });
   const [fetchingBranches, setFetchingBranches] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
+  const [creatingRepo, setCreatingRepo] = useState(false);
+  const [newRepoName, setNewRepoName] = useState('');
+  const [createRepoMsg, setCreateRepoMsg] = useState({ type: '', text: '' });
   const llmAbortRef = useRef(null);
 
   const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
@@ -233,6 +236,46 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
       // silently fail branch fetch
     }
     setFetchingBranches(false);
+  };
+
+  // Onboarding: create a fresh copy of the BLAST template repo under the user's account,
+  // then auto-select it as the target so their PRs land in THEIR repo. Fully additive.
+  const createRepoFromTemplate = async () => {
+    const name = newRepoName.trim();
+    if (!name) {
+      setCreateRepoMsg({ type: 'error', text: 'Enter a name for your new repository.' });
+      return;
+    }
+    setCreatingRepo(true);
+    setCreateRepoMsg({ type: '', text: 'Creating your automation repo from the template…' });
+    try {
+      const res = await fetch(`${apiBase}/github-create-from-template`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: connections.github.token, apiUrl: connections.github.apiUrl, name, private: true }),
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        // Add the new repo to the list and select it as the target automatically.
+        const existing = connections.github.repos || [];
+        const already = existing.some((r) => r.name === data.full_name);
+        const merged = already
+          ? existing
+          : [{ name: data.full_name, visibility: data.visibility, default_branch: data.default_branch }, ...existing];
+        updateConn('github', 'repos', merged);
+        updateConn('github', 'selectedRepo', data.full_name);
+        updateConn('github', 'branches', [data.default_branch]);
+        updateConn('github', 'selectedBranch', data.default_branch);
+        updateConn('github', 'repoVisibility', data.visibility);
+        setCreateRepoMsg({ type: 'success', text: `Created ${data.full_name}. It's now your target repo — click Save Connection.` });
+        setNewRepoName('');
+      } else {
+        setCreateRepoMsg({ type: 'error', text: data.message || 'Could not create the repository.' });
+      }
+    } catch {
+      setCreateRepoMsg({ type: 'error', text: 'Network error or server down while creating the repo.' });
+    }
+    setCreatingRepo(false);
   };
 
   const StatusBadge = ({ status }) => {
@@ -657,6 +700,44 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                     {(connections.github.repos || []).length} repositories found. Select the target repo + branch below, then <span className="font-bold">Save Connection</span>.
                   </p>
                 </div>
+              </div>
+              {/* Onboarding: first-time users can spin up their own copy of the template repo here. */}
+              <div className="space-y-2 p-4 bg-app-blue/5 border border-app-blue/20 rounded-lg">
+                <p className="text-[0.625rem] font-bold uppercase tracking-widest text-app-blue">New here? Create your automation repo</p>
+                <p className="text-[0.7rem] text-slate-500 dark:text-slate-400">
+                  Spin up your own copy of the BLAST framework (with the required workflows) in one click, then it becomes your target repo.
+                </p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    placeholder="my-blast-automation"
+                    value={newRepoName}
+                    onChange={(e) => setNewRepoName(e.target.value)}
+                    className="flex-1 h-11 px-4 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded focus:border-app-blue focus:ring-1 focus:ring-app-blue transition-all text-sm text-on-surface dark:text-white"
+                  />
+                  <button
+                    onClick={createRepoFromTemplate}
+                    disabled={creatingRepo || !newRepoName.trim()}
+                    className="h-11 px-4 bg-app-blue text-white font-bold text-sm rounded shadow-lg shadow-app-blue/20 hover:brightness-110 transition-all disabled:opacity-50 flex items-center justify-center gap-2 whitespace-nowrap"
+                  >
+                    {creatingRepo ? (
+                      <>
+                        <span className="material-symbols-outlined animate-spin text-base">progress_activity</span>
+                        Creating…
+                      </>
+                    ) : (
+                      <>
+                        <span className="material-symbols-outlined text-base">add</span>
+                        Create Repo
+                      </>
+                    )}
+                  </button>
+                </div>
+                {createRepoMsg.text && (
+                  <p className={`text-xs ${createRepoMsg.type === 'error' ? 'text-red-500' : createRepoMsg.type === 'success' ? 'text-green-600' : 'text-slate-500'}`}>
+                    {createRepoMsg.text}
+                  </p>
+                )}
               </div>
               <div className="space-y-2">
                 <label className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500 ml-1">
