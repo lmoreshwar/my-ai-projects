@@ -18,6 +18,24 @@ const LLMConnector = require('./_tools/llm_connector');
 const DocxGenerator = require('./_tools/docx_generator');
 const ConfluenceTool = require('./_tools/confluence_tool');
 
+// GitHub's API occasionally returns a transient 5xx ("503 No server is currently available").
+// Retry idempotent GitHub calls a few times with backoff so a single blip doesn't fail the user.
+async function githubWithRetry(fn, { attempts = 3, baseDelayMs = 600 } = {}) {
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = err.response?.status;
+      const retriable = !status || (status >= 500 && status < 600) || status === 429;
+      lastErr = err;
+      if (!retriable || i === attempts - 1) throw err;
+      await new Promise((r) => setTimeout(r, baseDelayMs * (i + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 const app = express();
 
 app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
@@ -155,18 +173,18 @@ app.post('/test-github', async (req, res) => {
         console.log(`GitHub: Testing connection to ${baseUrl} (token prefix: ${token.substring(0, 10)}...)`);
 
         // Validate token by fetching authenticated user
-        const userRes = await axios.get(`${baseUrl}/user`, {
+        const userRes = await githubWithRetry(() => axios.get(`${baseUrl}/user`, {
             headers: { 'Authorization': authHeader, 'Accept': 'application/vnd.github+json' },
             timeout: 10000,
-        });
+        }));
         const username = userRes.data.login;
         console.log(`GitHub: Authenticated as ${username}`);
 
         // Fetch repos (up to 100) – affiliation covers owned, collaborator & org repos
-        const reposRes = await axios.get(`${baseUrl}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member&visibility=all`, {
+        const reposRes = await githubWithRetry(() => axios.get(`${baseUrl}/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member&visibility=all`, {
             headers: { 'Authorization': authHeader, 'Accept': 'application/vnd.github+json' },
             timeout: 15000,
-        });
+        }));
         const repos = reposRes.data.map(r => ({ name: r.full_name, visibility: r.private ? 'Private' : 'Public', default_branch: r.default_branch }));
         console.log(`GitHub: Found ${repos.length} repos:`, repos.map(r => `${r.name} (${r.visibility})`).join(', '));
 
@@ -223,10 +241,10 @@ app.post('/github-create-from-template', async (req, res) => {
         const templateRepo = process.env.BLAST_TEMPLATE_REPO || 'PLAYWRIGHT_BLAST_FRAMEWORK';
 
         // Resolve the authenticated user — the new repo is created under THEIR account.
-        const userRes = await axios.get(`${baseUrl}/user`, {
+        const userRes = await githubWithRetry(() => axios.get(`${baseUrl}/user`, {
             headers: { Authorization: authHeader, Accept: 'application/vnd.github+json' },
             timeout: 10000,
-        });
+        }));
         const owner = userRes.data.login;
 
         const genRes = await axios.post(
