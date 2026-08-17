@@ -691,8 +691,8 @@ async function getExploreRunProgress(job, git) {
     const testCases = cases.map((c, i) => ({
       id: c.id || `TC_${String(i + 1).padStart(3, '0')}`,
       title: c.title || `Case ${i + 1}`,
-      tags: c.type ? [c.type] : [],
-      complexity: '',
+      tags: Array.isArray(c.type) ? c.type.join(', ') : (c.type || ''),
+      complexity: 'Medium',
       description: c.expectedResults || '',
       preconditions: '',
       testData: '',
