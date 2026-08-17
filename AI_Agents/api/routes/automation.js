@@ -271,17 +271,18 @@ router.post('/explore', auth, async (req, res) => {
     if (!url || !String(url).trim()) return res.status(400).json({ msg: 'Application URL is required.' });
     if (!feature || !String(feature).trim()) return res.status(400).json({ msg: 'Feature / widget name is required.' });
 
-    // One active credentialed Autopilot job per user: a second explore that carries creds would
-    // overwrite the repo secrets (APP_USERNAME/APP_PASSWORD) the pending job needs for its approve
-    // step. Abandoned jobs stop holding the lock after PENDING_LOCK_HOURS (see findPendingJobForUser).
+    // One active credentialed Autopilot job per user: a second explore that carries creds
+    // OVERWRITES the repo secrets (APP_USERNAME/APP_PASSWORD) the old pending job needed, so that job
+    // is already dead. Auto-supersede it (mark Discarded) and continue — never block the user with a
+    // lock error. Abandoned jobs also drop off after PENDING_LOCK_HOURS (see findPendingJobForUser).
     if (exploreCreds.username && exploreCreds.password && orchestrator.provider() === 'github-actions') {
       const pending = await findPendingJobForUser(req.user.id);
       if (pending) {
-        return res.status(409).json({
-          msg: `You already have a pending Autopilot job (${pending.jobId}, ${pending.status}). Approve it, or Discard it, before starting a new one — pending jobs auto-expire after ${PENDING_LOCK_HOURS}h.`,
-          jobId: pending.jobId,
-          status: pending.status,
-        });
+        pending.status = 'Discarded';
+        const supersededAt = new Date().toISOString();
+        pending.logs = [...(pending.logs || []), `Superseded by a new Autopilot job at ${supersededAt}.`];
+        pending.updatedAt = supersededAt;
+        await persist(pending);
       }
     }
 
