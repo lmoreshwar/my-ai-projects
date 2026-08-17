@@ -128,14 +128,19 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
     log(`[agent] Opened ${extractPageUrl(gotoOut) || opts.url}`);
 
     for (let step = 1; step <= maxSteps; step++) {
-      const completion = await client.chat.completions.create({
+      const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
         model,
         messages,
         tools: TOOLS,
         tool_choice: 'auto',
         parallel_tool_calls: false, // one live action at a time — the core of the fix
         temperature: 0,
-      });
+      };
+      // Some gateways force a default reasoning_effort that conflicts with function tools on
+      // /v1/chat/completions. Send OPENAI_REASONING_EFFORT (e.g. "none") only when it is set.
+      const effort = (process.env.OPENAI_REASONING_EFFORT || '').trim();
+      if (effort) (params as unknown as Record<string, unknown>).reasoning_effort = effort;
+      const completion = await client.chat.completions.create(params);
 
       const choice = completion.choices[0]?.message;
       if (!choice) return finish('incomplete', 'No response from the model.');

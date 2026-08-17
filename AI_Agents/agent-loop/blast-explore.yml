@@ -96,6 +96,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
           OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          # Set to "none" for gateways that force a default reasoning_effort (conflicts with tools).
+          OPENAI_REASONING_EFFORT: ${{ secrets.OPENAI_REASONING_EFFORT }}
         run: xvfb-run -a npm run phase:explore
 
       # 4) Hand the plan (proposed cases + verified trace) to the website via an artifact.

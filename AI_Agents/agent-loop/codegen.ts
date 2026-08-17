@@ -22,6 +22,13 @@ import { join } from 'node:path';
 import OpenAI from 'openai';
 import type { AgentStep } from './agent-loop';
 
+// Some gateways force a default reasoning_effort that conflicts with structured/tool calls on
+// /v1/chat/completions. Send OPENAI_REASONING_EFFORT (e.g. "none") only when it is set.
+function applyReasoning(params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming): void {
+  const effort = (process.env.OPENAI_REASONING_EFFORT || '').trim();
+  if (effort) (params as unknown as Record<string, unknown>).reasoning_effort = effort;
+}
+
 export interface CodegenJob {
   feature: string;
   url: string;
@@ -215,14 +222,16 @@ export async function generateFromTrace(
   const model = job.model || process.env.OPENAI_MODEL || 'gpt-4o';
 
   log('[codegen] Loading reuse index + exemplars and asking the model for files…');
-  const completion = await client.chat.completions.create({
+  const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
     model,
     messages: [
       { role: 'system', content: 'You are a senior Playwright/TypeScript engineer. Reuse existing framework code, copy proven locators verbatim, and reply with STRICT JSON only.' },
       { role: 'user', content: buildPrompt(fw, job, trace) },
     ],
     temperature: 0,
-  });
+  };
+  applyReasoning(params);
+  const completion = await client.chat.completions.create(params);
 
   const raw = completion.choices[0]?.message?.content || '';
   const match = raw.match(/\{[\s\S]*\}/);
@@ -290,14 +299,16 @@ export async function authorPlanFromTrace(
 
   try {
     log('[plan] Authoring proposed test cases from the verified trace…');
-    const completion = await client.chat.completions.create({
+    const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
       model,
       messages: [
         { role: 'system', content: 'You are a senior QA engineer. Propose only test cases the evidence supports. Reply with STRICT JSON only.' },
         { role: 'user', content: prompt },
       ],
       temperature: 0,
-    });
+    };
+    applyReasoning(params);
+    const completion = await client.chat.completions.create(params);
     const raw = completion.choices[0]?.message?.content || '';
     const match = raw.match(/\{[\s\S]*\}/);
     if (!match) return [];
