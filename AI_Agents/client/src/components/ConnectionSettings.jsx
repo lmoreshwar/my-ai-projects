@@ -3,7 +3,6 @@ import CustomSelect from './CustomSelect';
 
 export default function ConnectionSettings({ connections, setConnections, apiBase, onResetGenerated }) {
   const [testing, setTesting] = useState({ jira: false, llm: false, zephyr: false, github: false });
-  const [fetchingBranches, setFetchingBranches] = useState(false);
   const [savedMsg, setSavedMsg] = useState('');
   const [creatingRepo, setCreatingRepo] = useState(false);
   const [newRepoName, setNewRepoName] = useState('');
@@ -184,9 +183,6 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
     updateConn('github', 'message', 'Authenticating with GitHub...');
     updateConn('github', 'repos', []);
     updateConn('github', 'branches', []);
-    updateConn('github', 'selectedRepo', '');
-    updateConn('github', 'selectedBranch', '');
-    updateConn('github', 'repoVisibility', '');
     try {
       const res = await fetch(`${apiBase}/test-github`, {
         method: 'POST',
@@ -209,37 +205,6 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
     setTesting((p) => ({ ...p, github: false }));
   };
 
-  const fetchBranches = async (repoFullName) => {
-    setFetchingBranches(true);
-    updateConn('github', 'selectedRepo', repoFullName);
-    updateConn('github', 'branches', []);
-    updateConn('github', 'selectedBranch', '');
-    // Set visibility from cached repos
-    const repoInfo = (connections.github.repos || []).find((r) => r.name === repoFullName);
-    updateConn('github', 'repoVisibility', repoInfo ? repoInfo.visibility : '');
-    try {
-      const res = await fetch(`${apiBase}/github-branches`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: connections.github.token, apiUrl: connections.github.apiUrl, repo: repoFullName }),
-      });
-      const data = await res.json();
-      if (data.status === 'success') {
-        updateConn('github', 'branches', data.branches || []);
-        // Auto-select default branch
-        const defaultBranch = repoInfo?.default_branch || 'main';
-        if ((data.branches || []).includes(defaultBranch)) {
-          updateConn('github', 'selectedBranch', defaultBranch);
-        }
-      }
-    } catch {
-      // silently fail branch fetch
-    }
-    setFetchingBranches(false);
-  };
-
-  // Onboarding: create a fresh copy of the BLAST template repo under the user's account,
-  // then auto-select it as the target so their PRs land in THEIR repo. Fully additive.
   const createRepoFromTemplate = async () => {
     const name = newRepoName.trim();
     if (!name) {
@@ -247,33 +212,44 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
       return;
     }
     setCreatingRepo(true);
-    setCreateRepoMsg({ type: '', text: 'Creating your automation repo from the template…' });
+    setCreateRepoMsg({ type: '', text: 'Creating your repo...' });
     try {
-      const res = await fetch(`${apiBase}/github-create-from-template`, {
+      const connection = {
+        token: connections.github.token,
+        apiUrl: connections.github.apiUrl,
+        selectedRepo: connections.github.selectedRepo || '',
+        selectedBranch: connections.github.selectedBranch || 'main',
+      };
+      const saved = await saveConnectionToDB('github', connection);
+      if (!saved) throw new Error('Save your GitHub connection before creating a repo.');
+
+      const authToken = localStorage.getItem('blast_token');
+      const headers = { 'Content-Type': 'application/json' };
+      if (authToken) headers.Authorization = `Bearer ${authToken}`;
+      const res = await fetch(`${apiBase}/api/github/create-repo`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: connections.github.token, apiUrl: connections.github.apiUrl, name, private: true }),
+        headers,
+        body: JSON.stringify({ name }),
       });
-      const data = await res.json();
-      if (data.status === 'success') {
-        // Add the new repo to the list and select it as the target automatically.
-        const existing = connections.github.repos || [];
-        const already = existing.some((r) => r.name === data.full_name);
-        const merged = already
-          ? existing
-          : [{ name: data.full_name, visibility: data.visibility, default_branch: data.default_branch }, ...existing];
-        updateConn('github', 'repos', merged);
-        updateConn('github', 'selectedRepo', data.full_name);
-        updateConn('github', 'branches', [data.default_branch]);
-        updateConn('github', 'selectedBranch', data.default_branch);
-        updateConn('github', 'repoVisibility', data.visibility);
-        setCreateRepoMsg({ type: 'success', text: `Created ${data.full_name}. It's now your target repo — click Save Connection.` });
-        setNewRepoName('');
-      } else {
-        setCreateRepoMsg({ type: 'error', text: data.message || 'Could not create the repository.' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.msg || `Could not create the repository (${res.status}).`);
+
+      const target = {
+        ...connection,
+        selectedRepo: data.fullName,
+        selectedBranch: data.defaultBranch,
+      };
+      if (!await saveConnectionToDB('github', target)) {
+        throw new Error(`Created ${data.fullName}, but could not save it as the target. Select it after reconnecting.`);
       }
-    } catch {
-      setCreateRepoMsg({ type: 'error', text: 'Network error or server down while creating the repo.' });
+      updateConn('github', 'selectedRepo', data.fullName);
+      updateConn('github', 'selectedBranch', data.defaultBranch);
+      updateConn('github', 'branches', [data.defaultBranch]);
+      updateConn('github', 'repoVisibility', 'Public');
+      setCreateRepoMsg({ type: 'success', text: `Created ${data.fullName}. It is now your Pull Request target.` });
+      setNewRepoName('');
+    } catch (error) {
+      setCreateRepoMsg({ type: 'error', text: error.message || 'Could not create the repository.' });
     }
     setCreatingRepo(false);
   };
@@ -689,7 +665,7 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
             </button>
           </div>
 
-          {/* Post-Connection: Success message + target repo/branch selector */}
+          {/* Post-Connection: provision a predictable target from the canonical template. */}
           {connections.github?.status === 'connected' && (
             <div className="flex flex-col gap-4">
               <div className="flex items-center gap-3 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
@@ -697,7 +673,7 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                 <div>
                   <p className="text-sm font-bold text-green-700 dark:text-green-400">GitHub Connected Successfully</p>
                   <p className="text-xs text-green-600 dark:text-green-500 mt-0.5">
-                    {(connections.github.repos || []).length} repositories found. Select the target repo + branch below, then <span className="font-bold">Save Connection</span>.
+                    Create your automation repository from the BLAST template below.
                   </p>
                 </div>
               </div>
@@ -744,32 +720,19 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                   Target repository (PR destination)
                 </label>
                 <select
-                  className="w-full h-12 px-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded focus:border-app-red focus:ring-1 focus:ring-app-red transition-all text-sm text-on-surface dark:text-white"
+                  className="w-full h-12 px-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-sm text-on-surface dark:text-white disabled:opacity-70"
                   value={connections.github?.selectedRepo || ''}
-                  onChange={(e) => fetchBranches(e.target.value)}
+                  disabled
                 >
-                  <option value="">Select a repository…</option>
-                  {(connections.github.repos || []).map((r) => (
-                    <option key={r.name} value={r.name}>{r.name}{r.visibility ? ` (${r.visibility})` : ''}</option>
-                  ))}
+                  <option value="">Create a repository above</option>
+                  {connections.github?.selectedRepo && (
+                    <option value={connections.github.selectedRepo}>{connections.github.selectedRepo}</option>
+                  )}
                 </select>
               </div>
               {connections.github?.selectedRepo && (
-                <div className="space-y-2">
-                  <label className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500 ml-1">
-                    Branch
-                  </label>
-                  <select
-                    className="w-full h-12 px-4 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded focus:border-app-red focus:ring-1 focus:ring-app-red transition-all text-sm text-on-surface dark:text-white disabled:opacity-50"
-                    value={connections.github?.selectedBranch || 'main'}
-                    onChange={(e) => updateConn('github', 'selectedBranch', e.target.value)}
-                    disabled={fetchingBranches}
-                  >
-                    {fetchingBranches && <option value="">Loading branches…</option>}
-                    {(connections.github.branches || []).map((b) => (
-                      <option key={b} value={b}>{b}</option>
-                    ))}
-                  </select>
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  Branch: <span className="font-semibold">{connections.github.selectedBranch || 'main'}</span>
                 </div>
               )}
             </div>

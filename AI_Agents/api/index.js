@@ -55,6 +55,9 @@ app.use('/api/auth', authRoutes);
 const userRoutes = require('./routes/users');
 app.use('/api/users', userRoutes);
 
+const githubProvisionRoutes = require('./routes/githubProvision');
+app.use('/api/github', githubProvisionRoutes);
+
 // Import and use TestCase Routes
 const testCaseRoutes = require('./routes/testcases');
 app.use('/api/testcases', testCaseRoutes);
