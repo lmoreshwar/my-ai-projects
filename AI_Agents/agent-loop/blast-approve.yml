@@ -45,6 +45,9 @@ jobs:
       # 1) The target framework (this repo) — checked out at the workspace root = FRAMEWORK_PATH.
       - name: Checkout framework
         uses: actions/checkout@v4
+        with:
+          # Don't persist the github-actions[bot] token — it would override the PAT on the PR push.
+          persist-credentials: false
 
       # 2) The BLAST engine (agent-loop lives here) into a subfolder.
       - name: Checkout BLAST engine
