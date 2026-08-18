@@ -20,6 +20,15 @@ const inputCls =
   'w-full px-3 py-2 rounded-lg border border-outline-variant/50 dark:border-slate-700 bg-white dark:bg-slate-800 text-on-surface dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-app-red/40 transition';
 const labelCls = 'block text-xs font-semibold text-on-surface-variant dark:text-slate-400 mb-1';
 
+// Discovered-vs-Relevant: a display-only semantic role for a discovered control, from its kind.
+// Navigation/infrastructure controls stay in the inventory but never become Automation Trace steps.
+function controlRole(type) {
+  if (type === 'link' || type === 'tab') return { text: 'navigation', cls: 'text-slate-500' };
+  if (type === 'file') return { text: 'upload', cls: 'text-app-red' };
+  if (type === 'button') return { text: 'action', cls: 'text-sky-600' };
+  return { text: 'feature input', cls: 'text-emerald-600' };
+}
+
 /**
  * Autopilot — Explore & Automate.
  * Phase 0 scaffold: collects URL + feature (+ optional creds/advanced/evidence), posts to
@@ -514,17 +523,22 @@ export default function AutopilotExplorer({ apiBase, connections }) {
                     <details className="text-xs bg-surface-container dark:bg-slate-800/40 rounded-lg p-3">
                       <summary className="cursor-pointer font-bold text-on-surface dark:text-slate-200">
                         Discovered controls ({job.discoveryPlan.inventory.length})
+                        <span className="ml-1 text-[10px] font-normal opacity-60">— everything on the page; only feature-relevant controls become Automation Trace steps</span>
                       </summary>
                       <ul className="mt-2 space-y-1 max-h-52 overflow-auto">
-                        {job.discoveryPlan.inventory.map((it) => (
-                          <li key={it.id} className="flex gap-2 items-baseline text-on-surface-variant dark:text-slate-300">
-                            <span className="font-mono text-[10px] shrink-0 opacity-70">{it.type}</span>
-                            <span className="truncate">{it.label}</span>
-                            {it.required === true && <span className="text-[10px] text-amber-600">required</span>}
-                            {it.prepopulated && <span className="text-[10px] text-sky-600">prefilled</span>}
-                            {it.blocked && <span className="text-[10px] text-app-red">⛔ {it.blockedReason || 'blocked'}</span>}
-                          </li>
-                        ))}
+                        {job.discoveryPlan.inventory.map((it) => {
+                          const role = controlRole(it.type);
+                          return (
+                            <li key={it.id} className="flex gap-2 items-baseline text-on-surface-variant dark:text-slate-300">
+                              <span className="font-mono text-[10px] shrink-0 opacity-70">{it.type}</span>
+                              <span className={`text-[10px] shrink-0 ${role.cls}`}>{role.text}</span>
+                              <span className="truncate">{it.label}</span>
+                              {it.required === true && <span className="text-[10px] text-amber-600">required</span>}
+                              {it.prepopulated && <span className="text-[10px] text-sky-600">prefilled</span>}
+                              {it.blocked && <span className="text-[10px] text-app-red">⛔ {it.blockedReason || 'blocked'}</span>}
+                            </li>
+                          );
+                        })}
                       </ul>
                     </details>
                   )}
@@ -544,6 +558,9 @@ export default function AutopilotExplorer({ apiBase, connections }) {
                     <ul className="space-y-1.5">
                       {discoveryScenarios.map((s) => {
                         const disabled = s.blocked || !s.ready;
+                        const steps = Array.isArray(s.steps) ? s.steps : [];
+                        const executableCount = steps.filter((st) => st.type !== 'click' && !st.blocked).length;
+                        const blockedCount = steps.filter((st) => st.blocked).length;
                         return (
                           <li key={s.id}>
                             <label className={`flex gap-2 items-start text-xs rounded-lg px-2 py-1.5 ${disabled ? 'opacity-60' : 'cursor-pointer hover:bg-surface-container dark:hover:bg-slate-800/40'}`}>
@@ -553,7 +570,28 @@ export default function AutopilotExplorer({ apiBase, connections }) {
                                 <span className="font-mono text-app-red mr-1">{s.id}</span>
                                 <span className="text-on-surface dark:text-slate-200">{s.title}</span>
                                 <span className="ml-1 text-[10px] opacity-70">[{s.type}]</span>
+                                <span className={`ml-1 text-[10px] ${s.ready ? 'text-green-600' : 'text-amber-600'}`}>
+                                  {s.ready ? '● automation-ready' : '○ needs a probe'}
+                                </span>
                                 {disabled && <span className="block text-[10px] text-app-red">{s.blockedReason || 'Not automation-ready'}</span>}
+                                {steps.length > 0 && (
+                                  <details className="mt-1">
+                                    <summary className="cursor-pointer text-[10px] opacity-70">
+                                      Automation Trace — {executableCount} executable step{executableCount === 1 ? '' : 's'}{blockedCount ? `, ${blockedCount} blocked` : ''}
+                                    </summary>
+                                    <ol className="mt-1 ml-1 space-y-0.5">
+                                      {steps.map((st) => (
+                                        <li key={st.order} className={`flex gap-1.5 items-baseline text-[10px] ${st.blocked ? 'text-app-red' : 'text-on-surface-variant dark:text-slate-300'}`}>
+                                          <span className="font-mono opacity-70 shrink-0">{st.order}.</span>
+                                          <span className="font-mono opacity-70 shrink-0">{st.type}</span>
+                                          {st.classification && <span className="opacity-60 shrink-0">[{st.classification}]</span>}
+                                          <span className="truncate">{st.action}</span>
+                                          {st.blocked && <span className="shrink-0">⛔ {st.blockedReason || 'blocked — not executable'}</span>}
+                                        </li>
+                                      ))}
+                                    </ol>
+                                  </details>
+                                )}
                               </span>
                             </label>
                           </li>

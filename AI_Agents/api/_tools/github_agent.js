@@ -485,7 +485,8 @@ async function dispatchApprove(job, git) {
       explore_run_id: String(exploreRunId),
       feature_name: job.feature || '',
       // The scenarios the user selected in the approval UI. approve.ts filters the verified trace to
-      // these and enforces a per-field coverage gate. Empty for legacy (non-discovery) plans.
+      // these and enforces an Automation-Trace-step coverage gate (never the discovery inventory).
+      // Empty for legacy (non-discovery) plans.
       scenario_ids: Array.isArray(job.selectedScenarioIds) ? job.selectedScenarioIds.join(',') : '',
     };
     await axios.post(

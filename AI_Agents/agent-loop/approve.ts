@@ -53,7 +53,7 @@ async function main(): Promise<void> {
     const sel = selectTraceForScenarios(fullTrace, scenarios, selectedIds);
     trace = sel.trace;
     coverageFields = sel.coverageLabels;
-    log(`[approve] ${chosen.length} scenario(s) selected → ${coverageFields.length} field(s) to cover from ${trace.length} trace step(s).`);
+    log(`[approve] ${chosen.length} scenario(s) selected → ${coverageFields.length} executable Automation Trace step(s) to cover from ${trace.length} verified trace step(s).`);
   }
 
   const job: CodegenJob = { feature: plan.feature, url: plan.url, testTypes: plan.testTypes, maxCases: plan.maxCases, coverageFields };

@@ -61,17 +61,27 @@ export interface PlanCase {
   steps: string[];
   expectedResults: string;
 }
+/** How a control relates to the requested feature — the auditable reason it is (or is not) automated. */
+export type ControlClassification =
+  | 'feature-input'    // a form field the scenario fills/selects/checks
+  | 'feature-action'   // the controlled submit that completes the scenario
+  | 'upload';          // a file input (executable only with an approved fixture)
 
-/** One concrete, evidence-linked action inside a proposed scenario. */
+/** One concrete, evidence-linked action inside a proposed scenario (an Automation Trace step). */
 export interface ScenarioStep {
   order: number;
   action: string;        // human phrase, e.g. "Fill First Name"
   target: string;        // the control's label
   type: string;          // fill | select | check | upload | click
+  classification: ControlClassification; // WHY this control is an automation step (feature-relevant only)
   input?: string;        // example valid value / where the data comes from
   expected?: string;
   fieldId?: string;      // links back to the FieldInventoryItem
   locatorEvidence?: LocatorEvidence | null;
+  liveLocator?: string;  // the locator actually executed in the verified trace
+  snapshotEvidence?: string; // the a11y-tree context proving the control exists
+  blocked?: boolean;     // true = present in scope but NOT executable (e.g. upload with no fixture)
+  blockedReason?: string;
 }
 
 /** A proposed, evidence-backed scenario the user can select for automation in the approval UI. */
@@ -520,12 +530,13 @@ function coverageKey(label: string): string {
 }
 
 /**
- * Trace-to-code coverage gate. When the caller selected discovery scenarios, `coverageFields` lists
- * every executable field those scenarios cover. This gate rejects a reply that silently drops any of
- * them — the generated Page+Module+Spec together must reference each field (by its label appearing in a
- * getByLabel/getByRole locator, a method name, a testData key, or plain text). Deterministic protection
- * against the shallow-collapse failure (only the first few fields end up in the code). No selection =
- * legacy behaviour (gate is a no-op).
+ * Automation-Trace coverage gate. `coverageFields` lists the EXECUTABLE Automation Trace steps the
+ * approved scenario exercises — feature controls only, never the discovery inventory and never blocked
+ * (e.g. upload) steps. This gate rejects a reply that silently drops any executable trace step: the
+ * generated Page+Module+Spec together must reference each one (by its label appearing in a
+ * getByLabel/getByRole locator, a method name, a testData key, or plain text). Coverage is measured
+ * against trace steps, NOT discovered controls, so unrelated navigation can never fail codegen. No
+ * selection = legacy behaviour (gate is a no-op).
  */
 function assertTraceCoverage(art: LlmArtifacts, coverageFields?: string[]): void {
   if (!coverageFields || !coverageFields.length) return;
@@ -536,9 +547,9 @@ function assertTraceCoverage(art: LlmArtifacts, coverageFields?: string[]): void
   });
   if (missing.length) {
     throw new Error(
-      `Codegen: the generated code does not cover ${missing.length} selected field(s): ${missing.join(', ')}. ` +
-      'Every selected discovered field MUST be filled/selected/checked in the Module workflow and asserted or ' +
-      'referenced in the Spec — do not collapse the flow to only the first few fields. Add the missing field(s) ' +
+      `Codegen: the generated code does not implement ${missing.length} Automation Trace step(s): ${missing.join(', ')}. ` +
+      'Every executable Automation Trace step MUST be filled/selected/checked in the Module workflow and asserted or ' +
+      'referenced in the Spec — do not collapse the flow to only the first few steps. Add the missing step(s) ' +
       'using the exact locator evidence from the trace, then re-emit the complete artifact.',
     );
   }
@@ -802,25 +813,6 @@ function exampleInputFor(item: FieldInventoryItem): string {
   }
 }
 
-/** Map a control type to the concrete driver verb used in the scenario step. */
-function actionVerbFor(item: FieldInventoryItem): { action: string; type: string } {
-  switch (item.type) {
-    case 'combobox': case 'select': case 'radio': return { action: `Select ${item.label}`, type: 'select' };
-    case 'checkbox': return { action: `Check ${item.label}`, type: 'check' };
-    case 'file': return { action: `Upload ${item.label}`, type: 'upload' };
-    default: return { action: `Fill ${item.label}`, type: 'fill' };
-  }
-}
-
-function toScenarioStep(item: FieldInventoryItem, order: number): ScenarioStep {
-  const { action, type } = actionVerbFor(item);
-  return {
-    order, action, type, target: item.label, fieldId: item.id,
-    input: exampleInputFor(item),
-    locatorEvidence: item.locatorEvidence,
-  };
-}
-
 /** The URL the verified success submit navigated to (evidence for the positive expected result). */
 function traceSuccessUrl(trace: AgentStep[]): string {
   for (let i = trace.length - 1; i >= 0; i--) {
@@ -831,24 +823,137 @@ function traceSuccessUrl(trace: AgentStep[]): string {
   return '';
 }
 
+/** Pull the role-name out of a submit locator, e.g. getByRole('button', { name: 'Save' }) → "Save". */
+function locatorRoleName(locator?: string): string {
+  const m = (locator || '').match(/name:\s*['"]([^'"]+)['"]/);
+  return m ? m[1] : '';
+}
+
 /**
- * Shape the discovery inventory + verified trace into selectable, evidence-backed scenarios.
- *  • one READY positive scenario that fills EVERY executable field (the exhaustive happy path),
- *  • an optional READY "required fields only" positive scenario (when required fields are a strict subset),
+ * One step of the AUTOMATION TRACE — the boundary between discovery inventory and codegen.
+ * These are ONLY the controls/actions the approved scenario actually exercises; discovered navigation
+ * and page infrastructure never appear here even though they remain in the discovery inventory.
+ */
+interface AutomationStep {
+  action: 'fill' | 'select' | 'check' | 'uncheck' | 'upload' | 'click';
+  target: string;            // control label
+  liveLocator: string;       // locator executed in the verified trace
+  snapshotEvidence?: string; // a11y context proving the control exists
+  item?: FieldInventoryItem; // the matching discovery inventory item (evidence enrichment)
+  blocked: boolean;          // true = in scope but NOT executable (e.g. upload with no fixture)
+  blockedReason?: string;
+  isSubmit: boolean;         // the single controlled submit that completes the scenario
+}
+
+const AUTOMATION_FIELD_TOOLS = new Set(['fill', 'type', 'select', 'check', 'uncheck']);
+
+/**
+ * TEST DESIGN AGENT (deterministic planner) — convert the discovery inventory + verified trace into an
+ * Automation Trace: ONLY the feature-relevant controls the scenario truly exercises.
+ *
+ * The verified trace already IS the automation scope: the agent only acted on real feature controls to
+ * complete the flow (it navigated past — but never "filled" — navigation links). So we derive executable
+ * steps from the trace's field actions (excluding credential/login fills) plus the single submit click,
+ * then add any feature-relevant BLOCKED controls (e.g. file uploads with no fixture) as non-executable
+ * steps. Discovered navigation/infrastructure (links, tabs, orphan controls) is intentionally excluded.
+ */
+function buildAutomationTrace(trace: AgentStep[], inventory: FieldInventoryItem[]): {
+  executable: AutomationStep[];
+  blocked: AutomationStep[];
+  submit?: AutomationStep;
+} {
+  // Where did the flow submit? The last click before the post-submit snapshot is the controlled submit.
+  let submitSnapshotIdx = -1;
+  for (let i = 0; i < trace.length; i++) {
+    if (trace[i].tool === 'snapshot' && (trace[i].args as { after?: string })?.after === 'submit') { submitSnapshotIdx = i; break; }
+  }
+  const upperBound = submitSnapshotIdx >= 0 ? submitSnapshotIdx : trace.length;
+
+  const executable: AutomationStep[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < upperBound; i++) {
+    const s = trace[i];
+    if (!AUTOMATION_FIELD_TOOLS.has(s.tool)) continue;
+    const val = String((s.args as { value?: string; text?: string })?.value ?? (s.args as { text?: string })?.text ?? '');
+    if (val.includes('{{')) continue;                 // credential (login) fill — never an automation target
+    const label = traceStepFieldLabel(s);
+    if (!label) continue;
+    const key = coverageKey(label);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const item = inventory.find((it) => coverageKey(it.label) === key || (it.accessibleName && coverageKey(it.accessibleName) === key));
+    const action = (s.tool === 'type' ? 'fill' : s.tool) as AutomationStep['action'];
+    executable.push({ action, target: item?.label || label, liveLocator: s.locator || '', snapshotEvidence: s.context, item, blocked: false, isSubmit: false });
+  }
+
+  // The single controlled submit that completed the flow.
+  let submit: AutomationStep | undefined;
+  for (let i = upperBound - 1; i >= 0; i--) {
+    if (trace[i].tool !== 'click') continue;
+    const s = trace[i];
+    const label = traceStepFieldLabel(s) || locatorRoleName(s.locator) || 'Save';
+    submit = { action: 'click', target: label, liveLocator: s.locator || '', snapshotEvidence: s.context, blocked: false, isSubmit: true };
+    break;
+  }
+
+  // Feature-relevant BLOCKED controls: file uploads discovered on the form but not executable (no fixture).
+  // They belong in the trace as BLOCKED (never silently dropped) but must NOT count as executable steps.
+  const blocked: AutomationStep[] = [];
+  for (const it of inventory) {
+    if (it.type !== 'file' || !it.blocked) continue;
+    const key = coverageKey(it.label);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    blocked.push({ action: 'upload', target: it.label, liveLocator: '', item: it, blocked: true, blockedReason: it.blockedReason || 'No approved test fixture available', isSubmit: false });
+  }
+
+  return { executable, blocked, submit };
+}
+
+/** Shape an Automation Trace step into the scenario/plan step model (with live evidence attached). */
+function automationToScenarioStep(step: AutomationStep, order: number, expected?: string): ScenarioStep {
+  const verb = step.isSubmit ? 'Click'
+    : step.action === 'select' ? 'Select'
+    : step.action === 'check' ? 'Check'
+    : step.action === 'uncheck' ? 'Uncheck'
+    : step.action === 'upload' ? 'Upload'
+    : 'Fill';
+  const input = step.isSubmit ? undefined
+    : step.item ? exampleInputFor(step.item)
+    : step.action === 'upload' ? 'an approved test fixture'
+    : `a realistic ${step.target.toLowerCase()} value`;
+  const classification: ControlClassification = step.isSubmit ? 'feature-action'
+    : step.action === 'upload' ? 'upload'
+    : 'feature-input';
+  return {
+    order, action: `${verb} ${step.target}`, type: step.isSubmit ? 'click' : step.action,
+    target: step.target, classification, fieldId: step.item?.id, input, expected,
+    locatorEvidence: step.item?.locatorEvidence ?? null,
+    liveLocator: step.liveLocator || undefined,
+    snapshotEvidence: step.snapshotEvidence,
+    blocked: step.blocked || undefined,
+    blockedReason: step.blockedReason,
+  };
+}
+
+/**
+ * Shape the discovery inventory + verified trace into selectable, evidence-backed scenarios whose
+ * automation scope is the AUTOMATION TRACE (feature-relevant controls only), NOT the full discovery
+ * inventory. Discovered navigation/infrastructure stays in the inventory dossier but never becomes an
+ * automation step, so it can never cause a codegen coverage failure.
+ *  • one READY positive scenario over every executable trace field + the controlled submit,
+ *  • an optional READY "required fields only" positive scenario (when required is a strict subset),
  *  • one PROPOSED (ready=false) negative scenario per required field — surfaced for transparency but
- *    marked blocked because read-only discovery captured no live validation evidence to assert against.
- * Blocked controls (e.g. file uploads with no fixture) are inventoried but never turned into an
- * executable step — they are never silently omitted.
+ *    blocked because read-only discovery captured no live validation evidence to assert against.
+ * BLOCKED controls (e.g. file uploads with no fixture) are listed in the trace but never executable.
  */
 export function authorScenariosFromDiscovery(
   job: CodegenJob,
   discovery: DiscoveryResult,
   trace: AgentStep[],
 ): Scenario[] {
-  const inv = discovery.inventory;
-  const executable = inv.filter((i) => !i.isAction && !i.blocked && !i.prepopulated);
-  const required = executable.filter((i) => i.required === true);
-  const saveAction = inv.find((i) => i.isAction && /save|submit|create|register|add|proceed/i.test(i.label));
+  const { executable, blocked, submit } = buildAutomationTrace(trace, discovery.inventory);
+  const required = executable.filter((s) => s.item?.required === true);
   const successUrl = traceSuccessUrl(trace);
   const feat = job.feature || 'record';
   const maxCases = job.maxCases && job.maxCases > 0 ? job.maxCases : 6;
@@ -860,41 +965,45 @@ export function authorScenariosFromDiscovery(
   let idx = 0;
   const nextId = () => `TC_${String(++idx).padStart(3, '0')}`;
 
-  // A — exhaustive positive: every executable field + Save.
-  if (executable.length) {
-    const steps = executable.map((f, i) => toScenarioStep(f, i + 1));
-    if (saveAction) steps.push({ order: steps.length + 1, action: `Click ${saveAction.label}`, type: 'click', target: saveAction.label, fieldId: saveAction.id, locatorEvidence: saveAction.locatorEvidence, expected: positiveExpected });
+  // A — positive over the full Automation Trace: every executable feature field, listed blocked controls, + submit.
+  if (executable.length || submit) {
+    const steps: ScenarioStep[] = [];
+    executable.forEach((s) => steps.push(automationToScenarioStep(s, steps.length + 1)));
+    blocked.forEach((s) => steps.push(automationToScenarioStep(s, steps.length + 1)));
+    if (submit) steps.push(automationToScenarioStep(submit, steps.length + 1, positiveExpected));
     scenarios.push({
       id: nextId(), title: `Create ${feat} with all fields populated`, type: 'positive',
-      ready: true, blocked: false, steps, expectedResults: positiveExpected,
-      coverage: { fieldIds: executable.map((f) => f.id), fieldLabels: executable.map((f) => f.label) },
+      ready: executable.length > 0, blocked: false, steps, expectedResults: positiveExpected,
+      // Coverage = executable Automation Trace fields ONLY (not the submit, not blocked, not navigation).
+      coverage: { fieldIds: executable.map((s) => s.item?.id).filter((id): id is string => !!id), fieldLabels: executable.map((s) => s.target) },
     });
   }
 
   // B — required-only positive (only when required is a strict, non-empty subset).
   if (required.length && required.length < executable.length) {
-    const steps = required.map((f, i) => toScenarioStep(f, i + 1));
-    if (saveAction) steps.push({ order: steps.length + 1, action: `Click ${saveAction.label}`, type: 'click', target: saveAction.label, fieldId: saveAction.id, locatorEvidence: saveAction.locatorEvidence, expected: positiveExpected });
+    const steps: ScenarioStep[] = [];
+    required.forEach((s) => steps.push(automationToScenarioStep(s, steps.length + 1)));
+    if (submit) steps.push(automationToScenarioStep(submit, steps.length + 1, positiveExpected));
     scenarios.push({
       id: nextId(), title: `Create ${feat} with only the required fields`, type: 'positive',
       ready: true, blocked: false, steps, expectedResults: positiveExpected,
-      coverage: { fieldIds: required.map((f) => f.id), fieldLabels: required.map((f) => f.label) },
+      coverage: { fieldIds: required.map((s) => s.item?.id).filter((id): id is string => !!id), fieldLabels: required.map((s) => s.target) },
     });
   }
 
   // C — one negative per required field (transparency; blocked until a live validation probe exists).
-  for (const f of required) {
+  for (const s of required) {
     if (scenarios.length >= maxCases) break;
     scenarios.push({
-      id: nextId(), title: `Reject submission when ${f.label} is empty`, type: 'negative',
+      id: nextId(), title: `Reject submission when ${s.target} is empty`, type: 'negative',
       ready: false, blocked: true,
       blockedReason: 'No live validation evidence was captured during read-only discovery — a validation probe is required before this negative case can be automated.',
       steps: [
-        { order: 1, action: `Leave ${f.label} empty and fill the other required fields`, type: 'fill', target: f.label, fieldId: f.id, locatorEvidence: f.locatorEvidence },
-        ...(saveAction ? [{ order: 2, action: `Click ${saveAction.label}`, type: 'click', target: saveAction.label, fieldId: saveAction.id, locatorEvidence: saveAction.locatorEvidence } as ScenarioStep] : []),
+        { order: 1, action: `Leave ${s.target} empty and fill the other required fields`, type: 'fill', classification: 'feature-input', target: s.target, fieldId: s.item?.id, locatorEvidence: s.item?.locatorEvidence ?? null },
+        ...(submit ? [automationToScenarioStep(submit, 2)] : []),
       ],
-      expectedResults: `A validation message is shown and the ${feat} is not saved while ${f.label} is empty.`,
-      coverage: { fieldIds: [f.id], fieldLabels: [f.label] },
+      expectedResults: `A validation message is shown and the ${feat} is not saved while ${s.target} is empty.`,
+      coverage: { fieldIds: s.item?.id ? [s.item.id] : [], fieldLabels: [s.target] },
     });
   }
 
