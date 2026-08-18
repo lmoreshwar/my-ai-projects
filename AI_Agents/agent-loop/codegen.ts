@@ -153,8 +153,15 @@ function renderTrace(trace: AgentStep[]): string {
     const loc = t.locator ? t.locator.replace(/\s*\n\s*/g, ' ').slice(0, 220) : '(no locator)';
     const val = t.args && (t.args.value ?? t.args.text);
     const context = t.context ? `\n   [live snapshot context for this ref]\n${t.context}` : '';
-    return `${i + 1}. ${t.tool}${val ? ` "${val}"` : ''} → ${loc}${t.url ? `   [url: ${t.url}]` : ''}${context}`;
+    const prepopulated = t.prepopulatedFields?.length
+      ? `\n   [app-prepopulated fields — never fill/assert]: ${t.prepopulatedFields.map((field) => field.label).join(', ')}`
+      : '';
+    return `${i + 1}. ${t.tool}${val ? ` "${val}"` : ''} → ${loc}${t.url ? `   [url: ${t.url}]` : ''}${context}${prepopulated}`;
   }).join('\n');
+}
+
+function prepopulatedFieldLabels(trace: AgentStep[]): string[] {
+  return [...new Set(trace.flatMap((step) => step.prepopulatedFields || []).map((field) => field.label).filter(Boolean))];
 }
 
 function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
@@ -163,6 +170,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     .map((r) => wrapperSignatures(fw, r)).filter(Boolean).join('\n');
   const caps = loadCapabilities(fw);
   const types = (job.testTypes && job.testTypes.length) ? job.testTypes.join(', ') : 'positive (happy path)';
+  const prepopulated = prepopulatedFieldLabels(trace);
   return [
     `Generate Playwright test files for the feature "${job.feature}" at ${job.url}.`,
     `Cover these test types only: ${types}. Author at most ${job.maxCases || 3} test case(s).`,
@@ -179,6 +187,9 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '## Unique-value API (available at ../utils/UniqueData)',
     'uniqueValue(seed, { kind: "numeric" | "alphanumeric" | "email", length? }) creates a new value per attempt.',
     'retryOnCollision({ page, successUrl, collision, makeValue, submit, attempts?, collisionMessage? }) retries ONLY when the live collision locator becomes visible; it returns on success URL and rethrows every other timeout/error.',
+    '',
+    '## App-prepopulated fields (initial live form snapshot)',
+    prepopulated.length ? `${prepopulated.join(', ')} — the application already supplied their values before any agent interaction.` : '(none observed)',
     '',
     '## Wrapper API contract (call ONLY these methods; never invent a wrapper method)',
     wrappers || '(no wrapper utils found)',
@@ -209,6 +220,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- SEQUENTIAL, APPEND-ONLY numbering: each spec file owns its own TC_001, TC_002… sequence. When a spec for this feature already exists, read the highest existing TC_XXX and number NEW cases from the next free number (existing TC_001–TC_003 → new TC_004); never renumber, reorder, or overwrite an existing test() block — append after them and return the FULL file with every existing test kept verbatim.',
     '- Reuse SHARED METHODS/HELPERS, not just locators. Use the shared WorkflowActions/Actions helpers for EVERY common interaction family instead of bespoke code: custom dropdown -> selectDropdownOption(trigger, optionText); searchable/autocomplete -> searchAndSelectOption(input, text, optionText?); native <select> -> Actions.selectOption; checkbox -> setCheckbox(target, checked); radio -> selectRadioOption(label); date field -> selectDate(input, value); table read -> readTableCell(table, rowText, colIndex); table row action -> clickInRow(table, rowText, controlName); table row checkbox -> setRowCheckbox(table, rowText, checked); search box -> searchWithOptionalSubmit. If NONE of the existing helpers fits a new interaction, implement it as a parameterized METHOD ON THE NEW MODULE (workflow logic belongs in the Module) — NEVER inline interaction logic in the spec, and NEVER call or invent a WorkflowActions/Actions method that is not already in the Wrapper API contract (the shared utils are a FIXED API on this path; this JSON output cannot emit a modified util file). Reuse one helper for repeated flows (login/logout/common assertions) too.',
     '- TEST DATA: read every value via the testData accessor (never hardcode usernames/names/roles/expected text in a spec). Reuse an existing matching entry before adding a new one; only add genuinely-new keys. Keep every existing testData key.',
+    '- APP-PREPOPULATED FIELDS: every field listed in the App-prepopulated fields section is an application-owned default. Do NOT create a Page locator for it, add testData for it, fill/clear/type it, include it in uniqueFields, or assert its literal value. Leave it untouched unless the approved test case explicitly requests custom entry.',
     '- UNIQUE CONSTRAINTS: identifiers, usernames, email addresses, codes, references, and record numbers must NEVER use a fixed final value. Store only a readable seed in testData, import uniqueValue/retryOnCollision from "../utils/UniqueData", and generate a fresh value for EACH submit attempt. The Module call shape is retryOnCollision({ page: this.page, successUrl: urlRegex(routes.X), collision: this.<page>.collisionLocator, makeValue: () => uniqueValue(seed, { kind, length }), submit: async (value) => { fill the field with value; click Save; }, collisionMessage }). Do NOT add a second waitForURL after this helper. The Page MUST expose the exact collision validation locator captured live. Retry ONLY when that exact validation appears — all other errors/timeouts must fail. Return one uniqueFields descriptor per field so codegen can enforce this contract.',
     '- TAGS — industry standard, stacked in the test() title: a feature/module tag in PascalCase (e.g. @AdminAddUser) PLUS suite tags — @Smoke on the primary happy-path case, @Regression on ALL cases. Do NOT use @Positive/@Negative. Match the domain naming already used in the repo.',
     '- TEST INDEPENDENCE: every test() runs STANDALONE (a case may be run individually via grep). Each test does its OWN login + navigation (prefer test.beforeEach for shared setup) and never depends on state left by a sibling test.',
@@ -298,6 +310,35 @@ function assertRoutesDefined(fw: string, files: string[]): void {
 function assertNoPositionalPageLocators(file: string, content: string): void {
   if (!/\.nth\s*\(/.test(content)) return;
   throw new Error(`Codegen: positional locator found in ${file}. Scope the live control from its stable label/group instead of using .nth().`);
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function fieldIdentifier(label: string): string {
+  const words = label.match(/[a-zA-Z0-9]+/g) || [];
+  return words.map((word, index) => index === 0 ? word.toLowerCase() : `${word[0].toUpperCase()}${word.slice(1).toLowerCase()}`).join('');
+}
+
+/** App-created defaults are evidence, not test input; reject any generated interaction with them. */
+function assertPrepopulatedFieldsUntouched(art: LlmArtifacts, trace: AgentStep[]): void {
+  const generated = [
+    art.page.content,
+    art.module.content,
+    art.spec.content,
+    JSON.stringify(art.testData || {}),
+    JSON.stringify(art.uniqueFields || []),
+  ].join('\n');
+  for (const label of prepopulatedFieldLabels(trace)) {
+    if (!label || /^Field\s+/i.test(label)) continue;
+    const identifier = fieldIdentifier(label);
+    const labelMatch = new RegExp(escapeRegex(label), 'i');
+    const identifierMatch = identifier ? new RegExp(`\\b${escapeRegex(identifier)}\\b`, 'i') : null;
+    if (labelMatch.test(generated) || identifierMatch?.test(generated)) {
+      throw new Error(`Codegen: app-prepopulated field '${label}' must be left untouched; remove its locator, test data, fill, assertion, and uniqueFields entry.`);
+    }
+  }
 }
 
 const UNIQUE_KEY = /(?:id|identifier|username|email|code|reference|number)$/i;
@@ -450,6 +491,7 @@ export async function generateFromTrace(
     throw new Error('Codegen: reply missing page/module/spec content.');
   }
   assertNoPositionalPageLocators(art.page.file || 'generated Page', art.page.content);
+  assertPrepopulatedFieldsUntouched(art, trace);
   assertUniqueFieldsHandled(art);
 
   const files: string[] = [];

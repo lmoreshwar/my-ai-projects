@@ -63,8 +63,16 @@ export interface AgentStep {
   args: Record<string, unknown>;
   locator?: string;
   context?: string;
+  prepopulatedFields?: PrepopulatedField[];
   url?: string;
   result: string;
+}
+
+export interface PrepopulatedField {
+  ref: string;
+  label: string;
+  value: string;
+  context: string;
 }
 
 export interface AgentLoopResult {
@@ -83,7 +91,7 @@ const SYSTEM_PROMPT = [
   '3. Do the MINIMUM to advance the goal: one action, then snapshot again, then the next action.',
   '4. To reveal a hidden control (Logout, Settings, a menu item), first CLICK the thing that opens it — a user avatar/profile image, a ⋮/kebab/hamburger/caret icon, or a top-bar user-name toggle — then snapshot; the revealed items appear in the NEXT snapshot.',
   '5. LOGIN: when a login form is present and the goal needs an authenticated page, fill the username field with the literal placeholder {{USERNAME}} and the password field with {{PASSWORD}}, then submit. The real values are injected securely — you must NEVER write an actual username or password. After you are logged in, do not re-enter credentials.',
-  '6. CREATE FLOWS: when the live snapshot shows an editable identifier, employee id, username, email, code, reference, or record-number field, fill it with a fresh value BEFORE the first Save/Submit; never rely on an app auto-filled default. After Save/Submit, call snapshot (not find) and verify the real outcome. If the live page shows a duplicate/collision validation, record that message, change only that unique value, submit again, and snapshot the outcome. Never finish passed while still on the form after a failed submit.',
+  '6. CREATE FLOWS: when the INITIAL live form snapshot marks a field as app-prepopulated, never fill, clear, assert a fixed value for, or otherwise overwrite it. For an EMPTY editable identifier, username, email, code, reference, or record-number field, fill a fresh value before Save/Submit. After Save/Submit, call snapshot (not find) and verify the real outcome. If the live page shows a duplicate/collision validation, record that message, change only that empty unique value, submit again, and snapshot the outcome. Never finish passed while still on the form after a failed submit.',
   '7. When the goal is achieved (or no useful action remains), call `finish` with status "passed" (goal verified), "failed" (a real defect/blocker), or "incomplete".',
   '',
   'Work efficiently and do not narrate — just make tool calls.',
@@ -120,6 +128,23 @@ function uniqueInputRefs(snapshot: string): string[] {
   return [...refs];
 }
 
+/** Capture non-empty fields present on the first snapshot of a form page before the agent touches them. */
+function prepopulatedFields(snapshot: string, filledRefs: Set<string>): PrepopulatedField[] {
+  const lines = snapshot.split('\n');
+  const fields: PrepopulatedField[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const ref = lines[index].match(/textbox[^\n]*\[ref=([a-z0-9]+)\]/)?.[1];
+    const value = lines[index].match(/:\s*"([^"]+)"/)?.[1]?.trim() || '';
+    if (!ref || !value || filledRefs.has(ref)) continue;
+    const contextLines = lines.slice(Math.max(0, index - 3), index + 1);
+    const label = [...contextLines].reverse()
+      .map((line) => line.replace(/^.*:\s*/, '').replace(/"/g, '').trim())
+      .find((text) => text && !text.includes('[ref=')) || `Field ${ref}`;
+    fields.push({ ref, label, value, context: contextLines.join('\n') });
+  }
+  return fields;
+}
+
 /** Infer a unique field's observed format from its auto-filled value, when one is present. */
 function uniqueInputFormat(snapshot: string, ref: string): 'numeric' | 'email' | null {
   const line = snapshot.split('\n').find((candidate) => candidate.includes(`[ref=${ref}]`)) || '';
@@ -154,6 +179,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   let latestSnapshot = '';
   let lastPageUrl = opts.url;
   let filledRefs = new Set<string>();
+  let prepopulatedRefs = new Set<string>();
+  let initialSnapshotUrls = new Set<string>();
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: SYSTEM_PROMPT },
@@ -231,7 +258,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       const actionRef = String(args.ref || '');
       const isFinalSubmit = name === 'click' && FINAL_SUBMIT_LABEL.test(liveRows.get(actionRef)?.name || '');
       if (isFinalSubmit) {
-        const missingUniqueRefs = uniqueInputRefs(latestSnapshot).filter((ref) => !filledRefs.has(ref));
+        const missingUniqueRefs = uniqueInputRefs(latestSnapshot)
+          .filter((ref) => !filledRefs.has(ref) && !prepopulatedRefs.has(ref));
         if (missingUniqueRefs.length) {
           const msg = `Before submitting, fill a fresh value into each visible unique field ref: ${missingUniqueRefs.join(', ')}. Do not rely on an auto-filled default.`;
           messages.push({ role: 'tool', tool_call_id: call.id, content: msg });
@@ -241,6 +269,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       }
 
       if (name === 'fill' || name === 'type') {
+        if (prepopulatedRefs.has(actionRef)) {
+          const msg = `Field ref ${actionRef} was app-prepopulated in the initial form snapshot. Leave it untouched unless the goal explicitly requires a custom value.`;
+          messages.push({ role: 'tool', tool_call_id: call.id, content: msg });
+          log(`[agent] ✗ ${name}(${actionRef}) blocked — ${msg}`);
+          continue;
+        }
         const format = uniqueInputRefs(latestSnapshot).includes(actionRef)
           ? uniqueInputFormat(latestSnapshot, actionRef)
           : null;
@@ -284,7 +318,29 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         liveRows = new Map(refs.map((ref) => [ref.ref, ref]));
         latestSnapshot = yaml;
         const pageUrl = extractPageUrl(raw);
-        toolResult = `Current URL: ${pageUrl || '(unchanged)'}\n\nInteractable elements you may act on now:\n${renderRefs(refs)}\n\nPage tree (context):\n${yaml.slice(0, 2500)}`;
+        const snapshotUrl = pageUrl || lastPageUrl;
+        const isInitialSnapshot = !initialSnapshotUrls.has(snapshotUrl);
+        const detectedPrepopulatedFields = isInitialSnapshot ? prepopulatedFields(yaml, filledRefs) : [];
+        if (isInitialSnapshot) initialSnapshotUrls.add(snapshotUrl);
+        for (const field of detectedPrepopulatedFields) prepopulatedRefs.add(field.ref);
+        if (detectedPrepopulatedFields.length) {
+          steps.push({
+            tool: 'snapshot',
+            args: { initial: true, reason: 'prepopulated-field-detection' },
+            context: redact(yaml, secrets).slice(0, 5000),
+            prepopulatedFields: detectedPrepopulatedFields.map((field) => ({
+              ...field,
+              value: redact(field.value, secrets),
+              context: redact(field.context, secrets),
+            })),
+            url: snapshotUrl,
+            result: redact(raw, secrets).slice(0, 5000),
+          });
+        }
+        const prepopulatedSummary = detectedPrepopulatedFields.length
+          ? `\n\nApp-prepopulated fields — do NOT overwrite: ${detectedPrepopulatedFields.map((field) => `${field.label} (ref ${field.ref})`).join(', ')}`
+          : '';
+        toolResult = `Current URL: ${pageUrl || '(unchanged)'}\n\nInteractable elements you may act on now:\n${renderRefs(refs)}\n\nPage tree (context):\n${yaml.slice(0, 2500)}${prepopulatedSummary}`;
         log(`[agent] snapshot → ${refs.length} interactable element(s)`);
         if (pageUrl) lastPageUrl = pageUrl;
       } else {
