@@ -301,6 +301,8 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- ZERO hardcoded URLs (Pages, Modules AND specs). If src/config exposes a routes map + urlFor(path)/urlRegex(path), use urlFor(routes.X) for every goto() and urlRegex(routes.X) for every toHaveURL() assertion AND every waitForURL() navigation wait; otherwise use a RELATIVE path resolved by the configured baseURL. NEVER embed a full "https://host/..." literal NOR a raw inline URL regex (e.g. /\\/web\\/index\\.php\\/pim\\/.../ ) in a module or spec — a navigation wait on a dynamic landing path MUST use urlRegex(routes.X) on the stable prefix route.',
     '- NEW ROUTES: if you reference a routes.X key that is NOT already listed in the Route map above, you MUST also return it in a top-level "routes" object mapping that key to its VERIFIED RELATIVE path taken from the trace url (e.g. "pimAddEmployee": "/web/index.php/pim/addEmployee"). Every routes.X you reference must either already exist or be returned in "routes" — an undefined route fails the build.',
     '- URL ASSERTIONS: assert the ACTUAL post-action landing URL observed in the trace (the FINAL step\'s [url: ...]), not the form/origin URL. If that landing path contains a DYNAMIC segment (numeric id, hash, empNumber/245, uuid), assert urlRegex on the STABLE PREFIX route (e.g. urlRegex(routes.pimViewPersonalDetails)) — never assert an exact URL that embeds a run-specific id.',
+    '- NAVIGATION URL TYPE (hard rule — the wrong type crashes at runtime with "page.goto: url: expected string, got object"): page.goto() takes a URL STRING, so ALWAYS pass urlFor(routes.X). urlRegex(routes.X) returns a RegExp and is valid ONLY for expect(page).toHaveURL(urlRegex(routes.X)) and page.waitForURL(urlRegex(routes.X)). NEVER page.goto(urlRegex(...)), page.goto(/.../), page.goto(new RegExp(...)) or a bare page.goto(routes.X). Feature navigation belongs in the Module goto() using urlFor(routes.X).',
+    '- ONE NAVIGATION PATH — no duplicate nav: test.beforeEach does SHARED LOGIN ONLY (loginModule.goto() + loginModule.login(credentials("app"))). Feature navigation lives in the feature Module.goto() called INSIDE each test. Do NOT also navigate to the feature from beforeEach (no page.goto(feature) there) when a test calls <feature>Module.goto() — that double-navigates. Pick the Module.goto() as the single authoritative path.',
     '- SEQUENTIAL, APPEND-ONLY numbering: each spec file owns its own TC_001, TC_002… sequence. When a spec for this feature already exists, read the highest existing TC_XXX and number NEW cases from the next free number (existing TC_001–TC_003 → new TC_004); never renumber, reorder, or overwrite an existing test() block — append after them and return the FULL file with every existing test kept verbatim.',
     '- Reuse SHARED METHODS/HELPERS, not just locators. Use the shared WorkflowActions/Actions helpers for EVERY common interaction family instead of bespoke code: custom dropdown -> selectDropdownOption(trigger, optionText); searchable/autocomplete -> searchAndSelectOption(input, text, optionText?); native <select> -> Actions.selectOption; checkbox -> setCheckbox(target, checked); radio -> selectRadioOption(label); date field -> selectDate(input, value); table read -> readTableCell(table, rowText, colIndex); table row action -> clickInRow(table, rowText, controlName); table row checkbox -> setRowCheckbox(table, rowText, checked); search box -> searchWithOptionalSubmit. If NONE of the existing helpers fits a new interaction, implement it as a parameterized METHOD ON THE NEW MODULE (workflow logic belongs in the Module) — NEVER inline interaction logic in the spec, and NEVER call or invent a WorkflowActions/Actions method that is not already in the Wrapper API contract (the shared utils are a FIXED API on this path; this JSON output cannot emit a modified util file). Reuse one helper for repeated flows (login/logout/common assertions) too.',
     '- TEST DATA: read every value via the testData accessor (never hardcode usernames/names/roles/expected text in a spec). Reuse an existing matching entry before adding a new one; only add genuinely-new keys. Keep every existing testData key.',
@@ -394,6 +396,52 @@ function assertRoutesDefined(fw: string, files: string[]): void {
 function assertNoPositionalPageLocators(file: string, content: string): void {
   if (!/\.(?:nth|first|last)\s*\(/.test(content)) return;
   throw new Error(`Codegen: positional locator found in ${file}. Scope the live control from its stable label/group instead of using .nth().`);
+}
+
+/**
+ * page.goto()/.goto() require a URL STRING. urlRegex(routes.X) returns a RegExp and is valid ONLY for
+ * expect(page).toHaveURL(...) and page.waitForURL(...). This rejects a goto() fed a regex/urlRegex/bare
+ * route (the exact `page.goto: url: expected string, got object` runtime crash) BEFORE execution, so the
+ * self-repair loop rewrites it to urlFor(routes.X). Generic across Page/Module/Spec — no app specifics.
+ */
+export function assertNavigationUrlContract(artFiles: Array<{ file: string; content: string }>): void {
+  // A goto() whose FIRST argument is a RegExp form (urlRegex(...), new RegExp(...), /literal/) or a bare
+  // routes.X reference is invalid — goto needs a resolved string (urlFor(routes.X)).
+  const BAD_GOTO = /\.goto\(\s*(?:urlRegex\s*\(|new\s+RegExp\b|routes\.[A-Za-z_]|\/[^/*])/;
+  for (const { file, content } of artFiles) {
+    const line = content.split('\n').find((l) => BAD_GOTO.test(l));
+    if (line) {
+      throw new Error(
+        `Codegen: invalid navigation in ${file}: \`${line.trim()}\`. page.goto() needs a URL STRING — use ` +
+        `urlFor(routes.X). urlRegex(routes.X) is a RegExp and is ONLY valid for expect(page).toHaveURL(...) and ` +
+        `page.waitForURL(...). Rewrite the goto() to urlFor(routes.X) (or call a Module navigation method that ` +
+        `does), and keep urlRegex(...) only in URL assertions/waits.`,
+      );
+    }
+  }
+}
+
+/**
+ * One authoritative feature-navigation path. Catches the double-nav bug: beforeEach navigates to the
+ * feature (raw page.goto or a feature Module.goto()) AND a test ALSO navigates via <feature>Module.goto().
+ * loginModule.goto() is the login page, not feature navigation, so it never counts. Reject the duplicate so
+ * beforeEach is reduced to shared login only and the Module.goto() owns feature navigation. Generic.
+ */
+export function assertSingleNavigationPath(spec: { file: string; content: string }): void {
+  const src = spec.content;
+  const be = src.match(/beforeEach\s*\([\s\S]*?=>\s*\{([\s\S]*?)\n\s*\}\s*\)\s*;?/);
+  const beforeBody = be?.[1] || '';
+  const rest = be ? src.replace(be[0], '') : src;
+  // Feature navigation = a raw page.goto() OR a non-login Module.goto().
+  const FEATURE_NAV = /\bpage\.goto\s*\(|\b(?!loginModule\b)\w*Module\.goto\s*\(\s*\)/;
+  if (FEATURE_NAV.test(beforeBody) && FEATURE_NAV.test(rest)) {
+    throw new Error(
+      `Codegen: duplicate feature navigation in ${spec.file}. beforeEach navigates to the feature AND a test ` +
+      `also navigates (page.goto()/Module.goto()). Keep ONE path: beforeEach performs SHARED LOGIN ONLY ` +
+      `(loginModule.goto() + loginModule.login(credentials("app"))), and the feature Module.goto() performs ` +
+      `feature navigation inside each test. Remove the feature navigation from beforeEach.`,
+    );
+  }
 }
 
 function escapeRegex(value: string): string {
@@ -660,6 +708,12 @@ export async function generateFromTrace(
       throw new Error('Codegen: reply missing page/module/spec content.');
     }
     assertNoPositionalPageLocators(candidate.page.file || 'generated Page', candidate.page.content);
+    assertNavigationUrlContract([
+      { file: candidate.page.file || 'Page', content: candidate.page.content },
+      { file: candidate.module.file || 'Module', content: candidate.module.content },
+      { file: candidate.spec.file || 'Spec', content: candidate.spec.content },
+    ]);
+    assertSingleNavigationPath({ file: candidate.spec.file || 'Spec', content: candidate.spec.content });
     assertPrepopulatedFieldsUntouched(candidate, trace);
     assertUniqueFieldsHandled(candidate);
     assertNoUndefinedFixtures(fw, candidate);
@@ -847,6 +901,18 @@ interface AutomationStep {
 
 const AUTOMATION_FIELD_TOOLS = new Set(['fill', 'type', 'select', 'check', 'uncheck']);
 
+// Search/filter/pagination controls operate the LIST/results view, not the feature form. The agent may
+// touch them while exploring, so they can appear in the verified trace — but a "create/edit <feature>"
+// scenario must NOT include them (they belong to their own search scenario). Matched by accessible
+// name/role, never by an app-specific label, so this stays generic across applications.
+const LIST_CONTROL_RE = /^\s*(?:search|filters?)\s*$/i;
+
+function isListControl(label: string, item?: FieldInventoryItem): boolean {
+  if (LIST_CONTROL_RE.test(label)) return true;
+  if (item?.role === 'searchbox') return true;
+  return LIST_CONTROL_RE.test(item?.accessibleName || '');
+}
+
 /**
  * TEST DESIGN AGENT (deterministic planner) — convert the discovery inventory + verified trace into an
  * Automation Trace: ONLY the feature-relevant controls the scenario truly exercises.
@@ -880,8 +946,9 @@ function buildAutomationTrace(trace: AgentStep[], inventory: FieldInventoryItem[
     if (!label) continue;
     const key = coverageKey(label);
     if (seen.has(key)) continue;
-    seen.add(key);
     const item = inventory.find((it) => coverageKey(it.label) === key || (it.accessibleName && coverageKey(it.accessibleName) === key));
+    if (isListControl(label, item)) continue; // search/filter/pagination operate the list view — not a create-scenario field
+    seen.add(key);
     const action = (s.tool === 'type' ? 'fill' : s.tool) as AutomationStep['action'];
     executable.push({ action, target: item?.label || label, liveLocator: s.locator || '', snapshotEvidence: s.context, item, blocked: false, isSubmit: false });
   }

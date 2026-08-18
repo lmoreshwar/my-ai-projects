@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseInventory } from '../discovery';
 import type { DiscoveryResult, FieldInventoryItem } from '../discovery';
-import { authorScenariosFromDiscovery, scenariosToCases, selectTraceForScenarios } from '../codegen';
+import { authorScenariosFromDiscovery, scenariosToCases, selectTraceForScenarios, assertNavigationUrlContract, assertSingleNavigationPath } from '../codegen';
 import type { AgentStep } from '../agent-loop';
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────────── */
@@ -310,4 +310,73 @@ test('no selection (legacy) returns the full trace unchanged', () => {
   const { trace: out, coverageLabels } = selectTraceForScenarios(trace, scenarios, []);
   assert.equal(out.length, 1);
   assert.equal(coverageLabels.length, 0);
+});
+
+/* ── 8. A list control (Search) touched during exploration never enters a create scenario ─ */
+
+test('a Search fill done while exploring the list page is EXCLUDED from the "Create Job Title" trace', () => {
+  const disc = discoveryFrom(JOB_TITLES_SNAPSHOT, 'Job Title');
+  const trace = jobTitlesTrace();
+  // The agent searched the list page before opening the Add form — a list control, NOT a create field.
+  trace.splice(5, 0, step('fill', 'Search', 'Engineer'));
+  const scenarios = authorScenariosFromDiscovery({ feature: 'Job Title', url: 'x', maxCases: 6 }, disc, trace);
+  const positive = scenarios.find((s) => /all fields/i.test(s.title))!;
+  // Coverage is still exactly the three real form controls — Search is filtered out.
+  assert.deepEqual([...positive.coverage.fieldLabels].sort(), ['Job Description', 'Job Title', 'Note']);
+  assert.ok(!positive.coverage.fieldLabels.some((l) => /search/i.test(l)), 'Search is never part of the Create trace');
+  assert.ok(!positive.steps.some((st) => /search/i.test(st.action)), 'no "Fill Search" step in the create scenario');
+  // And the codegen hand-off coverage must not carry it either.
+  const { coverageLabels } = selectTraceForScenarios(trace, scenarios, [positive.id]);
+  assert.ok(!coverageLabels.some((l) => /search/i.test(l)), 'Search must never reach the codegen coverage gate');
+});
+
+/* ── 9. Navigation URL contract: goto() needs a STRING (urlFor), not a RegExp (urlRegex) ─ */
+
+test('assertNavigationUrlContract rejects page.goto fed a RegExp/urlRegex/bare route, accepts urlFor + string', () => {
+  // The exact live failure: goto() handed a urlRegex(...) RegExp → "expected string, got object".
+  assert.throws(() => assertNavigationUrlContract([{ file: 'spec', content: 'await page.goto(urlRegex(routes.adminJobTitles));' }]), /URL STRING|urlFor/i);
+  assert.throws(() => assertNavigationUrlContract([{ file: 's', content: 'await page.goto(new RegExp("/x"));' }]), /urlFor/i);
+  assert.throws(() => assertNavigationUrlContract([{ file: 's', content: 'await page.goto(routes.adminJobTitles);' }]), /urlFor/i);
+  assert.throws(() => assertNavigationUrlContract([{ file: 's', content: 'await page.goto(/viewJobTitleList/);' }]), /urlFor/i);
+  // Valid: goto() gets a STRING (urlFor or a literal); urlRegex(...) is only used for assertions/waits.
+  const good = [
+    'await this.page.goto(urlFor(routes.adminJobTitles));',
+    'await expect(page).toHaveURL(urlRegex(routes.adminJobTitles));',
+    'await this.page.waitForURL(urlRegex(routes.adminJobTitles));',
+    "await page.goto('/web/index.php/admin/viewJobTitleList');",
+  ].join('\n');
+  assert.doesNotThrow(() => assertNavigationUrlContract([{ file: 'ok', content: good }]));
+});
+
+/* ── 10. Single navigation path: beforeEach logs in only; the Module.goto() navigates ─── */
+
+test('assertSingleNavigationPath rejects duplicate feature nav, accepts login-only beforeEach + Module.goto()', () => {
+  // beforeEach navigates to the feature AND the test navigates again → the double-nav bug.
+  const dup = `
+test.describe('X', () => {
+  test.beforeEach(async ({ loginModule, page }) => {
+    await loginModule.goto();
+    await loginModule.login(u, p);
+    await page.goto(urlFor(routes.adminJobTitles));
+  });
+  test('[TC_001] add', async ({ page }) => {
+    const adminJobTitlesModule = new AdminJobTitlesModule(page);
+    await adminJobTitlesModule.goto();
+  });
+});`;
+  assert.throws(() => assertSingleNavigationPath({ file: 'spec', content: dup }), /duplicate feature navigation/i);
+
+  // Preferred: beforeEach logs in ONLY; the feature Module.goto() navigates inside the test.
+  const clean = `
+test.describe('X', () => {
+  test.beforeEach(async ({ loginModule }) => {
+    await loginModule.goto();
+    await loginModule.login(u, p);
+  });
+  test('[TC_001] add', async ({ page }) => {
+    const adminJobTitlesModule = new AdminJobTitlesModule(page);
+    await adminJobTitlesModule.goto();
+  });
+});`;
+  assert.doesNotThrow(() => assertSingleNavigationPath({ file: 'spec', content: clean }));
 });
