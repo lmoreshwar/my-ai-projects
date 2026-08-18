@@ -514,7 +514,12 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
               <h3 className="font-bold text-on-surface dark:text-white uppercase tracking-widest text-xs">Pipeline Configuration</h3>
             </div>
 
-            <div className="space-y-6">
+            <div className="space-y-4">
+              <div className="flex items-center gap-2">
+                <span className="material-symbols-outlined text-app-red text-base">account_tree</span>
+                <h4 className="font-bold text-on-surface dark:text-white uppercase tracking-widest text-[0.7rem]">Source</h4>
+              </div>
+              <div className="space-y-5">
               {/* Repository */}
               <div>
                 <label className="block text-xs font-bold text-secondary dark:text-slate-400 mb-2 uppercase tracking-wide">Select Repository</label>
@@ -553,6 +558,7 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
                     placeholder="— Select Workflow —"
                     options={(workflows.filter(isExecWorkflow).length ? workflows.filter(isExecWorkflow) : workflows).map(w => ({ value: w.id, label: `${w.name} (${w.path})` }))}
                   />
+              </div>
               </div>
             </div>
 
@@ -1228,13 +1234,13 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
                                     className="px-3 py-1.5 bg-indigo-500 text-white text-xs font-bold rounded-lg hover:bg-indigo-600 transition-colors flex items-center gap-1"
                                   >
                                     <span className="material-symbols-outlined text-sm">open_in_new</span>
-                                    Open in New Tab
+                                    View Full Report
                                   </button>
                                 </div>
                               </div>
                             </div>
                           </div>
-                          <iframe srcDoc={htmlReport} title="Playwright HTML Report" className="w-full border-0" style={{ height: '600px' }} sandbox="allow-scripts allow-same-origin"/>
+                          <iframe srcDoc={htmlReport} title="Playwright HTML Report" className="w-full border-0" style={{ height: '80vh', minHeight: '640px' }} sandbox="allow-scripts allow-same-origin"/>
                         </>
                       ) : (
                         <div className="p-12 text-center">
