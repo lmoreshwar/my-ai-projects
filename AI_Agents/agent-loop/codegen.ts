@@ -232,6 +232,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- Every generated Page locator MUST be based on the verified live explore evidence. Copy a non-positional echoed locator verbatim. When an action has an [AMBIGUOUS ...] scope hint, use its exact supplied locator instead of the CLI echo (which may use .first(), .last(), or .nth()). Never re-guess a locator.',
     '- Module = workflow methods using this.actions.* and this.logger.step(); construct its Page + Actions from the page in the constructor. Never put a raw locator or an assertion in a Module.',
     '- Spec = import { test, expect } from "../fixtures"; instantiate the new Module directly with the test\'s page, e.g. `const m = new <Feature>Module(page)`. Put all assertions here.',
+    '- FIXTURES: the test callback may destructure ONLY { page } plus fixtures already listed in "Fixtures already registered" above (e.g. loginModule for shared login). This feature\'s brand-new Page/Module are NOT fixtures — codegen does not edit src/fixtures/index.ts — so NEVER write `async ({ <feature>Page })` or `async ({ <feature>Module })` (Playwright fails with "unknown parameter"). When the spec needs the new Page for an assertion, instantiate it directly in the test body: `const <feature>Page = new <Feature>Page(page)`; likewise `const <feature>Module = new <Feature>Module(page)`. The reuse exemplar destructures ITS OWN registered fixtures — do not copy that for a not-yet-registered feature.',
     '- For login, the Module\'s login method takes (username, password); the spec passes credentials("app"). Do NOT hardcode credentials.',
     '- Reuse an existing Page/Module method from the reuse index when one already does the job.',
     '- ZERO hardcoded URLs (Pages, Modules AND specs). If src/config exposes a routes map + urlFor(path)/urlRegex(path), use urlFor(routes.X) for every goto() and urlRegex(routes.X) for every toHaveURL() assertion AND every waitForURL() navigation wait; otherwise use a RELATIVE path resolved by the configured baseURL. NEVER embed a full "https://host/..." literal NOR a raw inline URL regex (e.g. /\\/web\\/index\\.php\\/pim\\/.../ ) in a module or spec — a navigation wait on a dynamic landing path MUST use urlRegex(routes.X) on the stable prefix route.',
@@ -420,6 +421,46 @@ function assertUniqueFieldsHandled(art: LlmArtifacts): void {
   }
 }
 
+/**
+ * Reject a spec that destructures a Playwright fixture the framework never registered.
+ *
+ * Codegen writes Page/Module/Spec/testData but deliberately does NOT edit src/fixtures/index.ts, so
+ * a brand-new feature's Page/Module are NOT available as `async ({ recruitmentAddCandidatePage })`
+ * fixtures — Playwright fails fast with `Test has unknown parameter "..."`. The reuse exemplar
+ * (login/dashboard) legitimately destructures its OWN registered fixtures, which tempts the model to
+ * mimic the pattern for the new feature. This gate turns that runtime crash into a repairable
+ * message: instantiate the new Page/Module directly from `page` in the test body instead. Generic —
+ * it reads the ACTUAL registered fixture names from this framework, so it holds for any repo.
+ */
+function assertNoUndefinedFixtures(fw: string, art: LlmArtifacts): void {
+  // Playwright's built-in test-scoped args are always injectable without registration.
+  const builtins = new Set(['page', 'context', 'request', 'browser', 'browserName', 'playwright', 'contextOptions', 'baseURL']);
+  const registered = new Set<string>(builtins);
+  // Harvest every fixture the framework actually registers (keys of base.extend({ name: async (…) })).
+  const fixturesSrc = safeRead(join(fw, 'src/fixtures/index.ts'));
+  for (const m of fixturesSrc.matchAll(/^\s*(\w+)\s*:\s*async\s*\(/gm)) registered.add(m[1]);
+  // Collect every name the spec destructures from a test/hook callback: async ({ … }) => …
+  const used = new Set<string>();
+  for (const block of art.spec.content.matchAll(/async\s*\(\s*\{([^}]*)\}/g)) {
+    for (const part of block[1].split(',')) {
+      const name = part.split(':')[0].replace(/[^A-Za-z0-9_]/g, '');
+      if (name) used.add(name);
+    }
+  }
+  const unknown = [...used].filter((name) => !registered.has(name));
+  if (unknown.length) {
+    const example = unknown[0];
+    const className = `${example[0].toUpperCase()}${example.slice(1)}`;
+    const known = [...registered].filter((f) => !builtins.has(f)).join(', ') || '(none beyond built-ins)';
+    throw new Error(
+      `Codegen: the spec destructures undefined fixture(s) ${unknown.join(', ')}. This framework only registers ` +
+      `${known} as fixtures and codegen must NOT edit src/fixtures/index.ts, so a new feature's Page/Module cannot be ` +
+      `injected as a fixture. Instantiate each new Page/Module directly in the test body instead ` +
+      `(e.g. const ${example} = new ${className}(page)) and destructure only { page } plus the registered fixtures above.`,
+    );
+  }
+}
+
 const UNIQUE_DATA_UTILITY_SOURCE = [
   "import { type Locator, type Page } from '@playwright/test';",
   "import { TIMEOUTS } from './constants';",
@@ -527,6 +568,7 @@ export async function generateFromTrace(
     assertNoPositionalPageLocators(candidate.page.file || 'generated Page', candidate.page.content);
     assertPrepopulatedFieldsUntouched(candidate, trace);
     assertUniqueFieldsHandled(candidate);
+    assertNoUndefinedFixtures(fw, candidate);
     return candidate;
   };
 
