@@ -136,10 +136,13 @@ function prepopulatedFields(snapshot: string, filledRefs: Set<string>): Prepopul
     const ref = lines[index].match(/textbox[^\n]*\[ref=([a-z0-9]+)\]/)?.[1];
     const value = lines[index].match(/:\s*"([^"]+)"/)?.[1]?.trim() || '';
     if (!ref || !value || filledRefs.has(ref)) continue;
+    // Prefer the input's own accessible name; otherwise the nearest PRECEDING label line names
+    // the field. Never derive the label from the value line itself (that produced value-as-label).
+    const inlineName = lines[index].match(/textbox\s+"([^"]+)"/)?.[1]?.trim();
+    const label = inlineName || [...lines.slice(Math.max(0, index - 4), index)].reverse()
+      .map((line) => line.match(/:\s*(.+?)\s*$/)?.[1]?.replace(/"/g, '').replace(/\*$/, '').trim() || '')
+      .find((text) => text && !/^\d+$/.test(text) && !text.includes('[ref=')) || `Field ${ref}`;
     const contextLines = lines.slice(Math.max(0, index - 3), index + 1);
-    const label = [...contextLines].reverse()
-      .map((line) => line.replace(/^.*:\s*/, '').replace(/"/g, '').trim())
-      .find((text) => text && !text.includes('[ref=')) || `Field ${ref}`;
     fields.push({ ref, label, value, context: contextLines.join('\n') });
   }
   return fields;
@@ -157,6 +160,38 @@ function uniqueInputFormat(snapshot: string, ref: string): 'numeric' | 'email' |
 /** Return a concrete validation line from a post-submit snapshot, avoiding static form legends. */
 function validationFromSnapshot(snapshot: string): string | null {
   return snapshot.split('\n').find((line) => /\b(already exists|already taken|duplicate|invalid|must be|should be|error)\b/i.test(line))?.trim() || null;
+}
+
+const POST_SUBMIT_POLL_INTERVAL_MS = 1500;
+const POST_SUBMIT_TIMEOUT_MS = 30000;
+
+interface SubmitOutcome {
+  outcome: 'success' | 'validation' | 'timeout';
+  url: string;
+  snapshot: string;
+  raw: string;
+  validation: string | null;
+}
+
+/**
+ * Bounded watcher run after ANY form submit: poll the live page until it either navigates away
+ * (success), shows an inline validation (let the model react), or the timeout elapses (genuine
+ * failure). Replaces the single immediate snapshot that raced the app's post-submit redirect.
+ */
+async function watchSubmitOutcome(session: CliSession, submitUrl: string): Promise<SubmitOutcome> {
+  const deadline = Date.now() + POST_SUBMIT_TIMEOUT_MS;
+  let last: SubmitOutcome = { outcome: 'timeout', url: submitUrl, snapshot: '', raw: '', validation: null };
+  for (;;) {
+    const raw = await session.run(['snapshot']);
+    const snapshot = extractYaml(raw);
+    const url = extractPageUrl(raw) || submitUrl;
+    const validation = validationFromSnapshot(snapshot);
+    last = { outcome: 'timeout', url, snapshot, raw, validation };
+    if (url && url !== submitUrl) return { ...last, outcome: 'success' };
+    if (validation) return { ...last, outcome: 'validation' };
+    if (Date.now() >= deadline) return last;
+    await new Promise((resolve) => setTimeout(resolve, POST_SUBMIT_POLL_INTERVAL_MS));
+  }
 }
 
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
@@ -370,29 +405,27 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         log(`[agent] ${step}. ${name} ✓${pageUrl ? ` (→ ${pageUrl})` : ''}`);
         if (isFinalSubmit) {
           const submitUrl = pageUrl || lastPageUrl;
-          const postSubmitRaw = await session.run(['snapshot']);
-          const postSubmitSnapshot = extractYaml(postSubmitRaw);
-          const postSubmitRefs = parseRefs(postSubmitSnapshot);
-          const postSubmitUrl = extractPageUrl(postSubmitRaw);
-          const validation = validationFromSnapshot(postSubmitSnapshot);
-          liveRefs = new Set(postSubmitRefs.map((ref) => ref.ref));
-          liveRows = new Map(postSubmitRefs.map((ref) => [ref.ref, ref]));
-          latestSnapshot = postSubmitSnapshot;
+          const watch = await watchSubmitOutcome(session, submitUrl);
+          const watchRefs = parseRefs(watch.snapshot);
+          liveRefs = new Set(watchRefs.map((ref) => ref.ref));
+          liveRows = new Map(watchRefs.map((ref) => [ref.ref, ref]));
+          latestSnapshot = watch.snapshot;
+          if (watch.url) lastPageUrl = watch.url;
           steps.push({
             tool: 'snapshot',
-            args: { automatic: true, after: 'submit' },
-            context: redact(postSubmitSnapshot, secrets).slice(0, 5000),
-            url: postSubmitUrl,
-            result: redact(postSubmitRaw, secrets).slice(0, 5000),
+            args: { automatic: true, after: 'submit', outcome: watch.outcome },
+            context: redact(watch.snapshot, secrets).slice(0, 5000),
+            url: watch.url,
+            result: redact(watch.raw, secrets).slice(0, 5000),
           });
-          if (postSubmitUrl && postSubmitUrl !== submitUrl) {
-            return finish('passed', `Verified submit navigation from ${submitUrl} to ${postSubmitUrl}.`);
+          log(`[agent] post-submit watcher → ${watch.outcome} (${watch.url})`);
+          if (watch.outcome === 'success') {
+            return finish('passed', `Verified submit navigation from ${submitUrl} to ${watch.url}.`);
           }
-          const outcome = validation
-            ? `Validation detected: ${validation}`
-            : 'No navigation or validation was detected in the automatic post-submit snapshot.';
-          toolResult += `\n\nAutomatic post-submit snapshot\nURL: ${postSubmitUrl || submitUrl}\n${outcome}\n${postSubmitSnapshot.slice(0, 2500)}`;
-          if (postSubmitUrl) lastPageUrl = postSubmitUrl;
+          if (watch.outcome === 'timeout') {
+            return finish('failed', `Submit produced neither navigation nor a validation message within ${POST_SUBMIT_TIMEOUT_MS}ms (url stayed ${watch.url}).`);
+          }
+          toolResult += `\n\nAutomatic post-submit outcome: validation\nURL: ${watch.url}\nValidation detected: ${watch.validation}\n${watch.snapshot.slice(0, 2500)}`;
         }
         if (pageUrl) lastPageUrl = pageUrl;
       }
