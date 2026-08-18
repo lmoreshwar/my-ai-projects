@@ -135,11 +135,11 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
         const data = await res.json();
         if (data.workflows) {
           setWorkflows(data.workflows);
-          const ids = data.workflows.map(w => w.id);
-          // Reset a stale/hidden selection (e.g. a previously-picked generation workflow that
-          // is no longer offered), then auto-pick the Playwright runner or the sole option.
+          const execIds = data.workflows.filter(isExecWorkflow).map(w => w.id);
+          // Keep the previous choice ONLY if it's still a real exec workflow. A persisted
+          // non-exec selection (e.g. the CLI-smoke probe) is discarded and the runner auto-picked.
           setSelectedWorkflow(prev => {
-            if (prev && ids.includes(prev)) return prev;
+            if (prev && execIds.includes(prev)) return prev;
             const pw = data.workflows.find(isExecWorkflow);
             if (pw) return pw.id;
             return data.workflows.length === 1 ? data.workflows[0].id : '';
