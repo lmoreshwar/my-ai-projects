@@ -413,6 +413,173 @@ function inventoryGuidance(inventory: FieldInventoryItem[]): string {
   return lines.join('\n');
 }
 
+/* ── Post-navigation content-readiness settling ───────────────────────────────────────────────
+ * A client-rendered SPA paints its application shell (sidebar/topbar navigation) synchronously but
+ * hydrates the feature content (form fields, data tables, action buttons) a moment later, after its
+ * data request resolves. A single immediate snapshot can race that hydration and capture shell-only —
+ * so the model sees no form and wrongly concludes the feature is missing. These helpers add a GENERIC,
+ * bounded readiness check: classify a snapshot as shell-only vs feature-content (by a11y ROLE — never
+ * app-specific locators) and re-snapshot a few times, briefly, until content appears. This does NOT
+ * relax any success/completeness gate; it only ensures the model reads a settled page. */
+
+/** App-shell/navigation roles present on essentially every authenticated page. */
+const SHELL_ROLES = new Set(['link', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab']);
+/** Form-control roles that indicate real, actionable feature content. */
+const FORM_FIELD_ROLES = new Set(['textbox', 'searchbox', 'spinbutton', 'combobox', 'listbox', 'checkbox', 'radio', 'switch', 'slider']);
+/** Field roles the nav shell essentially never contains — one is strong proof of feature content. */
+const STRONG_FIELD_ROLES = new Set(['spinbutton', 'combobox', 'listbox', 'checkbox', 'radio', 'switch', 'slider']);
+/** Tabular/data roles that indicate a list/search/detail feature screen. */
+const DATA_ROLES = new Set(['table', 'grid', 'treegrid', 'row', 'gridcell', 'cell', 'columnheader', 'rowheader', 'option']);
+/** Generic action-verb vocabulary (NOT app-specific) — a button named like this is feature content. */
+const ACTION_BUTTON_RE = /\b(save|submit|apply|search|add|create|update|edit|delete|remove|assign|upload|download|confirm|reset|next|continue|register|generate)\b/i;
+/** Loading/progress signals — while present, feature content is still rendering. */
+const LOADING_RE = /\b(progressbar|loading|please wait|processing|spinner)\b/i;
+
+/** Verdict of classifying a live snapshot as app-shell vs feature content. Pure + unit-tested. */
+export interface ReadinessVerdict {
+  /** Feature content (form fields / data / action button) is present — safe for the model to act. */
+  ready: boolean;
+  featureFields: number;
+  navControls: number;
+  strongField: boolean;
+  dataRegion: boolean;
+  actionButton: boolean;
+  loading: boolean;
+  interactable: number;
+  reason: string;
+}
+
+/**
+ * Classify a live accessibility snapshot as application-shell-only vs feature-content-ready — using
+ * ONLY generic a11y roles/verbs (never app-specific locators). "45 interactable elements" made up of
+ * nav links/menuitems is NOT ready; a form field, data table, or action button IS. A lone searchbox is
+ * treated as the shell's menu filter, so a single field alone does not count as ready.
+ */
+export function classifyReadiness(snapshot: string): ReadinessVerdict {
+  const text = String(snapshot || '');
+  const rowRe = /^\s*-?\s*([a-zA-Z]+)(?:\s+"([^"]*)")?[^\n]*\[ref=[a-z0-9]+\]/;
+  let featureFields = 0;
+  let navControls = 0;
+  let strongField = false;
+  let dataRegion = false;
+  let actionButton = false;
+  for (const line of text.split('\n')) {
+    const m = line.match(rowRe);
+    if (!m) continue;
+    const role = m[1].toLowerCase();
+    const name = (m[2] || '').trim();
+    if (FORM_FIELD_ROLES.has(role)) {
+      featureFields += 1;
+      if (STRONG_FIELD_ROLES.has(role)) strongField = true;
+    } else if (DATA_ROLES.has(role)) {
+      dataRegion = true;
+    } else if (SHELL_ROLES.has(role)) {
+      navControls += 1;
+    } else if (role === 'button' && ACTION_BUTTON_RE.test(name)) {
+      actionButton = true;
+    }
+  }
+  const loading = LOADING_RE.test(text);
+  // Require a strong field, a data region, an action button, or >=2 fields (e.g. a login/multi-field
+  // form). A single searchbox is the shell's menu filter, so it is NOT enough on its own.
+  const ready = strongField || dataRegion || actionButton || featureFields >= 2;
+  const reason = ready
+    ? 'feature content present'
+    : loading
+      ? 'loading indicator present — feature content not yet rendered'
+      : navControls > 0
+        ? 'only application shell/navigation present'
+        : 'no feature content detected';
+  return { ready, featureFields, navControls, strongField, dataRegion, actionButton, loading, interactable: parseRefs(text).length, reason };
+}
+
+/** Minimal runner surface the settler needs — CliSession satisfies it; tests pass a stub. */
+export interface SnapshotRunner {
+  run(args: string[], timeoutMs?: number): Promise<string>;
+}
+
+export interface SettleOptions {
+  maxAttempts?: number;
+  intervalMs?: number;
+  sleep?: (ms: number) => Promise<void>;
+  log?: (line: string) => void;
+}
+
+export interface SettleResult {
+  raw: string;
+  snapshot: string;
+  verdict: ReadinessVerdict;
+  attempts: number;
+  /** true when feature content appeared within the bounded budget. */
+  settled: boolean;
+}
+
+const DEFAULT_SETTLE_ATTEMPTS = 6;
+const DEFAULT_SETTLE_INTERVAL_MS = 800;
+const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Bounded, post-navigation content-readiness settler. Snapshots, and while the page shows only the
+ * app shell/navigation, waits a SHORT interval and re-snapshots — up to a small budget — so an SPA
+ * form has time to hydrate before the model reads it. Returns the moment feature content appears;
+ * NEVER a single long fixed sleep, and NEVER blocks past the bounded budget (CI-safe).
+ */
+export async function settleForContent(session: SnapshotRunner, opts: SettleOptions = {}): Promise<SettleResult> {
+  const maxAttempts = opts.maxAttempts && opts.maxAttempts > 0 ? opts.maxAttempts : DEFAULT_SETTLE_ATTEMPTS;
+  const intervalMs = opts.intervalMs && opts.intervalMs >= 0 ? opts.intervalMs : DEFAULT_SETTLE_INTERVAL_MS;
+  const sleep = opts.sleep || realSleep;
+  let raw = '';
+  let snapshot = '';
+  let verdict = classifyReadiness('');
+  let attempts = 0;
+  for (let i = 0; i < maxAttempts; i += 1) {
+    raw = await session.run(['snapshot']);
+    snapshot = extractYaml(raw);
+    verdict = classifyReadiness(snapshot);
+    attempts = i + 1;
+    if (verdict.ready) return { raw, snapshot, verdict, attempts, settled: true };
+    if (i < maxAttempts - 1) {
+      opts.log?.(`[agent] settling — attempt ${attempts}/${maxAttempts}: ${verdict.reason} (${verdict.interactable} interactable, ${verdict.navControls} nav); re-snapshot in ${intervalMs}ms`);
+      await sleep(intervalMs);
+    }
+  }
+  return { raw, snapshot, verdict, attempts, settled: false };
+}
+
+/** Diagnostics captured when the bounded settler still finds no feature content. */
+export interface ReadinessDiagnostics {
+  url: string;
+  heading: string;
+  interactable: number;
+  navControls: number;
+  featureFields: number;
+  loadingIndicator: boolean;
+  attempts: number;
+  reason: string;
+  snapshotExcerpt: string;
+}
+
+/** First heading in a snapshot — a human label for the current screen (a11y title proxy). */
+export function snapshotHeading(snapshot: string): string {
+  const m = String(snapshot || '').match(/^\s*-?\s*heading\s+"([^"]+)"/m);
+  return m ? m[1].trim() : '';
+}
+
+/** Assemble structured diagnostics for a still-not-ready page (logged + fed back to the model). */
+export function buildReadinessDiagnostics(snapshot: string, url: string, verdict: ReadinessVerdict, attempts: number): ReadinessDiagnostics {
+  return {
+    url: url || '(unknown)',
+    heading: snapshotHeading(snapshot) || '(no heading in a11y tree)',
+    interactable: verdict.interactable,
+    navControls: verdict.navControls,
+    featureFields: verdict.featureFields,
+    loadingIndicator: verdict.loading,
+    attempts,
+    reason: verdict.reason,
+    snapshotExcerpt: String(snapshot || '').slice(0, 1200),
+  };
+}
+
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
   const log = opts.onLog || ((l: string) => console.log(l));
   const creds = opts.credentials || resolveCredentials();
@@ -582,7 +749,25 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         continue;
       }
 
-      const raw = await session.run(argv);
+      // `snapshot` uses a bounded content-readiness settler so an SPA form has time to hydrate before
+      // the model reads it; every other tool executes exactly once.
+      let readinessNote = '';
+      let raw: string;
+      if (name === 'snapshot') {
+        const settle = await settleForContent(session, { log });
+        raw = settle.raw;
+        if (settle.attempts > 1) log(`[agent] content-readiness settled after ${settle.attempts} snapshot attempt(s) — ${settle.verdict.reason}`);
+        if (!settle.settled) {
+          const diagUrl = extractPageUrl(raw) || lastPageUrl;
+          const diag = buildReadinessDiagnostics(settle.snapshot, diagUrl, settle.verdict, settle.attempts);
+          const shotPath = `blast-readiness-${Date.now().toString(36)}.png`;
+          await session.run(['screenshot', shotPath]).catch(() => {});
+          log(`[agent] \u26a0 readiness diagnostics — reason="${diag.reason}" url=${diag.url} heading="${diag.heading}" interactable=${diag.interactable} nav=${diag.navControls} fields=${diag.featureFields} loading=${diag.loadingIndicator} attempts=${diag.attempts} screenshot=${shotPath}`);
+          readinessNote = `\n\nREADINESS DIAGNOSTIC (this does NOT relax any success gate): after ${diag.attempts} bounded re-snapshots the page still shows ${diag.reason}. url=${diag.url}; heading="${diag.heading}"; interactable=${diag.interactable}; navControls=${diag.navControls}; formFields=${diag.featureFields}; loadingIndicator=${diag.loadingIndicator}. If this feature should render a form it did not hydrate; otherwise the signed-in user may lack the data/permission to see it. Never report success without the actual form.`;
+        }
+      } else {
+        raw = await session.run(argv);
+      }
       let toolResult: string;
 
       if (name === 'snapshot') {
@@ -641,7 +826,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           }
         }
 
-        toolResult = `Current URL: ${pageUrl || '(unchanged)'}\n\nInteractable elements you may act on now:\n${renderRefs(refs)}\n\nPage tree (context):\n${yaml.slice(0, 2500)}${prepopulatedSummary}${discoveryGuidance}`;
+        toolResult = `Current URL: ${pageUrl || '(unchanged)'}\n\nInteractable elements you may act on now:\n${renderRefs(refs)}\n\nPage tree (context):\n${yaml.slice(0, 2500)}${prepopulatedSummary}${discoveryGuidance}${readinessNote}`;
         if (discoveryGuidance) toolResult += '\n\nNOTE: the page was scrolled during discovery — call snapshot again to get fresh refs before filling.';
         log(`[agent] snapshot → ${refs.length} interactable element(s)`);
         if (pageUrl) lastPageUrl = pageUrl;
