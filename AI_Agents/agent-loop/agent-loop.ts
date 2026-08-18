@@ -41,6 +41,10 @@ import {
   type RefRow,
 } from './playwright-cli-tools';
 import { runDiscovery, parseInventory, type DiscoveryResult, type FieldInventoryItem } from './discovery';
+import {
+  collectPageDiagnostics, classifyFailure, formatDiagnosticsReport,
+  type FailureDiagnosis,
+} from './page-diagnostics';
 
 export interface AgentLoopOptions {
   /** Feature name + concrete instructions describing what to explore/verify. */
@@ -101,6 +105,8 @@ export interface AgentLoopResult {
   steps: AgentStep[];
   /** Bounded read-only discovery evidence captured on the feature form (present when discover !== false). */
   discovery?: DiscoveryResult;
+  /** Root-cause diagnoses captured whenever expected feature content failed to hydrate. */
+  diagnostics?: FailureDiagnosis[];
 }
 
 const SYSTEM_PROMPT = [
@@ -595,6 +601,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
 
   const session = new CliSession();
   const steps: AgentStep[] = [];
+  const diagnostics: FailureDiagnosis[] = [];
   let liveRefs = new Set<string>();
   let liveRows = new Map<string, RefRow>();
   let latestSnapshot = '';
@@ -615,7 +622,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
     { role: 'user', content: `# Feature URL\n${opts.url}\n\n# Goal\n${opts.goal}` },
   ];
 
-  const finish = (status: AgentLoopResult['status'], summary: string): AgentLoopResult => ({ status, summary, steps, discovery });
+  const finish = (status: AgentLoopResult['status'], summary: string): AgentLoopResult => ({ status, summary, steps, discovery, diagnostics });
 
   try {
     // Open a headless session, optionally load a saved auth state, then land on the feature URL.
@@ -764,6 +771,29 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           await session.run(['screenshot', shotPath]).catch(() => {});
           log(`[agent] \u26a0 readiness diagnostics — reason="${diag.reason}" url=${diag.url} heading="${diag.heading}" interactable=${diag.interactable} nav=${diag.navControls} fields=${diag.featureFields} loading=${diag.loadingIndicator} attempts=${diag.attempts} screenshot=${shotPath}`);
           readinessNote = `\n\nREADINESS DIAGNOSTIC (this does NOT relax any success gate): after ${diag.attempts} bounded re-snapshots the page still shows ${diag.reason}. url=${diag.url}; heading="${diag.heading}"; interactable=${diag.interactable}; navControls=${diag.navControls}; formFields=${diag.featureFields}; loadingIndicator=${diag.loadingIndicator}. If this feature should render a form it did not hydrate; otherwise the signed-in user may lack the data/permission to see it. Never report success without the actual form.`;
+
+          // GENERIC dynamic-page failure diagnosis: gather browser-level root-cause evidence
+          // (console errors, failed/4xx-5xx network, DOM/page state, iframes) via the CLI's real
+          // DevTools subcommands and classify WHY the content is absent. Informational ONLY — it
+          // never relaxes a success gate; the model must still finish("failed") when the form is
+          // genuinely missing. No extra waits, no retries, no app-specific selectors.
+          try {
+            const pd = await collectPageDiagnostics(session, {
+              url: diagUrl,
+              screenshotPath: shotPath,
+              a11yInteractable: diag.interactable,
+              a11yFields: diag.featureFields,
+              a11yHeading: diag.heading,
+            });
+            const diagnosis = classifyFailure(pd);
+            diagnostics.push(diagnosis);
+            const report = redact(formatDiagnosticsReport(pd, diagnosis), secrets);
+            log(`[agent] \ud83d\udd2c dynamic-failure diagnosis — category=${diagnosis.category} console=${pd.console.errors}e/${pd.console.warnings}w network=${pd.network.failed.length}failed/${pd.network.total} domInputs=${pd.page.inputs} readyState=${pd.readyState || '?'}`);
+            for (const line of report.split('\n')) log(`[diag] ${line}`);
+            readinessNote += `\n\n${report}\n\nUse this to decide the outcome: if the feature form is genuinely absent, call finish("failed") and state the root-cause category (${diagnosis.category}); never report success without the actual form.`;
+          } catch (e) {
+            log(`[agent] dynamic-failure diagnosis skipped: ${(e as Error).message}`);
+          }
         }
       } else {
         raw = await session.run(argv);

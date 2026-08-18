@@ -44,6 +44,10 @@ async function main(): Promise<void> {
     cases = await authorPlanFromTrace(fw, job, walk.steps, log);
   } else if (walk.status !== 'passed') {
     log(`[explore] The flow could not be verified: ${walk.summary}`);
+    for (const d of walk.diagnostics ?? []) {
+      log(`[explore] ROOT CAUSE (${d.category}): ${d.headline}`);
+      for (const line of d.evidence) log(`[explore]   • ${line}`);
+    }
   }
 
   const plan: BlastPlanV2 = {
@@ -61,7 +65,7 @@ async function main(): Promise<void> {
   const outFile = join(outDir, 'blast-plan.json');
   writeFileSync(outFile, JSON.stringify(plan, null, 2));
   const evidenceFile = join(outDir, 'blast-explore-evidence.json');
-  writeFileSync(evidenceFile, JSON.stringify({ status: plan.status, summary: plan.summary, trace: plan.trace, completeness: plan.completeness }, null, 2));
+  writeFileSync(evidenceFile, JSON.stringify({ status: plan.status, summary: plan.summary, trace: plan.trace, completeness: plan.completeness, diagnostics: walk.diagnostics ?? [] }, null, 2));
   log(`[explore] Wrote plan v2 (${scenarios.length} scenario(s), ${plan.inventory.length} control(s), ${plan.trace.length} verified step(s)) → ${outFile}`);
 
   // Always exit 0 so the plan artifact uploads; the website reads plan.status to
