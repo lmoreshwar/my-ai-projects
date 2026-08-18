@@ -120,6 +120,15 @@ function uniqueInputRefs(snapshot: string): string[] {
   return [...refs];
 }
 
+/** Infer a unique field's observed format from its auto-filled value, when one is present. */
+function uniqueInputFormat(snapshot: string, ref: string): 'numeric' | 'email' | null {
+  const line = snapshot.split('\n').find((candidate) => candidate.includes(`[ref=${ref}]`)) || '';
+  const value = line.match(/:\s*"([^"]+)"/)?.[1] || '';
+  if (/^\d+$/.test(value)) return 'numeric';
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return 'email';
+  return null;
+}
+
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
   const log = opts.onLog || ((l: string) => console.log(l));
   const creds = opts.credentials || resolveCredentials();
@@ -216,11 +225,32 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       }
 
       const actionRef = String(args.ref || '');
+      if (pendingSubmitUrl && name !== 'snapshot') {
+        const msg = 'After a final Save/Submit, call snapshot before any other action so the real success URL or validation is captured.';
+        messages.push({ role: 'tool', tool_call_id: call.id, content: msg });
+        log(`[agent] ✗ ${name} blocked — ${msg}`);
+        continue;
+      }
       const isFinalSubmit = name === 'click' && FINAL_SUBMIT_LABEL.test(liveRows.get(actionRef)?.name || '');
       if (isFinalSubmit) {
         const missingUniqueRefs = uniqueInputRefs(latestSnapshot).filter((ref) => !filledRefs.has(ref));
         if (missingUniqueRefs.length) {
           const msg = `Before submitting, fill a fresh value into each visible unique field ref: ${missingUniqueRefs.join(', ')}. Do not rely on an auto-filled default.`;
+          messages.push({ role: 'tool', tool_call_id: call.id, content: msg });
+          log(`[agent] ✗ ${name}(${actionRef}) blocked — ${msg}`);
+          continue;
+        }
+      }
+
+      if (name === 'fill' || name === 'type') {
+        const format = uniqueInputRefs(latestSnapshot).includes(actionRef)
+          ? uniqueInputFormat(latestSnapshot, actionRef)
+          : null;
+        const value = String(name === 'fill' ? args.value : args.text ?? '');
+        const invalidFormat = (format === 'numeric' && !/^\d+$/.test(value))
+          || (format === 'email' && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value));
+        if (invalidFormat) {
+          const msg = `The live auto-filled unique field ref ${actionRef} uses ${format} format. Fill a fresh ${format} value instead.`;
           messages.push({ role: 'tool', tool_call_id: call.id, content: msg });
           log(`[agent] ✗ ${name}(${actionRef}) blocked — ${msg}`);
           continue;

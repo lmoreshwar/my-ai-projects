@@ -112,3 +112,12 @@ jobs:
           path: ${{ github.workspace }}/blast-plan.json
           if-no-files-found: warn
           retention-days: 3
+
+      - name: Upload Explore evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blast-explore-evidence-${{ inputs.job_id }}
+          path: .blast-engine/AI_Agents/agent-loop/.playwright-cli/
+          if-no-files-found: warn
+          retention-days: 14
