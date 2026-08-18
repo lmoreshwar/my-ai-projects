@@ -129,6 +129,11 @@ function uniqueInputFormat(snapshot: string, ref: string): 'numeric' | 'email' |
   return null;
 }
 
+/** Return a concrete validation line from a post-submit snapshot, avoiding static form legends. */
+function validationFromSnapshot(snapshot: string): string | null {
+  return snapshot.split('\n').find((line) => /\b(already exists|already taken|duplicate|invalid|must be|should be|error)\b/i.test(line))?.trim() || null;
+}
+
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
   const log = opts.onLog || ((l: string) => console.log(l));
   const creds = opts.credentials || resolveCredentials();
@@ -148,7 +153,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   let liveRows = new Map<string, RefRow>();
   let latestSnapshot = '';
   let lastPageUrl = opts.url;
-  let pendingSubmitUrl = '';
   let filledRefs = new Set<string>();
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
@@ -225,12 +229,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       }
 
       const actionRef = String(args.ref || '');
-      if (pendingSubmitUrl && name !== 'snapshot') {
-        const msg = 'After a final Save/Submit, call snapshot before any other action so the real success URL or validation is captured.';
-        messages.push({ role: 'tool', tool_call_id: call.id, content: msg });
-        log(`[agent] ✗ ${name} blocked — ${msg}`);
-        continue;
-      }
       const isFinalSubmit = name === 'click' && FINAL_SUBMIT_LABEL.test(liveRows.get(actionRef)?.name || '');
       if (isFinalSubmit) {
         const missingUniqueRefs = uniqueInputRefs(latestSnapshot).filter((ref) => !filledRefs.has(ref));
@@ -288,9 +286,6 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         const pageUrl = extractPageUrl(raw);
         toolResult = `Current URL: ${pageUrl || '(unchanged)'}\n\nInteractable elements you may act on now:\n${renderRefs(refs)}\n\nPage tree (context):\n${yaml.slice(0, 2500)}`;
         log(`[agent] snapshot → ${refs.length} interactable element(s)`);
-        if (pendingSubmitUrl && pageUrl && pageUrl !== pendingSubmitUrl) {
-          return finish('passed', `Verified submit navigation from ${pendingSubmitUrl} to ${pageUrl}.`);
-        }
         if (pageUrl) lastPageUrl = pageUrl;
       } else {
         const locator = extractRanLocator(raw);
@@ -317,9 +312,31 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           'Call snapshot to see the updated page before your next ref-based action.',
         ].filter(Boolean).join('\n');
         log(`[agent] ${step}. ${name} ✓${pageUrl ? ` (→ ${pageUrl})` : ''}`);
-        if (isFinalSubmit) pendingSubmitUrl = pageUrl || lastPageUrl;
-        if (pendingSubmitUrl && pageUrl && pageUrl !== pendingSubmitUrl) {
-          return finish('passed', `Verified submit navigation from ${pendingSubmitUrl} to ${pageUrl}.`);
+        if (isFinalSubmit) {
+          const submitUrl = pageUrl || lastPageUrl;
+          const postSubmitRaw = await session.run(['snapshot']);
+          const postSubmitSnapshot = extractYaml(postSubmitRaw);
+          const postSubmitRefs = parseRefs(postSubmitSnapshot);
+          const postSubmitUrl = extractPageUrl(postSubmitRaw);
+          const validation = validationFromSnapshot(postSubmitSnapshot);
+          liveRefs = new Set(postSubmitRefs.map((ref) => ref.ref));
+          liveRows = new Map(postSubmitRefs.map((ref) => [ref.ref, ref]));
+          latestSnapshot = postSubmitSnapshot;
+          steps.push({
+            tool: 'snapshot',
+            args: { automatic: true, after: 'submit' },
+            context: redact(postSubmitSnapshot, secrets).slice(0, 5000),
+            url: postSubmitUrl,
+            result: redact(postSubmitRaw, secrets).slice(0, 5000),
+          });
+          if (postSubmitUrl && postSubmitUrl !== submitUrl) {
+            return finish('passed', `Verified submit navigation from ${submitUrl} to ${postSubmitUrl}.`);
+          }
+          const outcome = validation
+            ? `Validation detected: ${validation}`
+            : 'No navigation or validation was detected in the automatic post-submit snapshot.';
+          toolResult += `\n\nAutomatic post-submit snapshot\nURL: ${postSubmitUrl || submitUrl}\n${outcome}\n${postSubmitSnapshot.slice(0, 2500)}`;
+          if (postSubmitUrl) lastPageUrl = postSubmitUrl;
         }
         if (pageUrl) lastPageUrl = pageUrl;
       }

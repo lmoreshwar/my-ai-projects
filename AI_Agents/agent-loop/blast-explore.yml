@@ -118,6 +118,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: blast-explore-evidence-${{ inputs.job_id }}
-          path: .blast-engine/AI_Agents/agent-loop/.playwright-cli/
+          path: ${{ github.workspace }}/blast-explore-evidence.json
           if-no-files-found: warn
           retention-days: 14

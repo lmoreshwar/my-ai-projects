@@ -47,6 +47,8 @@ async function main(): Promise<void> {
 
   const outFile = join(outDir, 'blast-plan.json');
   writeFileSync(outFile, JSON.stringify(plan, null, 2));
+  const evidenceFile = join(outDir, 'blast-explore-evidence.json');
+  writeFileSync(evidenceFile, JSON.stringify({ status: plan.status, summary: plan.summary, trace: plan.trace }, null, 2));
   log(`[explore] Wrote plan (${plan.cases.length} case(s), ${plan.trace.length} verified step(s)) → ${outFile}`);
 
   // Always exit 0 so the plan artifact uploads; the website reads plan.status to
