@@ -67,7 +67,8 @@ interface UniqueField {
   testDataPath: string;
   kind: 'numeric' | 'alphanumeric' | 'email';
   length?: number;
-  collisionPageField: string;
+  // Present ONLY when the live trace exposed an inline collision validation for this field.
+  collisionPageField?: string;
   collisionMessage?: string;
 }
 
@@ -233,7 +234,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- Reuse SHARED METHODS/HELPERS, not just locators. Use the shared WorkflowActions/Actions helpers for EVERY common interaction family instead of bespoke code: custom dropdown -> selectDropdownOption(trigger, optionText); searchable/autocomplete -> searchAndSelectOption(input, text, optionText?); native <select> -> Actions.selectOption; checkbox -> setCheckbox(target, checked); radio -> selectRadioOption(label); date field -> selectDate(input, value); table read -> readTableCell(table, rowText, colIndex); table row action -> clickInRow(table, rowText, controlName); table row checkbox -> setRowCheckbox(table, rowText, checked); search box -> searchWithOptionalSubmit. If NONE of the existing helpers fits a new interaction, implement it as a parameterized METHOD ON THE NEW MODULE (workflow logic belongs in the Module) — NEVER inline interaction logic in the spec, and NEVER call or invent a WorkflowActions/Actions method that is not already in the Wrapper API contract (the shared utils are a FIXED API on this path; this JSON output cannot emit a modified util file). Reuse one helper for repeated flows (login/logout/common assertions) too.',
     '- TEST DATA: read every value via the testData accessor (never hardcode usernames/names/roles/expected text in a spec). Reuse an existing matching entry before adding a new one; only add genuinely-new keys. Keep every existing testData key.',
     '- APP-PREPOPULATED FIELDS: every field listed in the App-prepopulated fields section is an application-owned default. Do NOT create a Page locator for it, add testData for it, fill/clear/type it, include it in uniqueFields, or assert its literal value. Leave it untouched unless the approved test case explicitly requests custom entry.',
-    '- UNIQUE CONSTRAINTS: identifiers, usernames, email addresses, codes, references, and record numbers must NEVER use a fixed final value. Store only a readable seed in testData, import uniqueValue/retryOnCollision from "../utils/UniqueData", and generate a fresh value for EACH submit attempt. The Module call shape is retryOnCollision({ page: this.page, successUrl: urlRegex(routes.X), collision: this.<page>.collisionLocator, makeValue: () => uniqueValue(seed, { kind, length }), submit: async (value) => { fill the field with value; click Save; }, collisionMessage }). Do NOT add a second waitForURL after this helper. The Page MUST expose the exact collision validation locator captured live. Retry ONLY when that exact validation appears — all other errors/timeouts must fail. Return one uniqueFields descriptor per field so codegen can enforce this contract.',
+    '- UNIQUE CONSTRAINTS: identifiers, usernames, email addresses, codes, references, and record numbers must NEVER use a fixed final value. Store only a readable seed in testData, import uniqueValue from "../utils/UniqueData" (add retryOnCollision only in mode B below), and generate a FRESH value for EACH submit via uniqueValue(seed, { kind, length }). TWO modes: (A) DEFAULT — if the live trace NEVER showed an inline duplicate/"already exists" validation for the field, just fill the fresh uniqueValue() and Save (NO retry, NO collision locator); return a uniqueFields descriptor with only testDataPath+kind (+length) and OMIT collisionPageField/collisionMessage. (B) COLLISION RETRY — ONLY when the live trace ACTUALLY exposed an inline collision validation for the field, wrap the submit in retryOnCollision({ page: this.page, successUrl: urlRegex(routes.X), collision: this.<page>.collisionLocator, makeValue: () => uniqueValue(seed, { kind, length }), submit: async (value) => { fill the field with value; click Save; }, collisionMessage }); the Page MUST expose that exact live collision locator, retry ONLY when it appears (all other errors/timeouts fail), and do NOT add a second waitForURL after the helper. Return one uniqueFields descriptor per unique field so codegen can enforce this contract.',
     '- TAGS — industry standard, stacked in the test() title: a feature/module tag in PascalCase (e.g. @AdminAddUser) PLUS suite tags — @Smoke on the primary happy-path case, @Regression on ALL cases. Do NOT use @Positive/@Negative. Match the domain naming already used in the repo.',
     '- TEST INDEPENDENCE: every test() runs STANDALONE (a case may be run individually via grep). Each test does its OWN login + navigation (prefer test.beforeEach for shared setup) and never depends on state left by a sibling test.',
     '- CLEAN CODE: match the exemplars\' indentation, no unused imports, no dead code, no duplicated boilerplate that belongs in a shared helper. One short comment only above a non-obvious step.',
@@ -246,7 +247,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '  "spec":   { "file": "src/tests/<feature>.spec.ts",   "content": "<full file>" },',
     '  "testData": { <any new keys the spec reads, or omit> },',
     '  "routes": { <NEW routes.X keys → verified relative path (e.g. "pimAddEmployee": "/web/index.php/pim/addEmployee"), or omit if none are new> },',
-    '  "uniqueFields": [{ "testDataPath": "<testData seed path>", "kind": "numeric|alphanumeric|email", "length": 7, "collisionPageField": "<Page collision locator property>", "collisionMessage": "<exact live validation text>" }],',
+    '  "uniqueFields": [{ "testDataPath": "<testData seed path>", "kind": "numeric|alphanumeric|email", "length": 7, "collisionPageField": "<Page collision locator property — ONLY if a live collision validation exists; OMIT otherwise>", "collisionMessage": "<exact live validation text — only alongside collisionPageField>" }],',
     '  "reusedFrom": ["<existing class/method you reused>"]',
     '}',
   ].join('\n');
@@ -391,17 +392,23 @@ function assertUniqueFieldsHandled(art: LlmArtifacts): void {
     throw new Error(`Codegen: static value(s) for unique field(s) ${missingPlans.join(', ')} require a uniqueFields descriptor and retryOnCollision handling.`);
   }
   for (const field of fields) {
-    if (!field.testDataPath || !field.collisionPageField) {
-      throw new Error('Codegen: each uniqueFields descriptor requires testDataPath and collisionPageField.');
+    if (!field.testDataPath) {
+      throw new Error('Codegen: each uniqueFields descriptor requires a testDataPath.');
     }
-    if (!art.module.content.includes('uniqueValue(') || !art.module.content.includes('retryOnCollision(')) {
-      throw new Error(`Codegen: unique field '${field.testDataPath}' must use uniqueValue() and retryOnCollision() in its Module.`);
+    if (!art.module.content.includes('uniqueValue(')) {
+      throw new Error(`Codegen: unique field '${field.testDataPath}' must generate a fresh value via uniqueValue() in its Module.`);
     }
     if (!art.module.content.includes("from '../utils/UniqueData'")) {
       throw new Error(`Codegen: unique field '${field.testDataPath}' must import its helpers from ../utils/UniqueData.`);
     }
-    if (!new RegExp(`\\b${field.collisionPageField}\\b`).test(art.page.content)) {
-      throw new Error(`Codegen: unique field '${field.testDataPath}' is missing Page collision locator '${field.collisionPageField}'.`);
+    // retryOnCollision + a live collision locator are required ONLY when the trace exposed a collision validation.
+    if (field.collisionPageField) {
+      if (!art.module.content.includes('retryOnCollision(')) {
+        throw new Error(`Codegen: unique field '${field.testDataPath}' has a collision locator and must retry via retryOnCollision() in its Module.`);
+      }
+      if (!new RegExp(`\\b${field.collisionPageField}\\b`).test(art.page.content)) {
+        throw new Error(`Codegen: unique field '${field.testDataPath}' is missing Page collision locator '${field.collisionPageField}'.`);
+      }
     }
   }
 }
