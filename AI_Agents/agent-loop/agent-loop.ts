@@ -104,6 +104,22 @@ function snapshotContextForRef(snapshot: string, ref: string): string {
   return lines.slice(Math.max(0, index - 8), Math.min(lines.length, index + 9)).join('\n').slice(0, 1200);
 }
 
+const UNIQUE_FIELD_LABEL = /\b(employee\s*id|identifier|username|e-?mail|code|reference|record\s*number)\b/i;
+const FINAL_SUBMIT_LABEL = /^(save|submit|create|register)$/i;
+
+/** Find unnamed or named unique inputs associated with a nearby live snapshot label. */
+function uniqueInputRefs(snapshot: string): string[] {
+  const lines = snapshot.split('\n');
+  const refs = new Set<string>();
+  for (let index = 0; index < lines.length; index += 1) {
+    const ref = lines[index].match(/textbox[^\n]*\[ref=([a-z0-9]+)\]/)?.[1];
+    if (!ref) continue;
+    const context = lines.slice(Math.max(0, index - 3), index + 1).join('\n');
+    if (UNIQUE_FIELD_LABEL.test(context)) refs.add(ref);
+  }
+  return [...refs];
+}
+
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
   const log = opts.onLog || ((l: string) => console.log(l));
   const creds = opts.credentials || resolveCredentials();
@@ -120,7 +136,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   const session = new CliSession();
   const steps: AgentStep[] = [];
   let liveRefs = new Set<string>();
+  let liveRows = new Map<string, RefRow>();
   let latestSnapshot = '';
+  let lastPageUrl = opts.url;
+  let pendingSubmitUrl = '';
+  let filledRefs = new Set<string>();
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: SYSTEM_PROMPT },
@@ -195,6 +215,18 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         }
       }
 
+      const actionRef = String(args.ref || '');
+      const isFinalSubmit = name === 'click' && FINAL_SUBMIT_LABEL.test(liveRows.get(actionRef)?.name || '');
+      if (isFinalSubmit) {
+        const missingUniqueRefs = uniqueInputRefs(latestSnapshot).filter((ref) => !filledRefs.has(ref));
+        if (missingUniqueRefs.length) {
+          const msg = `Before submitting, fill a fresh value into each visible unique field ref: ${missingUniqueRefs.join(', ')}. Do not rely on an auto-filled default.`;
+          messages.push({ role: 'tool', tool_call_id: call.id, content: msg });
+          log(`[agent] ✗ ${name}(${actionRef}) blocked — ${msg}`);
+          continue;
+        }
+      }
+
       // For fill/type, swap credential placeholders for the real env values RIGHT BEFORE running the
       // CLI. The model only ever emits {{USERNAME}}/{{PASSWORD}}, so the real secret never enters the
       // transcript; the executed action still performs a genuine login. The value we keep in the
@@ -221,9 +253,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         const yaml = extractYaml(raw);
         const refs = parseRefs(yaml);
         liveRefs = new Set(refs.map((r) => r.ref));
+        liveRows = new Map(refs.map((ref) => [ref.ref, ref]));
         latestSnapshot = yaml;
-        toolResult = `Current URL: ${extractPageUrl(raw) || '(unchanged)'}\n\nInteractable elements you may act on now:\n${renderRefs(refs)}\n\nPage tree (context):\n${yaml.slice(0, 2500)}`;
+        const pageUrl = extractPageUrl(raw);
+        toolResult = `Current URL: ${pageUrl || '(unchanged)'}\n\nInteractable elements you may act on now:\n${renderRefs(refs)}\n\nPage tree (context):\n${yaml.slice(0, 2500)}`;
         log(`[agent] snapshot → ${refs.length} interactable element(s)`);
+        if (pendingSubmitUrl && pageUrl && pageUrl !== pendingSubmitUrl) {
+          return finish('passed', `Verified submit navigation from ${pendingSubmitUrl} to ${pageUrl}.`);
+        }
+        if (pageUrl) lastPageUrl = pageUrl;
       } else {
         const locator = extractRanLocator(raw);
         const pageUrl = extractPageUrl(raw);
@@ -234,6 +272,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         const recordedArgs = placeholderValue
           ? { ...args, ...(name === 'fill' ? { value: placeholderValue } : { text: placeholderValue }) }
           : args;
+        if (name === 'fill' || name === 'type') filledRefs.add(actionRef);
         steps.push({
           tool: name,
           args: recordedArgs,
@@ -248,6 +287,11 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           'Call snapshot to see the updated page before your next ref-based action.',
         ].filter(Boolean).join('\n');
         log(`[agent] ${step}. ${name} ✓${pageUrl ? ` (→ ${pageUrl})` : ''}`);
+        if (isFinalSubmit) pendingSubmitUrl = pageUrl || lastPageUrl;
+        if (pendingSubmitUrl && pageUrl && pageUrl !== pendingSubmitUrl) {
+          return finish('passed', `Verified submit navigation from ${pendingSubmitUrl} to ${pageUrl}.`);
+        }
+        if (pageUrl) lastPageUrl = pageUrl;
       }
 
       messages.push({ role: 'tool', tool_call_id: call.id, content: redact(toolResult, secrets) });
