@@ -28,6 +28,16 @@ const PARALLEL_MODES = [
   { value: '1', label: 'Serial (1 worker)' },
 ];
 
+// A workflow that actually EXECUTES the Playwright suite (`npx playwright test`), not a
+// feasibility/snapshot probe (playwright-cli-smoke) or a BLAST generation pipeline
+// (explore/approve/runner). The Trigger page only runs test-execution workflows, so we
+// filter the dropdown and auto-select on this to avoid green-but-zero-tests runs.
+const isExecWorkflow = (w) => {
+  const s = `${w?.name || ''} ${w?.path || ''}`;
+  if (/cli|smoke|feasibility|explore|approve|runner|generate|codegen|blast/i.test(s)) return false;
+  return /playwright/i.test(s);
+};
+
 export default function GitHubCICD({ connections, apiBase, cicdState, setCicdState }) {
   /* ── Lifted state from App.jsx for persistence ── */
   const workflows = cicdState.workflows;
@@ -130,7 +140,7 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
           // is no longer offered), then auto-pick the Playwright runner or the sole option.
           setSelectedWorkflow(prev => {
             if (prev && ids.includes(prev)) return prev;
-            const pw = data.workflows.find(w => /playwright/i.test(`${w.name} ${w.path}`));
+            const pw = data.workflows.find(isExecWorkflow);
             if (pw) return pw.id;
             return data.workflows.length === 1 ? data.workflows[0].id : '';
           });
@@ -152,7 +162,7 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
     setCfgCases(pendingTrigger.cases || '');
     setPrefillNote(pendingTrigger.note || 'Run configuration was pre-filled from AI Native Playwright. Review and trigger.');
     // Auto-select the Playwright execution workflow if it's already loaded.
-    const pw = workflows.find(w => /playwright/i.test(`${w.name} ${w.path}`));
+    const pw = workflows.find(isExecWorkflow);
     if (pw) setSelectedWorkflow(pw.id);
     setCicdState(s => ({ ...s, pendingTrigger: null }));
   }, [pendingTrigger, workflows]);
@@ -541,7 +551,7 @@ export default function GitHubCICD({ connections, apiBase, cicdState, setCicdSta
                     onChange={(val) => setSelectedWorkflow(val)}
                     disabled={!workflows.length}
                     placeholder="— Select Workflow —"
-                    options={workflows.map(w => ({ value: w.id, label: `${w.name} (${w.path})` }))}
+                    options={(workflows.filter(isExecWorkflow).length ? workflows.filter(isExecWorkflow) : workflows).map(w => ({ value: w.id, label: `${w.name} (${w.path})` }))}
                   />
               </div>
             </div>
