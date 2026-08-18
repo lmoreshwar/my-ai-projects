@@ -692,16 +692,6 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                 Required scopes: <span className="font-semibold text-slate-500 dark:text-slate-400">repo</span>, <span className="font-semibold text-slate-500 dark:text-slate-400">workflow</span>, <span className="font-semibold text-slate-500 dark:text-slate-400">read:org</span> (optional for org repos)
               </p>
             </div>
-            {/* Show the PR destination only once a repo is actually chosen (avoids noise for new users). */}
-            {connections.github?.selectedRepo && (
-              <div className="space-y-1 p-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded">
-                <p className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500">Pull Request target</p>
-                <p className="text-sm font-semibold text-on-surface dark:text-white">
-                  {connections.github.selectedRepo}{connections.github.selectedBranch ? ` @ ${connections.github.selectedBranch}` : ''}
-                </p>
-                <p className="text-[0.6rem] text-slate-400 dark:text-slate-600">Your generated tests open as a Pull Request here.</p>
-              </div>
-            )}
           </div>
 
           {/* Test Connection Button */}
@@ -739,56 +729,56 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
             const showCreate = !hasRepo || showCreateForm;
             return (
             <div className="flex flex-col gap-4">
-              <div className="space-y-3 p-4 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-lg">
-                <div>
-                  <p className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500">Pull Request destination</p>
-                  <p className="text-[0.7rem] text-slate-500 dark:text-slate-400 mt-1">Choose where BLAST opens generated-test Pull Requests.</p>
-                </div>
-                <CustomSelect
-                  value={connections.github?.selectedRepo || ''}
-                  onChange={selectTargetRepo}
-                  disabled={updatingTarget}
-                  placeholder="Run Test Connection to load repositories"
-                  options={[
-                    ...((connections.github?.selectedRepo && !(connections.github?.repos || []).some((repo) => repo.name === connections.github.selectedRepo))
-                      ? [{ value: connections.github.selectedRepo, label: connections.github.selectedRepo }]
-                      : []),
-                    ...(connections.github?.repos || []).map((repo) => ({
-                      value: repo.name,
-                      label: `${repo.name} (${repo.visibility})`,
-                    })),
-                  ]}
-                />
-                <div className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3">
-                  <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Branch</span>
-                  <CustomSelect
-                    value={connections.github?.selectedBranch || ''}
-                    onChange={selectTargetBranch}
-                    disabled={updatingTarget || !connections.github?.selectedRepo}
-                    size="sm"
-                    placeholder="Select a repository first"
-                    options={[...(connections.github?.branches || []), ...(connections.github?.selectedBranch && !(connections.github?.branches || []).includes(connections.github.selectedBranch) ? [connections.github.selectedBranch] : [])]}
-                  />
-                </div>
-              </div>
               <div className="flex items-center gap-3 p-4 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
                 <span className="material-symbols-outlined text-green-600 text-xl">check_circle</span>
                 <div>
                   <p className="text-sm font-bold text-green-700 dark:text-green-400">GitHub Connected Successfully</p>
                   <p className="text-xs text-green-600 dark:text-green-500 mt-0.5">
                     {hasRepo
-                      ? 'Your automation repo is ready. Pull Requests open in the target shown above.'
-                      : 'Create your automation repository from the BLAST template below.'}
+                      ? 'Your target repository is ready for generated-test Pull Requests.'
+                      : 'Choose a repository below or create a new automation repository.'}
                   </p>
+                </div>
+              </div>
+              <div className="space-y-4 p-4 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-lg">
+                <div>
+                  <p className="text-[0.625rem] font-bold uppercase tracking-widest text-on-surface-variant dark:text-slate-500">Pull Request destination</p>
+                  <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">Choose where BLAST opens generated-test Pull Requests.</p>
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-300">Repository</label>
+                  <CustomSelect
+                    value={connections.github?.selectedRepo || ''}
+                    onChange={selectTargetRepo}
+                    disabled={updatingTarget}
+                    placeholder="Run Test Connection to load repositories"
+                    options={[
+                      ...((connections.github?.selectedRepo && !(connections.github?.repos || []).some((repo) => repo.name === connections.github.selectedRepo))
+                        ? [{ value: connections.github.selectedRepo, label: connections.github.selectedRepo }]
+                        : []),
+                      ...(connections.github?.repos || []).map((repo) => ({
+                        value: repo.name,
+                        label: `${repo.name} (${repo.visibility})`,
+                      })),
+                    ]}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="block text-xs font-bold text-slate-600 dark:text-slate-300">Branch</label>
+                  <CustomSelect
+                    value={connections.github?.selectedBranch || ''}
+                    onChange={selectTargetBranch}
+                    disabled={updatingTarget || !connections.github?.selectedRepo}
+                    placeholder="Select a repository first"
+                    options={[...(connections.github?.branches || []), ...(connections.github?.selectedBranch && !(connections.github?.branches || []).includes(connections.github.selectedBranch) ? [connections.github.selectedBranch] : [])]}
+                  />
                 </div>
               </div>
               {showCreate ? (
                 <div className="space-y-2 p-4 bg-app-blue/5 border border-app-blue/20 rounded-lg">
-                  <p className="text-[0.625rem] font-bold uppercase tracking-widest text-app-blue">
-                    {hasRepo ? 'Create a different automation repo' : 'New here? Create your automation repo'}
-                  </p>
-                  <p className="text-[0.7rem] text-slate-500 dark:text-slate-400">
-                    Spin up your own copy of the BLAST framework (with the required workflows) in one click, then it becomes your target repo.
+                  <p className="text-[0.625rem] font-bold uppercase tracking-widest text-app-blue">Create a new automation repo</p>
+                  <p className="text-sm text-slate-500 dark:text-slate-400">
+                    Create a public BLAST framework repository with the required workflows. It becomes your Pull Request destination.
                   </p>
                   <div className="flex items-center gap-2">
                     <input
@@ -811,7 +801,7 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
                       ) : (
                         <>
                           <span className="material-symbols-outlined text-base">add</span>
-                          Create Repo
+                          Create repository
                         </>
                       )}
                     </button>
@@ -833,10 +823,10 @@ export default function ConnectionSettings({ connections, setConnections, apiBas
               ) : (
                 <button
                   onClick={() => setShowCreateForm(true)}
-                  className="self-start flex items-center gap-1.5 text-xs font-semibold text-app-blue hover:brightness-110"
+                  className="self-start flex items-center gap-1.5 text-sm font-semibold text-app-blue hover:brightness-110"
                 >
                   <span className="material-symbols-outlined text-base">add</span>
-                  Create a different repo
+                  Create a new automation repo
                 </button>
               )}
             </div>
