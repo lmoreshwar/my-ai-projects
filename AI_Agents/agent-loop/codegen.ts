@@ -20,7 +20,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import OpenAI from 'openai';
-import type { AgentStep } from './agent-loop';
+import { deriveLocatorScopeHint, type AgentStep, type LocatorScopeHint } from './agent-loop';
 
 // Some gateways force a default reasoning_effort that conflicts with structured/tool calls on
 // /v1/chat/completions. Send OPENAI_REASONING_EFFORT (e.g. "none") only when it is set.
@@ -154,10 +154,17 @@ function renderTrace(trace: AgentStep[]): string {
     const loc = t.locator ? t.locator.replace(/\s*\n\s*/g, ' ').slice(0, 220) : '(no locator)';
     const val = t.args && (t.args.value ?? t.args.text);
     const context = t.context ? `\n   [live snapshot context for this ref]\n${t.context}` : '';
+    // Older approved plans predate scopeHint, so recover it from their captured snapshot context.
+    const positionalLocator = /\.(?:first|last|nth)\s*\(/.test(t.locator || '');
+    const scopeHint: LocatorScopeHint | undefined = t.scopeHint
+      || (positionalLocator ? deriveLocatorScopeHint(t.context || '', String(t.args?.ref || ''), true) : undefined);
+    const scope = scopeHint
+      ? `\n   [AMBIGUOUS ${scopeHint.role}${scopeHint.name ? ` "${scopeHint.name}"` : ''} match - ${scopeHint.matches} controls; use this EXACT label-scoped Page locator instead of the positional CLI echo]\n   ${scopeHint.locator}`
+      : '';
     const prepopulated = t.prepopulatedFields?.length
       ? `\n   [app-prepopulated fields — never fill/assert]: ${t.prepopulatedFields.map((field) => field.label).join(', ')}`
       : '';
-    return `${i + 1}. ${t.tool}${val ? ` "${val}"` : ''} → ${loc}${t.url ? `   [url: ${t.url}]` : ''}${context}${prepopulated}`;
+    return `${i + 1}. ${t.tool}${val ? ` "${val}"` : ''} → ${loc}${t.url ? `   [url: ${t.url}]` : ''}${context}${scope}${prepopulated}`;
   }).join('\n');
 }
 
@@ -188,7 +195,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     `Generate Playwright test files for the feature "${job.feature}" at ${job.url}.`,
     `Cover these test types only: ${types}. Author at most ${job.maxCases || 3} test case(s).`,
     '',
-    '## Verified live actions (HIGHEST-PRIORITY EVIDENCE — copy these EXACT locators verbatim)',
+    '## Verified live actions (HIGHEST-PRIORITY EVIDENCE — copy non-positional locators verbatim; an AMBIGUOUS scope hint overrides a positional CLI echo)',
     renderTrace(trace),
     '',
     '## Reuse index (.ai-memory) — REUSE these before creating anything new; never duplicate',
@@ -219,10 +226,10 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- Page = locators only, arrow getters returning Locator, constructor(private readonly page: Page). Copy locators VERBATIM from the verified actions above.',
     '- LOCATOR STRATEGY (Playwright official priority — pick the HIGHEST-priority strategy the element ACTUALLY supports; fall back only when a higher one does not exist): (1) getByTestId() when the app exposes data-testid/data-test/data-qa; (2) getByRole(role, { name }) for interactive elements (button/link/textbox/checkbox/radio/menuitem/option) — the PRIMARY strategy; (3) getByLabel() for form fields with a real <label>; (4) getByPlaceholder() only when no label/role/testid; (5) getByText({ exact: true }) for static content/links; (6) getByAltText() for images; (7) CSS/XPath LAST RESORT and only SCOPED/chained (e.g. locator(".row", { hasText: "Admin" }).getByRole("textbox")). Default to ONE strategy per element; do NOT stack.',
     '- NEVER write a locator containing an auto-generated id/hash/framework class (e.g. #react-select-3, .MuiButton-root-482, .css-1a2b3c, numeric-suffix classes) — they change every build. Prefer role/label/text even when such an id is visible. NEVER a bare brittle class name.',
-    '- DISAMBIGUATION: if a role/text locator matches MANY elements (tables, repeated rows, form fields with no distinct name), SCOPE from a stable parent (row/section/dialog/labelled group) and chain — e.g. locator(".oxd-input-group", { hasText: "Username" }).getByRole("textbox"). NEVER use .nth() in a generated Page locator. For an unnamed input, use its action\'s live snapshot context to scope from the closest stable label/group; that context is live evidence, not permission to guess a positional selector.',
+    '- DISAMBIGUATION: if a role/text locator matches MANY elements (tables, repeated rows, form fields with no distinct name), SCOPE from a stable parent (row/section/dialog/labelled group) and chain. For every [AMBIGUOUS ...] trace entry, use the supplied EXACT label-anchored Page locator; it was derived by climbing the live snapshot tree to the nearest distinguishing label and then selecting that label\'s nearest container with the target control. NEVER use .nth(), .first(), or .last() in a generated Page locator.',
     '- DROPDOWNS: detect from the live snapshot whether it is a native <select> (use Actions.selectOption) or a custom JS dropdown (React-select/MUI/PrimeNG/OXD — click-to-open then getByRole("option", { name }) via selectDropdownOption/searchAndSelectOption). Never assume one pattern.',
     '- IFRAMES/SHADOW DOM: if the target is inside an iframe or shadow root (per the snapshot), use frameLocator()/shadow-piercing correctly — never fall back to a wrong-scope locator. WAITING: rely on Playwright auto-waiting; never use fixed sleeps — only waitFor(state) for genuinely async/animated UI, with a `// reason:` note.',
-    '- Every generated Page locator MUST be based on the verified live explore evidence. Copy a non-positional echoed locator verbatim; when the CLI echo uses .nth(), replace it with the scoped label/group locator supported by that action\'s live snapshot context. Never re-guess a locator.',
+    '- Every generated Page locator MUST be based on the verified live explore evidence. Copy a non-positional echoed locator verbatim. When an action has an [AMBIGUOUS ...] scope hint, use its exact supplied locator instead of the CLI echo (which may use .first(), .last(), or .nth()). Never re-guess a locator.',
     '- Module = workflow methods using this.actions.* and this.logger.step(); construct its Page + Actions from the page in the constructor. Never put a raw locator or an assertion in a Module.',
     '- Spec = import { test, expect } from "../fixtures"; instantiate the new Module directly with the test\'s page, e.g. `const m = new <Feature>Module(page)`. Put all assertions here.',
     '- For login, the Module\'s login method takes (username, password); the spec passes credentials("app"). Do NOT hardcode credentials.',
@@ -321,7 +328,7 @@ function assertRoutesDefined(fw: string, files: string[]): void {
 
 /** Positional Page locators are not stable evidence for a single form control. */
 function assertNoPositionalPageLocators(file: string, content: string): void {
-  if (!/\.nth\s*\(/.test(content)) return;
+  if (!/\.(?:nth|first|last)\s*\(/.test(content)) return;
   throw new Error(`Codegen: positional locator found in ${file}. Scope the live control from its stable label/group instead of using .nth().`);
 }
 

@@ -63,9 +63,19 @@ export interface AgentStep {
   args: Record<string, unknown>;
   locator?: string;
   context?: string;
+  scopeHint?: LocatorScopeHint;
   prepopulatedFields?: PrepopulatedField[];
   url?: string;
   result: string;
+}
+
+/** A label-anchored locator for a repeated role/name discovered in the live snapshot. */
+export interface LocatorScopeHint {
+  role: string;
+  name: string;
+  matches: number;
+  label: string;
+  locator: string;
 }
 
 export interface PrepopulatedField {
@@ -111,6 +121,81 @@ function snapshotContextForRef(snapshot: string, ref: string): string {
   const index = lines.findIndex((line) => line.includes(`[ref=${ref}]`));
   if (index < 0) return '';
   return lines.slice(Math.max(0, index - 8), Math.min(lines.length, index + 9)).join('\n').slice(0, 1200);
+}
+
+interface SnapshotControl {
+  index: number;
+  indent: number;
+  role: string;
+  name: string;
+}
+
+function snapshotControl(line: string, index: number): SnapshotControl | null {
+  const match = line.match(/^\s*-?\s*([a-zA-Z]+)(?:\s+"([^"]*)")?[^\n]*\[ref=[a-z0-9]+\]/);
+  if (!match) return null;
+  return { index, indent: lineIndent(line), role: match[1].toLowerCase(), name: (match[2] || '').trim() };
+}
+
+function stableSnapshotText(line: string): string {
+  const colonText = line.match(/:\s*"?([^"\n]+?)"?\s*$/)?.[1] || '';
+  const namedContainer = line.match(/(?:heading|group|region|dialog|fieldset|row)\s+"([^"]+)"/)?.[1] || '';
+  const text = (colonText || namedContainer).replace(/\*+$/, '').trim();
+  return /[a-z0-9]/i.test(text) ? text : '';
+}
+
+function nearestLabelInSnapshot(lines: string[], target: SnapshotControl): string {
+  let child = target;
+  while (child.index > 0) {
+    let parentIndex = -1;
+    for (let index = child.index - 1; index >= 0; index -= 1) {
+      if (lineIndent(lines[index]) < child.indent) {
+        parentIndex = index;
+        break;
+      }
+    }
+    if (parentIndex < 0) return '';
+    for (let index = child.index - 1; index > parentIndex; index -= 1) {
+      if (lineIndent(lines[index]) !== child.indent) continue;
+      const label = stableSnapshotText(lines[index]);
+      if (label && label !== child.name) return label;
+    }
+    const parent = snapshotControl(lines[parentIndex], parentIndex);
+    if (!parent) return stableSnapshotText(lines[parentIndex]);
+    child = parent;
+  }
+  return '';
+}
+
+function descendantPredicate(role: string): string {
+  if (['textbox', 'searchbox', 'spinbutton', 'combobox'].includes(role)) return 'descendant::input or descendant::textarea or descendant::select';
+  if (['checkbox', 'radio', 'switch'].includes(role)) return 'descendant::input or descendant::*[@role="checkbox" or @role="radio" or @role="switch"]';
+  if (role === 'button') return 'descendant::button or descendant::*[@role="button"]';
+  if (role === 'link') return 'descendant::a or descendant::*[@role="link"]';
+  if (['menuitem', 'menuitemcheckbox', 'option'].includes(role)) return `descendant::*[@role="${role}"] or descendant::option`;
+  return 'descendant::*';
+}
+
+function escapeTsLiteral(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+/**
+ * Turn an ambiguous a11y role/name into a label-anchored, nearest-container locator.
+ * The hint is derived only from the live snapshot; it never guesses an app-specific class.
+ */
+export function deriveLocatorScopeHint(snapshot: string, ref: string, forceAmbiguous = false): LocatorScopeHint | undefined {
+  if (!snapshot || !ref) return undefined;
+  const lines = snapshot.split('\n');
+  const controls = lines.map(snapshotControl).filter((control): control is SnapshotControl => Boolean(control));
+  const target = controls.find((control) => lines[control.index].includes(`[ref=${ref}]`));
+  if (!target) return undefined;
+  const matches = controls.filter((control) => control.role === target.role && control.name === target.name);
+  if (!forceAmbiguous && matches.length < 2) return undefined;
+  const label = nearestLabelInSnapshot(lines, target);
+  if (!label) return undefined;
+  const roleOptions = target.name ? `, { name: '${escapeTsLiteral(target.name)}' }` : '';
+  const locator = `page.getByText('${escapeTsLiteral(label)}', { exact: true }).locator('xpath=ancestor::*[${descendantPredicate(target.role)}][1]').getByRole('${target.role}'${roleOptions})`;
+  return { role: target.role, name: target.name, matches: Math.max(matches.length, 2), label, locator };
 }
 
 const UNIQUE_FIELD_LABEL = /\b(employee\s*id|identifier|username|e-?mail|code|reference|record\s*number)\b/i;
@@ -459,6 +544,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         const locator = extractRanLocator(raw);
         const pageUrl = extractPageUrl(raw);
         const context = snapshotContextForRef(latestSnapshot, String(args.ref || ''));
+        const positionalLocator = /\.(?:first|last|nth)\s*\(/.test(locator);
+        const scopeHint = deriveLocatorScopeHint(latestSnapshot, String(args.ref || ''), positionalLocator);
         // After any navigation/action the old refs are stale — force a fresh snapshot next.
         if (name === 'goto' || name === 'goBack') liveRefs = new Set();
         // Persist the PLACEHOLDER (never the real credential) so codegen stays secret-free.
@@ -471,6 +558,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           args: recordedArgs,
           locator,
           context: context ? redact(context, secrets) : undefined,
+          scopeHint,
           url: pageUrl,
           result: redact(raw, secrets).slice(0, 400),
         });
