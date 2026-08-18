@@ -241,7 +241,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- Reuse SHARED METHODS/HELPERS, not just locators. Use the shared WorkflowActions/Actions helpers for EVERY common interaction family instead of bespoke code: custom dropdown -> selectDropdownOption(trigger, optionText); searchable/autocomplete -> searchAndSelectOption(input, text, optionText?); native <select> -> Actions.selectOption; checkbox -> setCheckbox(target, checked); radio -> selectRadioOption(label); date field -> selectDate(input, value); table read -> readTableCell(table, rowText, colIndex); table row action -> clickInRow(table, rowText, controlName); table row checkbox -> setRowCheckbox(table, rowText, checked); search box -> searchWithOptionalSubmit. If NONE of the existing helpers fits a new interaction, implement it as a parameterized METHOD ON THE NEW MODULE (workflow logic belongs in the Module) — NEVER inline interaction logic in the spec, and NEVER call or invent a WorkflowActions/Actions method that is not already in the Wrapper API contract (the shared utils are a FIXED API on this path; this JSON output cannot emit a modified util file). Reuse one helper for repeated flows (login/logout/common assertions) too.',
     '- TEST DATA: read every value via the testData accessor (never hardcode usernames/names/roles/expected text in a spec). Reuse an existing matching entry before adding a new one; only add genuinely-new keys. Keep every existing testData key.',
     '- APP-PREPOPULATED FIELDS: every field listed in the App-prepopulated fields section is an application-owned default. Do NOT create a Page locator for it, add testData for it, fill/clear/type it, include it in uniqueFields, or assert its literal value. Leave it untouched unless the approved test case explicitly requests custom entry.',
-    '- UNIQUE CONSTRAINTS: identifiers, usernames, email addresses, codes, references, and record numbers must NEVER use a fixed final value. Store only a readable seed in testData, import uniqueValue from "../utils/UniqueData" (add retryOnCollision only in mode B below), and generate a FRESH value for EACH submit via uniqueValue(seed, { kind, length }). TWO modes: (A) DEFAULT — if the live trace NEVER showed an inline duplicate/"already exists" validation for the field, just fill the fresh uniqueValue() and Save (NO retry, NO collision locator); return a uniqueFields descriptor with only testDataPath+kind (+length) and OMIT collisionPageField/collisionMessage. (B) COLLISION RETRY — ONLY when the live trace ACTUALLY exposed an inline collision validation for the field, wrap the submit in retryOnCollision({ page: this.page, successUrl: urlRegex(routes.X), collision: this.<page>.collisionLocator, makeValue: () => uniqueValue(seed, { kind, length }), submit: async (value) => { fill the field with value; click Save; }, collisionMessage }); the Page MUST expose that exact live collision locator, retry ONLY when it appears (all other errors/timeouts fail), and do NOT add a second waitForURL after the helper. Return one uniqueFields descriptor per unique field so codegen can enforce this contract.',
+    '- UNIQUE CONSTRAINTS: identifiers, usernames, email addresses, codes, references, and record numbers must NEVER use a fixed final value. Store only a readable seed in testData, import uniqueValue from "../utils/UniqueData" (add retryOnCollision only in mode B below), and generate a FRESH value for EACH submit via uniqueValue(seed, { kind, length }). TWO modes: (A) DEFAULT — if the live trace NEVER showed an inline duplicate/"already exists" validation for the field, just fill the fresh uniqueValue() and Save (NO retry, NO collision locator); return a uniqueFields descriptor with only testDataPath+kind (+length) and OMIT collisionPageField/collisionMessage. (B) COLLISION RETRY — ONLY when the live trace ACTUALLY exposed an inline collision validation for the field, wrap the submit in retryOnCollision({ page: this.page, successUrl: urlRegex(routes.X), collision: this.<page>.collisionLocator, makeValue: () => uniqueValue(seed, { kind, length }), submit: async (value) => { fill the field with value; click Save; }, collisionMessage }); the Page MUST expose that exact live collision locator, retry ONLY when it appears (all other errors/timeouts fail), and do NOT add a second waitForURL after the helper. Return one uniqueFields descriptor per unique field so codegen can enforce this contract. HARD REQUIREMENT: every uniqueFields entry you declare MUST have a matching uniqueValue(seed, { kind, length }) call AND an `import { uniqueValue } from "../utils/UniqueData"` in the Module that actually fills that field — declaring a uniqueFields descriptor without wiring uniqueValue() into the Module is REJECTED; if you truly cannot make a field fresh, drop its uniqueFields entry entirely rather than leaving it unimplemented.',
     '- TAGS — industry standard, stacked in the test() title: a feature/module tag in PascalCase (e.g. @AdminAddUser) PLUS suite tags — @Smoke on the primary happy-path case, @Regression on ALL cases. Do NOT use @Positive/@Negative. Match the domain naming already used in the repo.',
     '- TEST INDEPENDENCE: every test() runs STANDALONE (a case may be run individually via grep). Each test does its OWN login + navigation (prefer test.beforeEach for shared setup) and never depends on state left by a sibling test.',
     '- CLEAN CODE: match the exemplars\' indentation, no unused imports, no dead code, no duplicated boilerplate that belongs in a shared helper. One short comment only above a non-obvious step.',
@@ -510,28 +510,58 @@ export async function generateFromTrace(
   const model = job.model || process.env.OPENAI_MODEL || 'gpt-4o';
 
   log('[codegen] Loading reuse index + exemplars and asking the model for files…');
-  const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = {
-    model,
-    messages: [
-      { role: 'system', content: 'You are a senior Playwright/TypeScript engineer. Reuse existing framework code, copy proven locators verbatim, and reply with STRICT JSON only.' },
-      { role: 'user', content: buildPrompt(fw, job, trace) },
-    ],
-    temperature: 0,
-  };
-  applyReasoning(params);
-  const completion = await client.chat.completions.create(params);
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'system', content: 'You are a senior Playwright/TypeScript engineer. Reuse existing framework code, copy proven locators verbatim, and reply with STRICT JSON only.' },
+    { role: 'user', content: buildPrompt(fw, job, trace) },
+  ];
 
-  const raw = completion.choices[0]?.message?.content || '';
-  const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('Codegen: model did not return JSON.');
-  let art: LlmArtifacts;
-  try { art = JSON.parse(match[0]); } catch (e) { throw new Error(`Codegen: invalid JSON (${(e as Error).message}).`); }
-  if (!art.page?.content || !art.module?.content || !art.spec?.content) {
-    throw new Error('Codegen: reply missing page/module/spec content.');
+  // Parse the reply and run EVERY in-memory quality gate. Throws one clear message the model can repair against.
+  const parseAndValidate = (raw: string): LlmArtifacts => {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error('Codegen: model did not return JSON.');
+    let candidate: LlmArtifacts;
+    try { candidate = JSON.parse(match[0]); } catch (e) { throw new Error(`Codegen: invalid JSON (${(e as Error).message}).`); }
+    if (!candidate.page?.content || !candidate.module?.content || !candidate.spec?.content) {
+      throw new Error('Codegen: reply missing page/module/spec content.');
+    }
+    assertNoPositionalPageLocators(candidate.page.file || 'generated Page', candidate.page.content);
+    assertPrepopulatedFieldsUntouched(candidate, trace);
+    assertUniqueFieldsHandled(candidate);
+    return candidate;
+  };
+
+  // Self-repair loop: when a quality gate rejects the reply, feed the exact rejection back and let the
+  // model correct its own output. Generic — this covers positional locators, prepopulated fields,
+  // unique fields, and any future in-memory gate, instead of hand-patching one case.
+  const MAX_CODEGEN_ATTEMPTS = 3;
+  let art: LlmArtifacts | undefined;
+  let lastError = '';
+  for (let attempt = 1; attempt <= MAX_CODEGEN_ATTEMPTS; attempt++) {
+    const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = { model, messages, temperature: 0 };
+    applyReasoning(params);
+    const completion = await client.chat.completions.create(params);
+    const raw = completion.choices[0]?.message?.content || '';
+    try {
+      art = parseAndValidate(raw);
+      if (attempt > 1) log(`[codegen] repair succeeded on attempt ${attempt}/${MAX_CODEGEN_ATTEMPTS}.`);
+      break;
+    } catch (e) {
+      lastError = (e as Error).message;
+      if (attempt === MAX_CODEGEN_ATTEMPTS) throw new Error(`${lastError} (unresolved after ${MAX_CODEGEN_ATTEMPTS} codegen attempts)`);
+      log(`[codegen] quality gate rejected attempt ${attempt}/${MAX_CODEGEN_ATTEMPTS}: ${lastError} — asking the model to repair…`);
+      messages.push({ role: 'assistant', content: raw });
+      messages.push({ role: 'user', content: [
+        'Your previous reply was REJECTED by an automated quality gate:',
+        '',
+        lastError,
+        '',
+        'Fix ONLY this problem and re-emit the COMPLETE corrected artifact as STRICT JSON',
+        '(all of page/module/spec plus testData/routes/uniqueFields as needed), keeping every other',
+        'file and locator exactly as before. No prose, no markdown fences.',
+      ].join('\n') });
+    }
   }
-  assertNoPositionalPageLocators(art.page.file || 'generated Page', art.page.content);
-  assertPrepopulatedFieldsUntouched(art, trace);
-  assertUniqueFieldsHandled(art);
+  if (!art) throw new Error(lastError || 'Codegen: no usable reply.');
 
   const files: string[] = [];
   const feat = (job.feature || 'Feature').replace(/[^a-zA-Z0-9]/g, '') || 'Feature';
