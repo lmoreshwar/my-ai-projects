@@ -164,6 +164,18 @@ function prepopulatedFieldLabels(trace: AgentStep[]): string[] {
   return [...new Set(trace.flatMap((step) => step.prepopulatedFields || []).map((field) => field.label).filter(Boolean))];
 }
 
+interface PrepopulatedEntry { label: string; value: string; kind?: string; }
+
+/** Every prepopulated field captured across the trace, unique by label, with its kind + real value. */
+function prepopulatedFieldEntries(trace: AgentStep[]): PrepopulatedEntry[] {
+  const byLabel = new Map<string, PrepopulatedEntry>();
+  for (const field of trace.flatMap((step) => step.prepopulatedFields || [])) {
+    if (!field.label || byLabel.has(field.label)) continue;
+    byLabel.set(field.label, { label: field.label, value: field.value, kind: field.kind });
+  }
+  return [...byLabel.values()];
+}
+
 function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
   const ex = readExemplars(fw);
   const wrappers = ['src/utils/Actions.ts', 'src/utils/WaitHelper.ts', 'src/utils/Logger.ts', 'src/utils/WorkflowActions.ts']
@@ -214,7 +226,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- Spec = import { test, expect } from "../fixtures"; instantiate the new Module directly with the test\'s page, e.g. `const m = new <Feature>Module(page)`. Put all assertions here.',
     '- For login, the Module\'s login method takes (username, password); the spec passes credentials("app"). Do NOT hardcode credentials.',
     '- Reuse an existing Page/Module method from the reuse index when one already does the job.',
-    '- ZERO hardcoded URLs (Pages, Modules AND specs). If src/config exposes a routes map + urlFor(path)/urlRegex(path), use urlFor(routes.X) for every goto() and urlRegex(routes.X) for every toHaveURL() assertion; otherwise use a RELATIVE path resolved by the configured baseURL. NEVER embed a full "https://host/..." literal in a module or spec.',
+    '- ZERO hardcoded URLs (Pages, Modules AND specs). If src/config exposes a routes map + urlFor(path)/urlRegex(path), use urlFor(routes.X) for every goto() and urlRegex(routes.X) for every toHaveURL() assertion AND every waitForURL() navigation wait; otherwise use a RELATIVE path resolved by the configured baseURL. NEVER embed a full "https://host/..." literal NOR a raw inline URL regex (e.g. /\\/web\\/index\\.php\\/pim\\/.../ ) in a module or spec — a navigation wait on a dynamic landing path MUST use urlRegex(routes.X) on the stable prefix route.',
     '- NEW ROUTES: if you reference a routes.X key that is NOT already listed in the Route map above, you MUST also return it in a top-level "routes" object mapping that key to its VERIFIED RELATIVE path taken from the trace url (e.g. "pimAddEmployee": "/web/index.php/pim/addEmployee"). Every routes.X you reference must either already exist or be returned in "routes" — an undefined route fails the build.',
     '- URL ASSERTIONS: assert the ACTUAL post-action landing URL observed in the trace (the FINAL step\'s [url: ...]), not the form/origin URL. If that landing path contains a DYNAMIC segment (numeric id, hash, empNumber/245, uuid), assert urlRegex on the STABLE PREFIX route (e.g. urlRegex(routes.pimViewPersonalDetails)) — never assert an exact URL that embeds a run-specific id.',
     '- SEQUENTIAL, APPEND-ONLY numbering: each spec file owns its own TC_001, TC_002… sequence. When a spec for this feature already exists, read the highest existing TC_XXX and number NEW cases from the next free number (existing TC_001–TC_003 → new TC_004); never renumber, reorder, or overwrite an existing test() block — append after them and return the FULL file with every existing test kept verbatim.',
@@ -337,6 +349,19 @@ function assertPrepopulatedFieldsUntouched(art: LlmArtifacts, trace: AgentStep[]
     const identifierMatch = identifier ? new RegExp(`\\b${escapeRegex(identifier)}\\b`, 'i') : null;
     if (labelMatch.test(generated) || identifierMatch?.test(generated)) {
       throw new Error(`Codegen: app-prepopulated field '${label}' must be left untouched; remove its locator, test data, fill, assertion, and uniqueFields entry.`);
+    }
+  }
+  // Dropdowns/radios are overwritten by VALUE (select/check), not by clearing a textbox — so also
+  // reject any generated select/check that re-applies the real value the detector already found
+  // chosen. This mirrors the Employee Id (text) protection for non-text prepopulated widgets.
+  for (const { label, value, kind } of prepopulatedFieldEntries(trace)) {
+    if ((kind !== 'dropdown' && kind !== 'radio') || !value) continue;
+    const selectOver = new RegExp(
+      `(selectOption|selectDropdownOption|searchAndSelectOption|chooseOption|selectByLabel|getByRole\\(\\s*['"]option['"]|\\.check\\s*\\()[\\s\\S]{0,120}${escapeRegex(value)}`,
+      'i',
+    );
+    if (selectOver.test(generated)) {
+      throw new Error(`Codegen: app-prepopulated ${kind} '${label}' is already set to '${value}'; do not select/check over it in the generated spec.`);
     }
   }
 }

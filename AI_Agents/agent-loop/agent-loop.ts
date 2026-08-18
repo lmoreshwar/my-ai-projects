@@ -73,6 +73,7 @@ export interface PrepopulatedField {
   label: string;
   value: string;
   context: string;
+  kind?: 'text' | 'dropdown' | 'radio';
 }
 
 export interface AgentLoopResult {
@@ -128,22 +129,98 @@ function uniqueInputRefs(snapshot: string): string[] {
   return [...refs];
 }
 
-/** Capture non-empty fields present on the first snapshot of a form page before the agent touches them. */
+/** App placeholder text ("-- Select --", "Select…", "Please Select") means NOTHING is chosen yet,
+ * so a dropdown showing it is EMPTY and must still be filled — never treated as prepopulated. */
+function isPlaceholderValue(value: string): boolean {
+  const v = value.trim().replace(/\s+/g, ' ');
+  if (!v) return true;
+  if (/^-+\s*select\b/i.test(v)) return true;                     // "-- Select --", "--Select"
+  if (/^select(\s+(an?|one|option))?\s*(\.\.\.|…)?$/i.test(v)) return true; // "Select", "Select..."
+  if (/^please\s+select\b/i.test(v)) return true;                 // "Please Select"
+  if (/^-{2,}.*-{2,}$/.test(v)) return true;                      // any "-- … --" wrapper
+  return false;
+}
+
+/** Leading-whitespace width of a snapshot line = its depth in the accessibility tree. */
+function lineIndent(line: string): number {
+  return (line.match(/^(\s*)/)?.[1].length) || 0;
+}
+
+/** The nearest PRECEDING label line that names a control (never the value line itself). */
+function precedingLabel(lines: string[], index: number, ref: string): string {
+  return [...lines.slice(Math.max(0, index - 4), index)].reverse()
+    .map((line) => line.match(/:\s*(.+?)\s*$/)?.[1]?.replace(/"/g, '').replace(/\*$/, '').trim() || '')
+    .find((text) => text && !/^\d+$/.test(text) && !text.includes('[ref=')) || `Field ${ref}`;
+}
+
+/** The SELECTED value shown inside an OXD/native dropdown control, read from its child lines.
+ * A dropdown never carries its value inline on the control row (unlike a textbox); the chosen
+ * text lives on a deeper `generic [ref]: value` leaf, or a native `option "X" [selected]` child.
+ * Icon-font carets (private-use glyphs with no letters/digits) are skipped — only real text counts. */
+function dropdownSelectedValue(lines: string[], controlIndex: number): string {
+  const controlIndent = lineIndent(lines[controlIndex]);
+  for (let j = controlIndex + 1; j < lines.length && lineIndent(lines[j]) > controlIndent; j += 1) {
+    const selectedOption = lines[j].match(/^\s*-?\s*option\s+"([^"]+)"[^\n]*\[selected\]/)?.[1]?.trim();
+    if (selectedOption && /[a-z0-9]/i.test(selectedOption)) return selectedOption;
+    const genericLeaf = lines[j].match(/^\s*-?\s*generic\s+\[ref=[a-z0-9]+\]:\s*"?([^"\n]+?)"?\s*$/)?.[1]?.trim();
+    if (genericLeaf && /[a-z0-9]/i.test(genericLeaf)) return genericLeaf;
+  }
+  return '';
+}
+
+/** Capture non-empty fields present on the first snapshot of a form page before the agent touches
+ * them — text inputs (value inline), dropdowns (value on a child line), and pre-checked radios. */
 function prepopulatedFields(snapshot: string, filledRefs: Set<string>): PrepopulatedField[] {
   const lines = snapshot.split('\n');
   const fields: PrepopulatedField[] = [];
+  const seen = new Set<string>();
+  const add = (field: PrepopulatedField): void => {
+    if (!field.ref || seen.has(field.ref) || filledRefs.has(field.ref)) return;
+    if (!field.value || isPlaceholderValue(field.value)) return;
+    seen.add(field.ref);
+    fields.push(field);
+  };
+
   for (let index = 0; index < lines.length; index += 1) {
-    const ref = lines[index].match(/textbox[^\n]*\[ref=([a-z0-9]+)\]/)?.[1];
-    const value = lines[index].match(/:\s*"([^"]+)"/)?.[1]?.trim() || '';
-    if (!ref || !value || filledRefs.has(ref)) continue;
-    // Prefer the input's own accessible name; otherwise the nearest PRECEDING label line names
-    // the field. Never derive the label from the value line itself (that produced value-as-label).
-    const inlineName = lines[index].match(/textbox\s+"([^"]+)"/)?.[1]?.trim();
-    const label = inlineName || [...lines.slice(Math.max(0, index - 4), index)].reverse()
-      .map((line) => line.match(/:\s*(.+?)\s*$/)?.[1]?.replace(/"/g, '').replace(/\*$/, '').trim() || '')
-      .find((text) => text && !/^\d+$/.test(text) && !text.includes('[ref=')) || `Field ${ref}`;
-    const contextLines = lines.slice(Math.max(0, index - 3), index + 1);
-    fields.push({ ref, label, value, context: contextLines.join('\n') });
+    const line = lines[index];
+
+    // 1) TEXT INPUT — the auto-filled value is rendered inline on the textbox row itself.
+    const textRef = line.match(/textbox[^\n]*\[ref=([a-z0-9]+)\]/)?.[1];
+    if (textRef) {
+      const value = line.match(/:\s*"([^"]+)"/)?.[1]?.trim() || '';
+      if (value) {
+        // Prefer the input's own accessible name; otherwise the nearest PRECEDING label line names
+        // the field. Never derive the label from the value line itself (that produced value-as-label).
+        const inlineName = line.match(/textbox\s+"([^"]+)"/)?.[1]?.trim();
+        const label = inlineName || precedingLabel(lines, index, textRef);
+        add({ ref: textRef, label, value, kind: 'text', context: lines.slice(Math.max(0, index - 3), index + 1).join('\n') });
+      }
+      continue;
+    }
+
+    // 2) DROPDOWN / SELECT — a clickable combobox, or an OXD-style clickable `generic`, whose
+    //    chosen value sits on a deeper child line. A placeholder child ("-- Select --") is treated
+    //    as EMPTY by `add`, so a genuinely-unselected dropdown is still left for the agent to fill.
+    const dropRef = line.match(/^\s*-?\s*combobox\b[^\n]*\[ref=([a-z0-9]+)\]/)?.[1]
+      || line.match(/^\s*-?\s*generic\b[^\n]*\[ref=([a-z0-9]+)\][^\n]*\[cursor=pointer\]/)?.[1];
+    if (dropRef) {
+      const value = dropdownSelectedValue(lines, index);
+      if (value) {
+        add({ ref: dropRef, label: precedingLabel(lines, index, dropRef), value, kind: 'dropdown', context: lines.slice(Math.max(0, index - 3), index + 3).join('\n') });
+      }
+      continue;
+    }
+
+    // 3) RADIO GROUP — an option already marked [checked] at initial load is an app default.
+    if (/\bradio\b/.test(line) && /\[checked\]/.test(line)) {
+      const radioRef = line.match(/\[ref=([a-z0-9]+)\]/)?.[1];
+      const value = line.match(/radio\s+"([^"]+)"/)?.[1]?.trim() || '';
+      if (radioRef && value) {
+        const label = precedingLabel(lines, index, radioRef);
+        add({ ref: radioRef, label: /^Field\s/.test(label) ? value : label, value, kind: 'radio', context: lines.slice(Math.max(0, index - 3), index + 1).join('\n') });
+      }
+      continue;
+    }
   }
   return fields;
 }
