@@ -38,7 +38,7 @@ async function main(): Promise<void> {
     trace: walk.steps, cases: [],
   };
 
-  if (walk.status !== 'failed' && walk.steps.length) {
+  if (walk.status === 'passed' && walk.steps.length) {
     const job: CodegenJob = { feature, url, testTypes, maxCases };
     plan.cases = await authorPlanFromTrace(fw, job, walk.steps, log);
   } else {

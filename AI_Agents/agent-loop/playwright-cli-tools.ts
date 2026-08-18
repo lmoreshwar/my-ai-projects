@@ -56,7 +56,8 @@ export class CliSession {
 
   run(args: string[], timeoutMs = 40000): Promise<string> {
     return new Promise((resolve) => {
-      const child = spawn(CLI_BIN, [`-s=${this.id}`, ...args], { shell: true });
+      // Linux runners can pass argv directly; using a shell there turns query characters such as | into commands.
+      const child = spawn(CLI_BIN, [`-s=${this.id}`, ...args], { shell: process.platform === 'win32' });
       let out = '';
       child.stdout.on('data', (d) => { out += d.toString(); });
       child.stderr.on('data', (d) => { out += d.toString(); });
