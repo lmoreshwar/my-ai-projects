@@ -58,6 +58,7 @@ interface LlmArtifacts {
   module: { file: string; content: string };
   spec: { file: string; content: string };
   testData?: Record<string, unknown>;
+  routes?: Record<string, string>;
   reusedFrom?: string[];
 }
 
@@ -83,6 +84,27 @@ function loadCapabilities(fw: string): string {
     }
   }
   return lines.join('\n');
+}
+
+/** Locate and parse the `export const routes = { ... } as const;` map so we know which routes exist. */
+function readRoutesBlock(fw: string): { file: string; body: string; keys: Set<string> } | null {
+  for (const rel of ['src/config/index.ts', 'src/config.ts', 'src/config/routes.ts']) {
+    const src = safeRead(join(fw, rel));
+    if (!src) continue;
+    const m = src.match(/export\s+const\s+routes\s*=\s*\{([\s\S]*?)\}\s*as\s+const\s*;/);
+    if (!m) continue;
+    const keys = new Set<string>();
+    for (const km of m[1].matchAll(/([A-Za-z_]\w*)\s*:/g)) keys.add(km[1]);
+    return { file: rel, body: m[1], keys };
+  }
+  return null;
+}
+
+/** Tell the model which routes.X keys already exist (reuse) so it only proposes genuinely-new ones. */
+function routesContext(fw: string): string {
+  const rb = readRoutesBlock(fw);
+  if (!rb) return '(no routes map found — use RELATIVE paths resolved by baseURL)';
+  return `Existing routes.X keys (REUSE these; only add a NEW key for a screen not listed): ${[...rb.keys].join(', ') || '(none)'}`;
 }
 
 /** Pull public method signatures from a wrapper util so the model calls only real methods. */
@@ -141,6 +163,9 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '## Reuse index (.ai-memory) — REUSE these before creating anything new; never duplicate',
     caps,
     '',
+    '## Route map (src/config routes) — REUSE an existing routes.X; only add a genuinely-new one',
+    routesContext(fw),
+    '',
     '## Wrapper API contract (call ONLY these methods; never invent a wrapper method)',
     wrappers || '(no wrapper utils found)',
     '',
@@ -165,6 +190,8 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- For login, the Module\'s login method takes (username, password); the spec passes credentials("app"). Do NOT hardcode credentials.',
     '- Reuse an existing Page/Module method from the reuse index when one already does the job.',
     '- ZERO hardcoded URLs (Pages, Modules AND specs). If src/config exposes a routes map + urlFor(path)/urlRegex(path), use urlFor(routes.X) for every goto() and urlRegex(routes.X) for every toHaveURL() assertion; otherwise use a RELATIVE path resolved by the configured baseURL. NEVER embed a full "https://host/..." literal in a module or spec.',
+    '- NEW ROUTES: if you reference a routes.X key that is NOT already listed in the Route map above, you MUST also return it in a top-level "routes" object mapping that key to its VERIFIED RELATIVE path taken from the trace url (e.g. "pimAddEmployee": "/web/index.php/pim/addEmployee"). Every routes.X you reference must either already exist or be returned in "routes" — an undefined route fails the build.',
+    '- URL ASSERTIONS: assert the ACTUAL post-action landing URL observed in the trace (the FINAL step\'s [url: ...]), not the form/origin URL. If that landing path contains a DYNAMIC segment (numeric id, hash, empNumber/245, uuid), assert urlRegex on the STABLE PREFIX route (e.g. urlRegex(routes.pimViewPersonalDetails)) — never assert an exact URL that embeds a run-specific id.',
     '- SEQUENTIAL, APPEND-ONLY numbering: each spec file owns its own TC_001, TC_002… sequence. When a spec for this feature already exists, read the highest existing TC_XXX and number NEW cases from the next free number (existing TC_001–TC_003 → new TC_004); never renumber, reorder, or overwrite an existing test() block — append after them and return the FULL file with every existing test kept verbatim.',
     '- Reuse SHARED METHODS/HELPERS, not just locators. Use the shared WorkflowActions/Actions helpers for EVERY common interaction family instead of bespoke code: custom dropdown -> selectDropdownOption(trigger, optionText); searchable/autocomplete -> searchAndSelectOption(input, text, optionText?); native <select> -> Actions.selectOption; checkbox -> setCheckbox(target, checked); radio -> selectRadioOption(label); date field -> selectDate(input, value); table read -> readTableCell(table, rowText, colIndex); table row action -> clickInRow(table, rowText, controlName); table row checkbox -> setRowCheckbox(table, rowText, checked); search box -> searchWithOptionalSubmit. If NONE of the existing helpers fits a new interaction, implement it as a parameterized METHOD ON THE NEW MODULE (workflow logic belongs in the Module) — NEVER inline interaction logic in the spec, and NEVER call or invent a WorkflowActions/Actions method that is not already in the Wrapper API contract (the shared utils are a FIXED API on this path; this JSON output cannot emit a modified util file). Reuse one helper for repeated flows (login/logout/common assertions) too.',
     '- TEST DATA: read every value via the testData accessor (never hardcode usernames/names/roles/expected text in a spec). Reuse an existing matching entry before adding a new one; only add genuinely-new keys, and for values needing uniqueness use a deterministic, traceable name (e.g. auto_user_tc004), not a random one-off. Keep every existing testData key.',
@@ -179,6 +206,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '  "module": { "file": "src/modules/<Feature>Module.ts","content": "<full file>" },',
     '  "spec":   { "file": "src/tests/<feature>.spec.ts",   "content": "<full file>" },',
     '  "testData": { <any new keys the spec reads, or omit> },',
+    '  "routes": { <NEW routes.X keys → verified relative path (e.g. "pimAddEmployee": "/web/index.php/pim/addEmployee"), or omit if none are new> },',
     '  "reusedFrom": ["<existing class/method you reused>"]',
     '}',
   ].join('\n');
@@ -202,6 +230,52 @@ function mergeTestData(fw: string, additions?: Record<string, unknown>): string 
   };
   writeFileSync(p, JSON.stringify(merge(current, additions), null, 4) + '\n');
   return p;
+}
+
+/** Add any NEW routes.X keys to src/config's routes map (union — never overwrite/drop an existing key). */
+function mergeRoutes(fw: string, additions?: Record<string, string>): string | null {
+  if (!additions || !Object.keys(additions).length) return null;
+  const rb = readRoutesBlock(fw);
+  if (!rb) return null;
+  const toAdd = Object.entries(additions).filter(([k, v]) => k && v && !rb.keys.has(k));
+  if (!toAdd.length) return null;
+  const file = join(fw, rb.file);
+  const src = safeRead(file);
+  if (!src) return null;
+  const indent = (rb.body.match(/\n([ \t]+)\S/) || [, '    '])[1] as string;
+  const insertion = toAdd.map(([k, v]) => `${indent}${k}: '${String(v).replace(/'/g, "\\'")}',`).join('\n');
+  const next = src.replace(
+    /(export\s+const\s+routes\s*=\s*\{[\s\S]*?)(\n[ \t]*\}\s*as\s+const\s*;)/,
+    (_all, head: string, tail: string) => {
+      const sep = /[{,]\s*$/.test(head) ? '' : ',';
+      return `${head}${sep}\n${insertion}${tail}`;
+    },
+  );
+  if (next === src) return null;
+  writeFileSync(file, next);
+  return rb.file;
+}
+
+/**
+ * Fail fast (before verifySpec) if a generated file references routes.X that is not defined in the
+ * config routes map — turns the cryptic runtime `Cannot read properties of undefined (reading
+ * 'startsWith')` into a clear build error naming the missing route.
+ */
+function assertRoutesDefined(fw: string, files: string[]): void {
+  const rb = readRoutesBlock(fw); // re-read AFTER mergeRoutes so freshly-added keys count as defined
+  if (!rb) return; // this framework has no routes map — nothing to validate
+  const missing = new Map<string, string>();
+  for (const rel of files) {
+    if (!rel.endsWith('.ts')) continue;
+    const src = safeRead(join(fw, rel));
+    for (const m of src.matchAll(/\broutes\.([A-Za-z_]\w*)/g)) {
+      if (!rb.keys.has(m[1]) && !missing.has(m[1])) missing.set(m[1], rel);
+    }
+  }
+  if (missing.size) {
+    const lines = [...missing].map(([key, rel]) => `route '${key}' is referenced in ${rel} but not defined in ${rb.file} routes`);
+    throw new Error(`Codegen: undefined route reference(s):\n  - ${lines.join('\n  - ')}\nAdd the missing key(s) to the routes map (the model must return them in the "routes" field).`);
+  }
 }
 
 /** Run the repo's capability indexer so `.ai-memory` is regenerated (write-back). Best-effort. */
@@ -268,6 +342,11 @@ export async function generateFromTrace(
   }
   const td = mergeTestData(fw, art.testData);
   if (td) files.push(td.replace(fw, '').replace(/^[\\/]/, '').replace(/\\/g, '/'));
+
+  const rt = mergeRoutes(fw, art.routes);
+  if (rt && !files.includes(rt)) files.push(rt);
+  // Fail fast BEFORE verifySpec: every routes.X in a generated file must now be defined in config.
+  assertRoutesDefined(fw, files);
 
   log(`[codegen] Wrote ${files.length} file(s). Refreshing capability index…`);
   await refreshIndex(fw);
