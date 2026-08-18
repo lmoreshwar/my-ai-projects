@@ -475,6 +475,25 @@ router.post('/jobs/:jobId/approve', auth, async (req, res) => {
       return res.status(400).json({ msg: 'Cannot proceed — missing information must be provided first.', missingInfo: job.missingInfo });
     }
 
+    // Scenario selection (V2 discovery plans): the user picks which discovered scenarios to automate.
+    // When the plan carries scenarios, a non-empty, valid, automation-ready selection is required.
+    const requestedIds = Array.isArray(req.body?.scenarioIds)
+      ? req.body.scenarioIds.map((s) => String(s).trim()).filter(Boolean)
+      : [];
+    const planScenarios = Array.isArray(job.discoveryPlan?.scenarios) ? job.discoveryPlan.scenarios : [];
+    if (planScenarios.length) {
+      if (!requestedIds.length) {
+        return res.status(400).json({ msg: 'Select at least one automation-ready scenario before proceeding.' });
+      }
+      const unknown = requestedIds.filter((id) => !planScenarios.some((s) => s.id === id));
+      if (unknown.length) return res.status(400).json({ msg: `Unknown scenario id(s): ${unknown.join(', ')}.` });
+      const notReady = planScenarios.filter((s) => requestedIds.includes(s.id) && (s.blocked || !s.ready));
+      if (notReady.length) {
+        return res.status(400).json({ msg: `These scenarios cannot be automated: ${notReady.map((s) => `${s.id} (${s.blockedReason || 'not ready'})`).join('; ')}.` });
+      }
+      job.selectedScenarioIds = requestedIds;
+    }
+
     job.approved = true;
     job.status = 'Generating';
     job.logs = [...(job.logs || []), '[local] Approved — starting generation…'];
@@ -632,6 +651,7 @@ router.get('/jobs/:jobId/progress', auth, async (req, res) => {
       // Approve can dispatch phase 2 against the right artifact.
       if (Array.isArray(progress.testCases)) job.testCases = progress.testCases;
       if (progress.plan !== undefined) job.plan = progress.plan;
+      if (progress.discoveryPlan !== undefined) job.discoveryPlan = progress.discoveryPlan;
       if (progress.exploreRunId) job.exploreRunId = progress.exploreRunId;
       if (Array.isArray(progress.snapshotLogs)) job.logs = progress.snapshotLogs; // full replace — no dup
       const savedCloud = await persist(job);

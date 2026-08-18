@@ -40,6 +40,7 @@ import {
   resolveCredentials, substituteCredentials, type Credentials,
   type RefRow,
 } from './playwright-cli-tools';
+import { runDiscovery, parseInventory, type DiscoveryResult, type FieldInventoryItem } from './discovery';
 
 export interface AgentLoopOptions {
   /** Feature name + concrete instructions describing what to explore/verify. */
@@ -55,6 +56,14 @@ export interface AgentLoopOptions {
   credentials?: Credentials;
   /** Extra values to redact from all logs/traces (creds are always redacted regardless). */
   secrets?: string[];
+  /**
+   * Run bounded, read-only discovery (full-page field inventory) the first time a feature form is
+   * reached, then require the controlled success submit to fill EVERY discovered field. Default ON;
+   * set false for a plain single-flow walk (e.g. login-only smoke). The feature name is used to label
+   * the discovery evidence.
+   */
+  discover?: boolean;
+  feature?: string;
   onLog?: (line: string) => void;
 }
 
@@ -90,20 +99,23 @@ export interface AgentLoopResult {
   status: 'passed' | 'failed' | 'incomplete';
   summary: string;
   steps: AgentStep[];
+  /** Bounded read-only discovery evidence captured on the feature form (present when discover !== false). */
+  discovery?: DiscoveryResult;
 }
 
 const SYSTEM_PROMPT = [
-  'You are a browser-automation agent driving a REAL headless browser to explore and verify ONE feature.',
+  'You are a browser-automation agent driving a REAL headless browser to EXHAUSTIVELY explore and verify ONE feature.',
   'You act by calling the provided tools, ONE at a time, and reading the real result before the next call.',
   '',
   'HARD RULES:',
   '1. ALWAYS call `snapshot` before any ref-based action. Refs (e15, f3e7…) are ONLY valid for the snapshot you just read.',
   '2. Use ONLY refs that appear in the MOST RECENT snapshot. Never invent a ref or reuse one from an earlier page state.',
-  '3. Do the MINIMUM to advance the goal: one action, then snapshot again, then the next action.',
-  '4. To reveal a hidden control (Logout, Settings, a menu item), first CLICK the thing that opens it — a user avatar/profile image, a ⋮/kebab/hamburger/caret icon, or a top-bar user-name toggle — then snapshot; the revealed items appear in the NEXT snapshot.',
+  '3. EXHAUSTIVE COVERAGE (not the minimum path): once you reach the feature form, the tool result will give you a DISCOVERED FIELD INVENTORY listing every control on the whole screen. Your one controlled success run MUST fill EVERY field marked "fill" with realistic, valid, generated data — including OPTIONAL fields (e.g. middle name, contact number, keywords, date, notes) and dropdowns/checkboxes — before you Save. Do NOT stop after the first two or three fields. Skip ONLY fields marked "app-prepopulated" (leave untouched) or "BLOCKED" (e.g. file upload with no fixture).',
+  '4. To reveal a hidden control (Logout, Settings, a menu item, a custom dropdown list), first CLICK the thing that opens it — a user avatar/profile image, a ⋮/kebab/hamburger/caret icon, a dropdown trigger — then snapshot; the revealed items appear in the NEXT snapshot.',
   '5. LOGIN: when a login form is present and the goal needs an authenticated page, fill the username field with the literal placeholder {{USERNAME}} and the password field with {{PASSWORD}}, then submit. The real values are injected securely — you must NEVER write an actual username or password. After you are logged in, do not re-enter credentials.',
   '6. CREATE FLOWS: when the INITIAL live form snapshot marks a field as app-prepopulated, never fill, clear, assert a fixed value for, or otherwise overwrite it. For an EMPTY editable identifier, username, email, code, reference, or record-number field, fill a fresh value before Save/Submit. After Save/Submit, call snapshot (not find) and verify the real outcome. If the live page shows a duplicate/collision validation, record that message, change only that empty unique value, submit again, and snapshot the outcome. Never finish passed while still on the form after a failed submit.',
-  '7. When the goal is achieved (or no useful action remains), call `finish` with status "passed" (goal verified), "failed" (a real defect/blocker), or "incomplete".',
+  '7. READ-ONLY UNTIL THE SINGLE SUCCESS SUBMIT: explore, snapshot, and fill fields freely, but click a destructive/persistent control (Save, Submit, Create, Delete, Logout) EXACTLY ONCE — the final controlled success submit after every field is filled. Never delete or repeat destructive actions.',
+  '8. When the goal is achieved (or no useful action remains), call `finish` with status "passed" (goal verified), "failed" (a real defect/blocker), or "incomplete".',
   '',
   'Work efficiently and do not narrate — just make tool calls.',
 ].join('\n');
@@ -356,6 +368,51 @@ async function watchSubmitOutcome(session: CliSession, submitUrl: string): Promi
   }
 }
 
+/** Field types whose "was it filled?" is reliably detectable from a fill action (text-like inputs). */
+const HARD_GATE_TYPES = new Set<FieldInventoryItem['type']>(['textbox', 'textarea', 'date']);
+
+/** Normalise a label for tolerant comparison between the inventory and a live fill target. */
+function normalizeLabel(text: string): string {
+  return String(text || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+/** Does this snapshot look like a login form (so we must NOT run feature discovery on it yet)? */
+function looksLikeLoginForm(snapshot: string): boolean {
+  const hasLoginButton = /button[^\n]*"(?:log\s?in|sign\s?in)"/i.test(snapshot);
+  const hasUserField = /(?:textbox|searchbox)[^\n]*"(?:username|user\s?name|email)"/i.test(snapshot);
+  return hasLoginButton && hasUserField;
+}
+
+/** The label a fill/select/check action targeted — the control's own name, else its live scoped label. */
+function filledLabelForRef(snapshot: string, rows: Map<string, RefRow>, ref: string): string {
+  const name = rows.get(ref)?.name || '';
+  if (name && !/^(type here|--\s*select|select|please select)/i.test(name.trim())) return name;
+  const hint = deriveLocatorScopeHint(snapshot, ref, true);
+  return hint?.label || name;
+}
+
+/** Human-readable inventory guidance injected into the snapshot result so the model fills EVERYTHING. */
+function inventoryGuidance(inventory: FieldInventoryItem[]): string {
+  if (!inventory.length) return '';
+  const fill: string[] = [];
+  const blocked: string[] = [];
+  const prepop: string[] = [];
+  const actions: string[] = [];
+  for (const it of inventory) {
+    const req = it.required === true ? ' (required)' : it.required === false ? ' (optional)' : '';
+    if (it.isAction) { actions.push(it.label); continue; }
+    if (it.prepopulated) { prepop.push(it.label); continue; }
+    if (it.blocked) { blocked.push(`${it.label} — BLOCKED: ${it.blockedReason || 'not automatable'}`); continue; }
+    fill.push(`${it.label} [${it.type}]${req}`);
+  }
+  const lines = ['', 'DISCOVERED FIELD INVENTORY (fill EVERY field below with realistic valid data before Save — do not skip optional ones):'];
+  if (fill.length) lines.push(...fill.map((f) => `  • ${f}`));
+  if (prepop.length) lines.push(`  App-prepopulated (leave untouched): ${prepop.join(', ')}`);
+  if (blocked.length) lines.push(...blocked.map((b) => `  ⛔ ${b}`));
+  if (actions.length) lines.push(`  Action(s): ${actions.join(', ')}`);
+  return lines.join('\n');
+}
+
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
   const log = opts.onLog || ((l: string) => console.log(l));
   const creds = opts.credentials || resolveCredentials();
@@ -378,13 +435,20 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   let filledRefs = new Set<string>();
   let prepopulatedRefs = new Set<string>();
   let initialSnapshotUrls = new Set<string>();
+  // Exhaustive-discovery state: the bounded read-only inventory of the feature form, plus the set of
+  // field labels the agent has actually filled — used to gate the single success submit until every
+  // discovered text field is populated (deterministic completeness of the success trace).
+  let discovery: DiscoveryResult | undefined;
+  let discoveredInventory: FieldInventoryItem[] = [];
+  let discoveryRan = false;
+  const filledLabels = new Set<string>();
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: `# Feature URL\n${opts.url}\n\n# Goal\n${opts.goal}` },
   ];
 
-  const finish = (status: AgentLoopResult['status'], summary: string): AgentLoopResult => ({ status, summary, steps });
+  const finish = (status: AgentLoopResult['status'], summary: string): AgentLoopResult => ({ status, summary, steps, discovery });
 
   try {
     // Open a headless session, optionally load a saved auth state, then land on the feature URL.
@@ -463,6 +527,19 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           log(`[agent] ✗ ${name}(${actionRef}) blocked — ${msg}`);
           continue;
         }
+        // Exhaustive-coverage gate: the single success submit must not fire while any discovered
+        // text-like field is still empty. This deterministically forces the trace to include an
+        // action per field (fixing shallow 3-field tests) without deadlocking on custom dropdowns
+        // (those are strongly guided in the inventory text but not hard-gated here).
+        const missingFields = discoveredInventory.filter((it) =>
+          !it.isAction && !it.blocked && !it.prepopulated && HARD_GATE_TYPES.has(it.type)
+          && !filledLabels.has(normalizeLabel(it.label)) && !filledLabels.has(normalizeLabel(it.accessibleName)));
+        if (missingFields.length) {
+          const msg = `Before Save, fill EVERY discovered field first. Still empty: ${missingFields.map((f) => f.label).join(', ')}. Fill each with realistic valid data (optional fields too), then Save.`;
+          messages.push({ role: 'tool', tool_call_id: call.id, content: msg });
+          log(`[agent] ✗ ${name}(${actionRef}) blocked — ${missingFields.length} discovered field(s) still empty.`);
+          continue;
+        }
       }
 
       if (name === 'fill' || name === 'type') {
@@ -537,7 +614,35 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         const prepopulatedSummary = detectedPrepopulatedFields.length
           ? `\n\nApp-prepopulated fields — do NOT overwrite: ${detectedPrepopulatedFields.map((field) => `${field.label} (ref ${field.ref})`).join(', ')}`
           : '';
-        toolResult = `Current URL: ${pageUrl || '(unchanged)'}\n\nInteractable elements you may act on now:\n${renderRefs(refs)}\n\nPage tree (context):\n${yaml.slice(0, 2500)}${prepopulatedSummary}`;
+
+        // EXHAUSTIVE DISCOVERY: the first time we land on a real feature form (not the login page),
+        // run a bounded, read-only inventory of the WHOLE screen so the model fills every field — not
+        // just the first few. Discovery scrolls + re-snapshots, so afterwards the model must snapshot
+        // again before any ref action (its refs are now stale — we clear liveRefs to force it).
+        let discoveryGuidance = '';
+        if (opts.discover !== false && !discoveryRan) {
+          const preview = parseInventory(yaml).filter((it) => !it.isAction);
+          const fillable = preview.filter((it) => ['textbox', 'textarea', 'combobox', 'select', 'checkbox', 'radio', 'date', 'file'].includes(it.type));
+          if (!looksLikeLoginForm(yaml) && fillable.length >= 2) {
+            discoveryRan = true;
+            try {
+              discovery = await runDiscovery(session, {
+                featureUrl: snapshotUrl, feature: opts.feature || opts.goal.slice(0, 60),
+                log, exploreStates: process.env.DISCOVER_STATES === '1',
+              });
+              discoveredInventory = discovery.inventory;
+              discoveryGuidance = inventoryGuidance(discoveredInventory);
+              // Discovery moved the page (scroll/goto) — the model must re-snapshot before acting.
+              liveRefs = new Set();
+              log(`[agent] discovery complete — ${discoveredInventory.length} control(s); completeness ${discovery.completeness.passed ? 'PASS' : 'gaps: ' + discovery.completeness.missing.join('; ')}`);
+            } catch (e) {
+              log(`[agent] discovery skipped: ${(e as Error).message}`);
+            }
+          }
+        }
+
+        toolResult = `Current URL: ${pageUrl || '(unchanged)'}\n\nInteractable elements you may act on now:\n${renderRefs(refs)}\n\nPage tree (context):\n${yaml.slice(0, 2500)}${prepopulatedSummary}${discoveryGuidance}`;
+        if (discoveryGuidance) toolResult += '\n\nNOTE: the page was scrolled during discovery — call snapshot again to get fresh refs before filling.';
         log(`[agent] snapshot → ${refs.length} interactable element(s)`);
         if (pageUrl) lastPageUrl = pageUrl;
       } else {
@@ -553,6 +658,12 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           ? { ...args, ...(name === 'fill' ? { value: placeholderValue } : { text: placeholderValue }) }
           : args;
         if (name === 'fill' || name === 'type') filledRefs.add(actionRef);
+        // Record which discovered field this action populated, so the success-submit completeness gate
+        // knows the field is done. Covers text inputs (fill/type), native selects, and checkboxes.
+        if (['fill', 'type', 'select', 'check', 'uncheck'].includes(name) && actionRef) {
+          const label = filledLabelForRef(latestSnapshot, liveRows, actionRef);
+          if (label) filledLabels.add(normalizeLabel(label));
+        }
         steps.push({
           tool: name,
           args: recordedArgs,

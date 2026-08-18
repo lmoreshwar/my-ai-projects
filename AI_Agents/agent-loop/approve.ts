@@ -9,7 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { generateFromTrace, type CodegenJob } from './codegen';
+import { generateFromTrace, selectTraceForScenarios, type CodegenJob, type Scenario } from './codegen';
 import { verifySpec, commitAndOpenPr } from './generate';
 import type { AgentStep } from './agent-loop';
 
@@ -18,6 +18,8 @@ const log = (l: string): void => console.log(l);
 interface Plan {
   feature: string; url: string; testTypes?: string[]; maxCases?: number;
   trace?: AgentStep[];
+  scenarios?: Scenario[];
+  completeness?: { passed?: boolean; missing?: string[] } | null;
 }
 
 async function main(): Promise<void> {
@@ -29,10 +31,32 @@ async function main(): Promise<void> {
   try { plan = JSON.parse(readFileSync(planFile, 'utf8')); }
   catch (e) { throw new Error(`Could not read the plan from ${planFile}: ${(e as Error).message}`); }
 
-  const trace: AgentStep[] = Array.isArray(plan.trace) ? plan.trace : [];
-  if (!trace.length) throw new Error('The plan has no verified trace — nothing to generate.');
+  const fullTrace: AgentStep[] = Array.isArray(plan.trace) ? plan.trace : [];
+  if (!fullTrace.length) throw new Error('The plan has no verified trace — nothing to generate.');
 
-  const job: CodegenJob = { feature: plan.feature, url: plan.url, testTypes: plan.testTypes, maxCases: plan.maxCases };
+  const scenarios: Scenario[] = Array.isArray(plan.scenarios) ? plan.scenarios : [];
+  const selectedIds = (process.env.SELECTED_SCENARIO_IDS || '').split(',').map((s) => s.trim()).filter(Boolean);
+
+  // Scenario-driven path: validate the user's selection, then filter the trace to only those fields.
+  let trace = fullTrace;
+  let coverageFields: string[] | undefined;
+  if (scenarios.length) {
+    if (!selectedIds.length) throw new Error('No scenarios were selected — pick at least one ready scenario before approving.');
+    const chosen = scenarios.filter((s) => selectedIds.includes(s.id));
+    const unknown = selectedIds.filter((id) => !scenarios.some((s) => s.id === id));
+    if (unknown.length) throw new Error(`Unknown scenario id(s): ${unknown.join(', ')}.`);
+    const blocked = chosen.filter((s) => s.blocked || !s.ready);
+    if (blocked.length) throw new Error(`These scenarios are not automation-ready and cannot be generated: ${blocked.map((s) => `${s.id} (${s.blockedReason || 'not ready'})`).join('; ')}.`);
+    if (plan.completeness && plan.completeness.passed === false) {
+      throw new Error(`Discovery is incomplete (${(plan.completeness.missing || []).join('; ')}). Re-run exploration before generating.`);
+    }
+    const sel = selectTraceForScenarios(fullTrace, scenarios, selectedIds);
+    trace = sel.trace;
+    coverageFields = sel.coverageLabels;
+    log(`[approve] ${chosen.length} scenario(s) selected → ${coverageFields.length} field(s) to cover from ${trace.length} trace step(s).`);
+  }
+
+  const job: CodegenJob = { feature: plan.feature, url: plan.url, testTypes: plan.testTypes, maxCases: plan.maxCases, coverageFields };
   log(`[approve] Generating from ${trace.length} verified step(s) for "${job.feature}"…`);
   const art = await generateFromTrace(fw, job, trace, log);
 

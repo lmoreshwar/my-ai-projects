@@ -89,6 +89,11 @@ const AutomationJobSchema = new mongoose.Schema({
   // Orchestration state
   status: { type: String, enum: JOB_STATUSES, default: 'Pending' },
   plan: { type: String, default: '' },              // implementation plan returned by the AI service
+  // Rich V2 discovery plan (application summary, field inventory, evidence-linked scenarios,
+  // completeness gate) produced by exhaustive Autopilot exploration. Rendered as the approval dossier.
+  discoveryPlan: { type: mongoose.Schema.Types.Mixed, default: null },
+  // The scenario ids the user selected in the approval UI — passed to the approve dispatch.
+  selectedScenarioIds: [{ type: String }],
   missingInfo: [{ type: String }],                  // questions that block generation until answered
   approved: { type: Boolean, default: false },
 

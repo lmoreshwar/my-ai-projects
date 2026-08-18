@@ -50,6 +50,8 @@ export default function AutopilotExplorer({ apiBase, connections }) {
   const [discarding, setDiscarding] = useState(false);
   const [merging, setMerging] = useState(false);
   const [smoking, setSmoking] = useState(false);
+  // Discovery scenario selection (V2 plans): the ids the user ticked in the approval dossier.
+  const [selectedScenarios, setSelectedScenarios] = useState(() => new Set());
   const fileInputRef = useRef(null);
   const pollRef = useRef(null);
 
@@ -134,14 +136,33 @@ export default function AutopilotExplorer({ apiBase, connections }) {
     else stopPoll();
   }, [job?.jobId, job?.status, pollProgress]);
 
+  // When a V2 discovery plan arrives, pre-select every automation-ready scenario so the user can
+  // Proceed immediately (they can still untick). Blocked scenarios are never auto-selected.
+  const discoveryScenarios = Array.isArray(job?.discoveryPlan?.scenarios) ? job.discoveryPlan.scenarios : [];
+  useEffect(() => {
+    if (discoveryScenarios.length) {
+      setSelectedScenarios(new Set(discoveryScenarios.filter((s) => s.ready && !s.blocked).map((s) => s.id)));
+    }
+  }, [job?.jobId, discoveryScenarios.length]);
+
+  const toggleScenario = useCallback((id) => {
+    setSelectedScenarios((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }, []);
+
   // Approve the plan → generate + run the scripts (existing pipeline), then stream progress.
   const proceed = useCallback(async () => {
     if (!job) return;
     setError('');
     setProceeding(true);
     try {
+      const scenarioIds = Array.from(selectedScenarios);
       const res = await fetch(`${apiBase}/api/automation/jobs/${job.jobId}/approve`, {
         method: 'POST', headers: authHeaders(),
+        body: JSON.stringify(scenarioIds.length ? { scenarioIds } : {}),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.msg || `Approve failed (${res.status})`);
@@ -152,7 +173,7 @@ export default function AutopilotExplorer({ apiBase, connections }) {
       setError(e.message || 'Could not start generation.');
       setProceeding(false);
     }
-  }, [apiBase, job, pollProgress]);
+  }, [apiBase, job, pollProgress, selectedScenarios]);
 
   // Discard the attempt — clears a pending (Exploring/WaitingForApproval) job's lock, or deletes
   // the orphan generation branch after a run, so a fresh run can start.
@@ -475,6 +496,74 @@ export default function AutopilotExplorer({ apiBase, connections }) {
                 </div>
               )}
 
+              {/* Discovery dossier + scenario picker (V2 plans) */}
+              {discoveryScenarios.length > 0 && (
+                <div className="mb-3 space-y-3">
+                  {job.discoveryPlan?.applicationSummary && (
+                    <details className="text-xs bg-surface-container dark:bg-slate-800/40 rounded-lg p-3">
+                      <summary className="cursor-pointer font-bold text-on-surface dark:text-slate-200">Application summary</summary>
+                      <div className="mt-2 text-on-surface-variant dark:text-slate-300 space-y-0.5">
+                        <div>Feature: {job.discoveryPlan.applicationSummary.feature}</div>
+                        <div>Page: {job.discoveryPlan.applicationSummary.pageTitle}</div>
+                        <div>URL: {job.discoveryPlan.applicationSummary.finalUrl}</div>
+                      </div>
+                    </details>
+                  )}
+
+                  {Array.isArray(job.discoveryPlan?.inventory) && job.discoveryPlan.inventory.length > 0 && (
+                    <details className="text-xs bg-surface-container dark:bg-slate-800/40 rounded-lg p-3">
+                      <summary className="cursor-pointer font-bold text-on-surface dark:text-slate-200">
+                        Discovered controls ({job.discoveryPlan.inventory.length})
+                      </summary>
+                      <ul className="mt-2 space-y-1 max-h-52 overflow-auto">
+                        {job.discoveryPlan.inventory.map((it) => (
+                          <li key={it.id} className="flex gap-2 items-baseline text-on-surface-variant dark:text-slate-300">
+                            <span className="font-mono text-[10px] shrink-0 opacity-70">{it.type}</span>
+                            <span className="truncate">{it.label}</span>
+                            {it.required === true && <span className="text-[10px] text-amber-600">required</span>}
+                            {it.prepopulated && <span className="text-[10px] text-sky-600">prefilled</span>}
+                            {it.blocked && <span className="text-[10px] text-app-red">⛔ {it.blockedReason || 'blocked'}</span>}
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+
+                  {job.discoveryPlan?.completeness && (
+                    <div className={`text-xs rounded-lg px-3 py-2 ${job.discoveryPlan.completeness.passed ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300' : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'}`}>
+                      {job.discoveryPlan.completeness.passed
+                        ? 'Discovery completeness: PASS'
+                        : `Discovery gaps: ${(job.discoveryPlan.completeness.missing || []).join('; ')}`}
+                    </div>
+                  )}
+
+                  <div>
+                    <div className="text-xs font-bold text-on-surface dark:text-slate-200 mb-1">
+                      Select scenarios to automate ({selectedScenarios.size} selected)
+                    </div>
+                    <ul className="space-y-1.5">
+                      {discoveryScenarios.map((s) => {
+                        const disabled = s.blocked || !s.ready;
+                        return (
+                          <li key={s.id}>
+                            <label className={`flex gap-2 items-start text-xs rounded-lg px-2 py-1.5 ${disabled ? 'opacity-60' : 'cursor-pointer hover:bg-surface-container dark:hover:bg-slate-800/40'}`}>
+                              <input type="checkbox" className="mt-0.5" disabled={disabled}
+                                checked={selectedScenarios.has(s.id)} onChange={() => toggleScenario(s.id)} />
+                              <span className="min-w-0">
+                                <span className="font-mono text-app-red mr-1">{s.id}</span>
+                                <span className="text-on-surface dark:text-slate-200">{s.title}</span>
+                                <span className="ml-1 text-[10px] opacity-70">[{s.type}]</span>
+                                {disabled && <span className="block text-[10px] text-app-red">{s.blockedReason || 'Not automation-ready'}</span>}
+                              </span>
+                            </label>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                </div>
+              )}
+
               {!job.blocked && (
                 <pre className="text-xs whitespace-pre-wrap font-mono text-on-surface dark:text-slate-200 bg-surface-container dark:bg-slate-800/40 rounded-lg p-3 max-h-72 overflow-auto">
                   {job.plan}
@@ -494,10 +583,10 @@ export default function AutopilotExplorer({ apiBase, connections }) {
               {/* Proceed / result actions */}
               <div className="mt-3">
                 {job.status === 'WaitingForApproval' && (
-                  <button onClick={proceed} disabled={proceeding}
+                  <button onClick={proceed} disabled={proceeding || (discoveryScenarios.length > 0 && selectedScenarios.size === 0)}
                     className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-white bg-green-600 hover:bg-green-700 disabled:opacity-60 transition">
                     <span className="material-symbols-outlined text-[18px]">play_arrow</span>
-                    Proceed — generate scripts
+                    {discoveryScenarios.length > 0 ? `Proceed — generate ${selectedScenarios.size} scenario(s)` : 'Proceed — generate scripts'}
                   </button>
                 )}
                 {/* A failed/partial generation keeps the SAME plan — one click retries codegen without re-exploring. */}

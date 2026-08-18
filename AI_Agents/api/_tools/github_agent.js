@@ -484,6 +484,9 @@ async function dispatchApprove(job, git) {
       job_id: String(job.jobId),
       explore_run_id: String(exploreRunId),
       feature_name: job.feature || '',
+      // The scenarios the user selected in the approval UI. approve.ts filters the verified trace to
+      // these and enforces a per-field coverage gate. Empty for legacy (non-discovery) plans.
+      scenario_ids: Array.isArray(job.selectedScenarioIds) ? job.selectedScenarioIds.join(',') : '',
     };
     await axios.post(
       `${API}/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`,
@@ -741,6 +744,10 @@ async function getExploreRunProgress(job, git) {
       exploreRunId: runId,
       testCases,
       plan: renderPlan(plan),
+      // Full V2 discovery plan (application summary, field inventory, scenarios, completeness) so the
+      // API can persist it and the website can render the dossier + scenario picker. Undefined for
+      // legacy (non-discovery) plans.
+      discoveryPlan: (plan.version === 2 || Array.isArray(plan.scenarios)) ? plan : undefined,
       snapshotLogs: snap(lines),
     };
   } catch (err) {

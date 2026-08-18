@@ -21,6 +21,9 @@ import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import OpenAI from 'openai';
 import { deriveLocatorScopeHint, type AgentStep, type LocatorScopeHint } from './agent-loop';
+import type {
+  FieldInventoryItem, LocatorEvidence, DiscoveryState, CompletenessGate, ApplicationSummary, DiscoveryResult,
+} from './discovery';
 
 // Some gateways force a default reasoning_effort that conflicts with structured/tool calls on
 // /v1/chat/completions. Send OPENAI_REASONING_EFFORT (e.g. "none") only when it is set.
@@ -35,6 +38,13 @@ export interface CodegenJob {
   testTypes?: string[];
   maxCases?: number;
   model?: string;
+  /**
+   * When the caller has selected specific discovery scenarios, this is the union of the executable
+   * field labels those scenarios cover. codegen filters the trace to these fields and a coverage gate
+   * verifies every one appears in the generated code (deterministic trace-to-code fidelity). Empty /
+   * undefined = legacy behaviour (use the full trace, no coverage gate).
+   */
+  coverageFields?: string[];
 }
 
 export interface GeneratedArtifacts {
@@ -50,6 +60,49 @@ export interface PlanCase {
   type: string;
   steps: string[];
   expectedResults: string;
+}
+
+/** One concrete, evidence-linked action inside a proposed scenario. */
+export interface ScenarioStep {
+  order: number;
+  action: string;        // human phrase, e.g. "Fill First Name"
+  target: string;        // the control's label
+  type: string;          // fill | select | check | upload | click
+  input?: string;        // example valid value / where the data comes from
+  expected?: string;
+  fieldId?: string;      // links back to the FieldInventoryItem
+  locatorEvidence?: LocatorEvidence | null;
+}
+
+/** A proposed, evidence-backed scenario the user can select for automation in the approval UI. */
+export interface Scenario {
+  id: string;            // TC_001…
+  title: string;
+  type: string;          // positive | negative | boundary | …
+  ready: boolean;        // true = a complete live trace + evidence backs it → automatable now
+  blocked: boolean;      // true = cannot be automated as-is
+  blockedReason?: string;
+  steps: ScenarioStep[];
+  expectedResults: string;
+  coverage: { fieldIds: string[]; fieldLabels: string[] };
+}
+
+/** The richer plan artifact (version 2) written by explore.ts and consumed by approve.ts / the API. */
+export interface BlastPlanV2 {
+  version: 2;
+  feature: string;
+  url: string;
+  testTypes: string[];
+  maxCases: number;
+  status: string;                       // the exploration walk status
+  summary: string;
+  applicationSummary: ApplicationSummary | null;
+  inventory: FieldInventoryItem[];
+  states: DiscoveryState[];
+  completeness: CompletenessGate | null;
+  scenarios: Scenario[];
+  trace: AgentStep[];                   // the VERIFIED success trace — evidence for codegen
+  cases: PlanCase[];                    // legacy projection for older clients
 }
 
 interface LlmArtifacts {
@@ -461,6 +514,36 @@ function assertNoUndefinedFixtures(fw: string, art: LlmArtifacts): void {
   }
 }
 
+/** Normalise a field label so tolerant "does the code reference this field?" matching works. */
+function coverageKey(label: string): string {
+  return String(label || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+}
+
+/**
+ * Trace-to-code coverage gate. When the caller selected discovery scenarios, `coverageFields` lists
+ * every executable field those scenarios cover. This gate rejects a reply that silently drops any of
+ * them — the generated Page+Module+Spec together must reference each field (by its label appearing in a
+ * getByLabel/getByRole locator, a method name, a testData key, or plain text). Deterministic protection
+ * against the shallow-collapse failure (only the first few fields end up in the code). No selection =
+ * legacy behaviour (gate is a no-op).
+ */
+function assertTraceCoverage(art: LlmArtifacts, coverageFields?: string[]): void {
+  if (!coverageFields || !coverageFields.length) return;
+  const haystack = coverageKey([art.page.content, art.module.content, art.spec.content, JSON.stringify(art.testData || {})].join('\n'));
+  const missing = coverageFields.filter((label) => {
+    const key = coverageKey(label);
+    return key.length >= 2 && !haystack.includes(key);
+  });
+  if (missing.length) {
+    throw new Error(
+      `Codegen: the generated code does not cover ${missing.length} selected field(s): ${missing.join(', ')}. ` +
+      'Every selected discovered field MUST be filled/selected/checked in the Module workflow and asserted or ' +
+      'referenced in the Spec — do not collapse the flow to only the first few fields. Add the missing field(s) ' +
+      'using the exact locator evidence from the trace, then re-emit the complete artifact.',
+    );
+  }
+}
+
 const UNIQUE_DATA_UTILITY_SOURCE = [
   "import { type Locator, type Page } from '@playwright/test';",
   "import { TIMEOUTS } from './constants';",
@@ -569,6 +652,7 @@ export async function generateFromTrace(
     assertPrepopulatedFieldsUntouched(candidate, trace);
     assertUniqueFieldsHandled(candidate);
     assertNoUndefinedFixtures(fw, candidate);
+    assertTraceCoverage(candidate, job.coverageFields);
     return candidate;
   };
 
@@ -698,4 +782,170 @@ export async function authorPlanFromTrace(
     log(`[plan] Could not author cases: ${(e as Error).message}`);
     return [];
   }
+}
+
+// ─── Scenario authoring from exhaustive discovery ────────────────────────────────────────────────
+// Deterministic (no LLM) so the plan is reproducible and unit-testable, and so EVERY executable field
+// provably becomes an individual scenario step (fixing the shallow-collapse problem). The LLM is not
+// needed here: discovery already gathered the real controls + evidence; we just shape them into
+// selectable, evidence-linked scenarios.
+
+/** The example value shown for a field in the plan (never a real secret — generated at run time). */
+function exampleInputFor(item: FieldInventoryItem): string {
+  switch (item.type) {
+    case 'combobox': case 'select': return item.options?.length ? `one of: ${item.options.slice(0, 5).join(', ')}` : 'a valid option';
+    case 'checkbox': return 'checked';
+    case 'radio': return 'a valid choice';
+    case 'date': return 'a valid date';
+    case 'file': return 'an approved test fixture';
+    default: return `a realistic ${item.label.toLowerCase()} value`;
+  }
+}
+
+/** Map a control type to the concrete driver verb used in the scenario step. */
+function actionVerbFor(item: FieldInventoryItem): { action: string; type: string } {
+  switch (item.type) {
+    case 'combobox': case 'select': case 'radio': return { action: `Select ${item.label}`, type: 'select' };
+    case 'checkbox': return { action: `Check ${item.label}`, type: 'check' };
+    case 'file': return { action: `Upload ${item.label}`, type: 'upload' };
+    default: return { action: `Fill ${item.label}`, type: 'fill' };
+  }
+}
+
+function toScenarioStep(item: FieldInventoryItem, order: number): ScenarioStep {
+  const { action, type } = actionVerbFor(item);
+  return {
+    order, action, type, target: item.label, fieldId: item.id,
+    input: exampleInputFor(item),
+    locatorEvidence: item.locatorEvidence,
+  };
+}
+
+/** The URL the verified success submit navigated to (evidence for the positive expected result). */
+function traceSuccessUrl(trace: AgentStep[]): string {
+  for (let i = trace.length - 1; i >= 0; i--) {
+    const s = trace[i];
+    if (s.tool === 'snapshot' && (s.args as { after?: string })?.after === 'submit' && s.url) return s.url;
+  }
+  for (let i = trace.length - 1; i >= 0; i--) if (trace[i].url) return trace[i].url as string;
+  return '';
+}
+
+/**
+ * Shape the discovery inventory + verified trace into selectable, evidence-backed scenarios.
+ *  • one READY positive scenario that fills EVERY executable field (the exhaustive happy path),
+ *  • an optional READY "required fields only" positive scenario (when required fields are a strict subset),
+ *  • one PROPOSED (ready=false) negative scenario per required field — surfaced for transparency but
+ *    marked blocked because read-only discovery captured no live validation evidence to assert against.
+ * Blocked controls (e.g. file uploads with no fixture) are inventoried but never turned into an
+ * executable step — they are never silently omitted.
+ */
+export function authorScenariosFromDiscovery(
+  job: CodegenJob,
+  discovery: DiscoveryResult,
+  trace: AgentStep[],
+): Scenario[] {
+  const inv = discovery.inventory;
+  const executable = inv.filter((i) => !i.isAction && !i.blocked && !i.prepopulated);
+  const required = executable.filter((i) => i.required === true);
+  const saveAction = inv.find((i) => i.isAction && /save|submit|create|register|add|proceed/i.test(i.label));
+  const successUrl = traceSuccessUrl(trace);
+  const feat = job.feature || 'record';
+  const maxCases = job.maxCases && job.maxCases > 0 ? job.maxCases : 6;
+  const positiveExpected = successUrl
+    ? `The ${feat} is saved and the app navigates to ${successUrl}.`
+    : `The ${feat} is saved successfully and a confirmation is shown.`;
+
+  const scenarios: Scenario[] = [];
+  let idx = 0;
+  const nextId = () => `TC_${String(++idx).padStart(3, '0')}`;
+
+  // A — exhaustive positive: every executable field + Save.
+  if (executable.length) {
+    const steps = executable.map((f, i) => toScenarioStep(f, i + 1));
+    if (saveAction) steps.push({ order: steps.length + 1, action: `Click ${saveAction.label}`, type: 'click', target: saveAction.label, fieldId: saveAction.id, locatorEvidence: saveAction.locatorEvidence, expected: positiveExpected });
+    scenarios.push({
+      id: nextId(), title: `Create ${feat} with all fields populated`, type: 'positive',
+      ready: true, blocked: false, steps, expectedResults: positiveExpected,
+      coverage: { fieldIds: executable.map((f) => f.id), fieldLabels: executable.map((f) => f.label) },
+    });
+  }
+
+  // B — required-only positive (only when required is a strict, non-empty subset).
+  if (required.length && required.length < executable.length) {
+    const steps = required.map((f, i) => toScenarioStep(f, i + 1));
+    if (saveAction) steps.push({ order: steps.length + 1, action: `Click ${saveAction.label}`, type: 'click', target: saveAction.label, fieldId: saveAction.id, locatorEvidence: saveAction.locatorEvidence, expected: positiveExpected });
+    scenarios.push({
+      id: nextId(), title: `Create ${feat} with only the required fields`, type: 'positive',
+      ready: true, blocked: false, steps, expectedResults: positiveExpected,
+      coverage: { fieldIds: required.map((f) => f.id), fieldLabels: required.map((f) => f.label) },
+    });
+  }
+
+  // C — one negative per required field (transparency; blocked until a live validation probe exists).
+  for (const f of required) {
+    if (scenarios.length >= maxCases) break;
+    scenarios.push({
+      id: nextId(), title: `Reject submission when ${f.label} is empty`, type: 'negative',
+      ready: false, blocked: true,
+      blockedReason: 'No live validation evidence was captured during read-only discovery — a validation probe is required before this negative case can be automated.',
+      steps: [
+        { order: 1, action: `Leave ${f.label} empty and fill the other required fields`, type: 'fill', target: f.label, fieldId: f.id, locatorEvidence: f.locatorEvidence },
+        ...(saveAction ? [{ order: 2, action: `Click ${saveAction.label}`, type: 'click', target: saveAction.label, fieldId: saveAction.id, locatorEvidence: saveAction.locatorEvidence } as ScenarioStep] : []),
+      ],
+      expectedResults: `A validation message is shown and the ${feat} is not saved while ${f.label} is empty.`,
+      coverage: { fieldIds: [f.id], fieldLabels: [f.label] },
+    });
+  }
+
+  return scenarios.slice(0, maxCases);
+}
+
+/** Legacy PlanCase projection of the richer scenarios, so older clients still render a plan list. */
+export function scenariosToCases(scenarios: Scenario[]): PlanCase[] {
+  return scenarios.map((s) => ({
+    id: s.id, title: s.title, type: s.type,
+    steps: s.steps.map((st) => `${st.order}. ${st.action}${st.input ? ` — ${st.input}` : ''}`),
+    expectedResults: s.expectedResults,
+  }));
+}
+
+/** Best-effort: which field label did a trace fill/select/check step target? (for trace filtering) */
+function traceStepFieldLabel(step: AgentStep): string {
+  if (step.scopeHint?.label) return step.scopeHint.label;
+  const loc = step.locator || '';
+  const byLabel = loc.match(/getByLabel\(\s*['"]([^'"]+)['"]/);
+  if (byLabel) return byLabel[1];
+  const byName = loc.match(/name:\s*['"]([^'"]+)['"]/);
+  if (byName) return byName[1];
+  const byPh = loc.match(/getByPlaceholder\(\s*['"]([^'"]+)['"]/);
+  if (byPh) return byPh[1];
+  return '';
+}
+
+/**
+ * Filter the verified success trace down to the fields the SELECTED scenarios cover, so codegen writes
+ * exactly the chosen flow. Credential (login) steps and every non-field action (goto, click, snapshot,
+ * press) are always kept. When the selection covers all executable fields (or nothing is selected), the
+ * full trace is returned unchanged. Returns { trace, coverageLabels } for the coverage gate.
+ */
+export function selectTraceForScenarios(
+  trace: AgentStep[],
+  scenarios: Scenario[],
+  selectedIds: string[],
+): { trace: AgentStep[]; coverageLabels: string[] } {
+  const selected = scenarios.filter((s) => selectedIds.includes(s.id) && s.ready && !s.blocked);
+  if (!selected.length) return { trace, coverageLabels: [] };
+  const labels = new Set<string>();
+  for (const s of selected) for (const l of s.coverage.fieldLabels) labels.add(coverageKey(l));
+  const fieldTools = new Set(['fill', 'type', 'select', 'check', 'uncheck']);
+  const filtered = trace.filter((step) => {
+    if (!fieldTools.has(step.tool)) return true; // keep goto/click/press/snapshot/finish
+    const val = String((step.args as { value?: string; text?: string })?.value ?? (step.args as { text?: string })?.text ?? '');
+    if (val.includes('{{')) return true;         // keep credential (login) fills
+    const label = traceStepFieldLabel(step);
+    if (!label) return true;                       // unknown target — keep it (safer than dropping)
+    return labels.has(coverageKey(label));
+  });
+  return { trace: filtered, coverageLabels: selected.flatMap((s) => s.coverage.fieldLabels) };
 }
