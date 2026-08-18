@@ -62,6 +62,7 @@ export interface AgentStep {
   tool: string;
   args: Record<string, unknown>;
   locator?: string;
+  context?: string;
   url?: string;
   result: string;
 }
@@ -82,7 +83,8 @@ const SYSTEM_PROMPT = [
   '3. Do the MINIMUM to advance the goal: one action, then snapshot again, then the next action.',
   '4. To reveal a hidden control (Logout, Settings, a menu item), first CLICK the thing that opens it — a user avatar/profile image, a ⋮/kebab/hamburger/caret icon, or a top-bar user-name toggle — then snapshot; the revealed items appear in the NEXT snapshot.',
   '5. LOGIN: when a login form is present and the goal needs an authenticated page, fill the username field with the literal placeholder {{USERNAME}} and the password field with {{PASSWORD}}, then submit. The real values are injected securely — you must NEVER write an actual username or password. After you are logged in, do not re-enter credentials.',
-  '6. When the goal is achieved (or no useful action remains), call `finish` with status "passed" (goal verified), "failed" (a real defect/blocker), or "incomplete".',
+  '6. CREATE FLOWS: after Save/Submit, call snapshot and verify the real outcome. When a field has a uniqueness constraint (identifier, username, email, code, reference), never reuse the same sample across attempts. If the live page shows a duplicate/collision validation, record that message, change only that unique value, submit again, and snapshot the outcome. Never finish passed while still on the form after a failed submit.',
+  '7. When the goal is achieved (or no useful action remains), call `finish` with status "passed" (goal verified), "failed" (a real defect/blocker), or "incomplete".',
   '',
   'Work efficiently and do not narrate — just make tool calls.',
 ].join('\n');
@@ -91,6 +93,15 @@ const SYSTEM_PROMPT = [
 function renderRefs(refs: RefRow[]): string {
   if (!refs.length) return '(no interactable elements found on this page)';
   return refs.slice(0, 60).map((r) => `- ref=${r.ref} ${r.role}${r.name ? ` "${r.name}"` : ''}`).join('\n');
+}
+
+/** Keep the parent/label lines around the chosen live ref so codegen can scope unnamed controls. */
+function snapshotContextForRef(snapshot: string, ref: string): string {
+  if (!snapshot || !ref) return '';
+  const lines = snapshot.split('\n');
+  const index = lines.findIndex((line) => line.includes(`[ref=${ref}]`));
+  if (index < 0) return '';
+  return lines.slice(Math.max(0, index - 8), Math.min(lines.length, index + 9)).join('\n').slice(0, 1200);
 }
 
 export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopResult> {
@@ -109,6 +120,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   const session = new CliSession();
   const steps: AgentStep[] = [];
   let liveRefs = new Set<string>();
+  let latestSnapshot = '';
 
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: SYSTEM_PROMPT },
@@ -209,18 +221,27 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         const yaml = extractYaml(raw);
         const refs = parseRefs(yaml);
         liveRefs = new Set(refs.map((r) => r.ref));
+        latestSnapshot = yaml;
         toolResult = `Current URL: ${extractPageUrl(raw) || '(unchanged)'}\n\nInteractable elements you may act on now:\n${renderRefs(refs)}\n\nPage tree (context):\n${yaml.slice(0, 2500)}`;
         log(`[agent] snapshot → ${refs.length} interactable element(s)`);
       } else {
         const locator = extractRanLocator(raw);
         const pageUrl = extractPageUrl(raw);
+        const context = snapshotContextForRef(latestSnapshot, String(args.ref || ''));
         // After any navigation/action the old refs are stale — force a fresh snapshot next.
         if (name === 'goto' || name === 'goBack') liveRefs = new Set();
         // Persist the PLACEHOLDER (never the real credential) so codegen stays secret-free.
         const recordedArgs = placeholderValue
           ? { ...args, ...(name === 'fill' ? { value: placeholderValue } : { text: placeholderValue }) }
           : args;
-        steps.push({ tool: name, args: recordedArgs, locator, url: pageUrl, result: redact(raw, secrets).slice(0, 400) });
+        steps.push({
+          tool: name,
+          args: recordedArgs,
+          locator,
+          context: context ? redact(context, secrets) : undefined,
+          url: pageUrl,
+          result: redact(raw, secrets).slice(0, 400),
+        });
         toolResult = [
           locator ? `Ran: ${redact(locator, secrets)}` : 'Action executed.',
           pageUrl ? `Current URL: ${pageUrl}` : '',

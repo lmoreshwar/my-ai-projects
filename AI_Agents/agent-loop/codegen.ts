@@ -59,7 +59,16 @@ interface LlmArtifacts {
   spec: { file: string; content: string };
   testData?: Record<string, unknown>;
   routes?: Record<string, string>;
+  uniqueFields?: UniqueField[];
   reusedFrom?: string[];
+}
+
+interface UniqueField {
+  testDataPath: string;
+  kind: 'numeric' | 'alphanumeric' | 'email';
+  length?: number;
+  collisionPageField: string;
+  collisionMessage?: string;
 }
 
 const safeRead = (p: string): string => { try { return readFileSync(p, 'utf8'); } catch { return ''; } };
@@ -143,7 +152,8 @@ function renderTrace(trace: AgentStep[]): string {
   return trace.map((t, i) => {
     const loc = t.locator ? t.locator.replace(/\s*\n\s*/g, ' ').slice(0, 220) : '(no locator)';
     const val = t.args && (t.args.value ?? t.args.text);
-    return `${i + 1}. ${t.tool}${val ? ` "${val}"` : ''} → ${loc}${t.url ? `   [url: ${t.url}]` : ''}`;
+    const context = t.context ? `\n   [live snapshot context for this ref]\n${t.context}` : '';
+    return `${i + 1}. ${t.tool}${val ? ` "${val}"` : ''} → ${loc}${t.url ? `   [url: ${t.url}]` : ''}${context}`;
   }).join('\n');
 }
 
@@ -166,6 +176,10 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '## Route map (src/config routes) — REUSE an existing routes.X; only add a genuinely-new one',
     routesContext(fw),
     '',
+    '## Unique-value API (available at ../utils/UniqueData)',
+    'uniqueValue(seed, { kind: "numeric" | "alphanumeric" | "email", length? }) creates a new value per attempt.',
+    'retryOnCollision({ page, successUrl, collision, makeValue, submit, attempts?, collisionMessage? }) retries ONLY when the live collision locator becomes visible; it returns on success URL and rethrows every other timeout/error.',
+    '',
     '## Wrapper API contract (call ONLY these methods; never invent a wrapper method)',
     wrappers || '(no wrapper utils found)',
     '',
@@ -181,10 +195,10 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- Page = locators only, arrow getters returning Locator, constructor(private readonly page: Page). Copy locators VERBATIM from the verified actions above.',
     '- LOCATOR STRATEGY (Playwright official priority — pick the HIGHEST-priority strategy the element ACTUALLY supports; fall back only when a higher one does not exist): (1) getByTestId() when the app exposes data-testid/data-test/data-qa; (2) getByRole(role, { name }) for interactive elements (button/link/textbox/checkbox/radio/menuitem/option) — the PRIMARY strategy; (3) getByLabel() for form fields with a real <label>; (4) getByPlaceholder() only when no label/role/testid; (5) getByText({ exact: true }) for static content/links; (6) getByAltText() for images; (7) CSS/XPath LAST RESORT and only SCOPED/chained (e.g. locator(".row", { hasText: "Admin" }).getByRole("textbox")). Default to ONE strategy per element; do NOT stack.',
     '- NEVER write a locator containing an auto-generated id/hash/framework class (e.g. #react-select-3, .MuiButton-root-482, .css-1a2b3c, numeric-suffix classes) — they change every build. Prefer role/label/text even when such an id is visible. NEVER a bare brittle class name.',
-    '- DISAMBIGUATION: if a role/text locator matches MANY elements (tables, repeated rows, form fields with no distinct name), SCOPE from a stable parent (row/section/dialog/labelled group) and chain — e.g. locator(".oxd-input-group", { hasText: "Username" }).getByRole("textbox"). Do NOT add nth-child indexing. Use .nth() ONLY as an absolute last resort and add a `// reason:` comment explaining why no stable scope exists.',
+    '- DISAMBIGUATION: if a role/text locator matches MANY elements (tables, repeated rows, form fields with no distinct name), SCOPE from a stable parent (row/section/dialog/labelled group) and chain — e.g. locator(".oxd-input-group", { hasText: "Username" }).getByRole("textbox"). NEVER use .nth() in a generated Page locator. For an unnamed input, use its action\'s live snapshot context to scope from the closest stable label/group; that context is live evidence, not permission to guess a positional selector.',
     '- DROPDOWNS: detect from the live snapshot whether it is a native <select> (use Actions.selectOption) or a custom JS dropdown (React-select/MUI/PrimeNG/OXD — click-to-open then getByRole("option", { name }) via selectDropdownOption/searchAndSelectOption). Never assume one pattern.',
     '- IFRAMES/SHADOW DOM: if the target is inside an iframe or shadow root (per the snapshot), use frameLocator()/shadow-piercing correctly — never fall back to a wrong-scope locator. WAITING: rely on Playwright auto-waiting; never use fixed sleeps — only waitFor(state) for genuinely async/animated UI, with a `// reason:` note.',
-    '- Every generated Page locator MUST be the EXACT one verified live during explore (the real echoed @playwright/cli locator that follows this priority), never a re-guessed selector.',
+    '- Every generated Page locator MUST be based on the verified live explore evidence. Copy a non-positional echoed locator verbatim; when the CLI echo uses .nth(), replace it with the scoped label/group locator supported by that action\'s live snapshot context. Never re-guess a locator.',
     '- Module = workflow methods using this.actions.* and this.logger.step(); construct its Page + Actions from the page in the constructor. Never put a raw locator or an assertion in a Module.',
     '- Spec = import { test, expect } from "../fixtures"; instantiate the new Module directly with the test\'s page, e.g. `const m = new <Feature>Module(page)`. Put all assertions here.',
     '- For login, the Module\'s login method takes (username, password); the spec passes credentials("app"). Do NOT hardcode credentials.',
@@ -194,7 +208,8 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- URL ASSERTIONS: assert the ACTUAL post-action landing URL observed in the trace (the FINAL step\'s [url: ...]), not the form/origin URL. If that landing path contains a DYNAMIC segment (numeric id, hash, empNumber/245, uuid), assert urlRegex on the STABLE PREFIX route (e.g. urlRegex(routes.pimViewPersonalDetails)) — never assert an exact URL that embeds a run-specific id.',
     '- SEQUENTIAL, APPEND-ONLY numbering: each spec file owns its own TC_001, TC_002… sequence. When a spec for this feature already exists, read the highest existing TC_XXX and number NEW cases from the next free number (existing TC_001–TC_003 → new TC_004); never renumber, reorder, or overwrite an existing test() block — append after them and return the FULL file with every existing test kept verbatim.',
     '- Reuse SHARED METHODS/HELPERS, not just locators. Use the shared WorkflowActions/Actions helpers for EVERY common interaction family instead of bespoke code: custom dropdown -> selectDropdownOption(trigger, optionText); searchable/autocomplete -> searchAndSelectOption(input, text, optionText?); native <select> -> Actions.selectOption; checkbox -> setCheckbox(target, checked); radio -> selectRadioOption(label); date field -> selectDate(input, value); table read -> readTableCell(table, rowText, colIndex); table row action -> clickInRow(table, rowText, controlName); table row checkbox -> setRowCheckbox(table, rowText, checked); search box -> searchWithOptionalSubmit. If NONE of the existing helpers fits a new interaction, implement it as a parameterized METHOD ON THE NEW MODULE (workflow logic belongs in the Module) — NEVER inline interaction logic in the spec, and NEVER call or invent a WorkflowActions/Actions method that is not already in the Wrapper API contract (the shared utils are a FIXED API on this path; this JSON output cannot emit a modified util file). Reuse one helper for repeated flows (login/logout/common assertions) too.',
-    '- TEST DATA: read every value via the testData accessor (never hardcode usernames/names/roles/expected text in a spec). Reuse an existing matching entry before adding a new one; only add genuinely-new keys, and for values needing uniqueness use a deterministic, traceable name (e.g. auto_user_tc004), not a random one-off. Keep every existing testData key.',
+    '- TEST DATA: read every value via the testData accessor (never hardcode usernames/names/roles/expected text in a spec). Reuse an existing matching entry before adding a new one; only add genuinely-new keys. Keep every existing testData key.',
+    '- UNIQUE CONSTRAINTS: identifiers, usernames, email addresses, codes, references, and record numbers must NEVER use a fixed final value. Store only a readable seed in testData, import uniqueValue/retryOnCollision from "../utils/UniqueData", and generate a fresh value for EACH submit attempt. The Module call shape is retryOnCollision({ page: this.page, successUrl: urlRegex(routes.X), collision: this.<page>.collisionLocator, makeValue: () => uniqueValue(seed, { kind, length }), submit: async (value) => { fill the field with value; click Save; }, collisionMessage }). Do NOT add a second waitForURL after this helper. The Page MUST expose the exact collision validation locator captured live. Retry ONLY when that exact validation appears — all other errors/timeouts must fail. Return one uniqueFields descriptor per field so codegen can enforce this contract.',
     '- TAGS — industry standard, stacked in the test() title: a feature/module tag in PascalCase (e.g. @AdminAddUser) PLUS suite tags — @Smoke on the primary happy-path case, @Regression on ALL cases. Do NOT use @Positive/@Negative. Match the domain naming already used in the repo.',
     '- TEST INDEPENDENCE: every test() runs STANDALONE (a case may be run individually via grep). Each test does its OWN login + navigation (prefer test.beforeEach for shared setup) and never depends on state left by a sibling test.',
     '- CLEAN CODE: match the exemplars\' indentation, no unused imports, no dead code, no duplicated boilerplate that belongs in a shared helper. One short comment only above a non-obvious step.',
@@ -207,6 +222,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '  "spec":   { "file": "src/tests/<feature>.spec.ts",   "content": "<full file>" },',
     '  "testData": { <any new keys the spec reads, or omit> },',
     '  "routes": { <NEW routes.X keys → verified relative path (e.g. "pimAddEmployee": "/web/index.php/pim/addEmployee"), or omit if none are new> },',
+    '  "uniqueFields": [{ "testDataPath": "<testData seed path>", "kind": "numeric|alphanumeric|email", "length": 7, "collisionPageField": "<Page collision locator property>", "collisionMessage": "<exact live validation text>" }],',
     '  "reusedFrom": ["<existing class/method you reused>"]',
     '}',
   ].join('\n');
@@ -278,6 +294,111 @@ function assertRoutesDefined(fw: string, files: string[]): void {
   }
 }
 
+/** Positional Page locators are not stable evidence for a single form control. */
+function assertNoPositionalPageLocators(file: string, content: string): void {
+  if (!/\.nth\s*\(/.test(content)) return;
+  throw new Error(`Codegen: positional locator found in ${file}. Scope the live control from its stable label/group instead of using .nth().`);
+}
+
+const UNIQUE_KEY = /(?:id|identifier|username|email|code|reference|number)$/i;
+
+function collectLikelyUniqueDataPaths(value: unknown, prefix = ''): string[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  const paths: string[] = [];
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const path = prefix ? `${prefix}.${key}` : key;
+    if (child && typeof child === 'object' && !Array.isArray(child)) {
+      paths.push(...collectLikelyUniqueDataPaths(child, path));
+    } else if (UNIQUE_KEY.test(key)) {
+      paths.push(path);
+    }
+  }
+  return paths;
+}
+
+function assertUniqueFieldsHandled(art: LlmArtifacts): void {
+  const likelyUniquePaths = collectLikelyUniqueDataPaths(art.testData);
+  const fields = art.uniqueFields || [];
+  const plannedPaths = new Set(fields.map((field) => field.testDataPath.replace(/^testData\./, '')));
+  const missingPlans = likelyUniquePaths.filter((path) => !plannedPaths.has(path));
+  if (missingPlans.length) {
+    throw new Error(`Codegen: static value(s) for unique field(s) ${missingPlans.join(', ')} require a uniqueFields descriptor and retryOnCollision handling.`);
+  }
+  for (const field of fields) {
+    if (!field.testDataPath || !field.collisionPageField) {
+      throw new Error('Codegen: each uniqueFields descriptor requires testDataPath and collisionPageField.');
+    }
+    if (!art.module.content.includes('uniqueValue(') || !art.module.content.includes('retryOnCollision(')) {
+      throw new Error(`Codegen: unique field '${field.testDataPath}' must use uniqueValue() and retryOnCollision() in its Module.`);
+    }
+    if (!art.module.content.includes("from '../utils/UniqueData'")) {
+      throw new Error(`Codegen: unique field '${field.testDataPath}' must import its helpers from ../utils/UniqueData.`);
+    }
+    if (!new RegExp(`\\b${field.collisionPageField}\\b`).test(art.page.content)) {
+      throw new Error(`Codegen: unique field '${field.testDataPath}' is missing Page collision locator '${field.collisionPageField}'.`);
+    }
+  }
+}
+
+const UNIQUE_DATA_UTILITY_SOURCE = [
+  "import { type Locator, type Page } from '@playwright/test';",
+  "import { TIMEOUTS } from './constants';",
+  '',
+  "export type UniqueValueKind = 'numeric' | 'alphanumeric' | 'email';",
+  '',
+  'let sequence = 0;',
+  '',
+  'export function uniqueValue(seed: string, options: { kind?: UniqueValueKind; length?: number } = {}): string {',
+  '  sequence += 1;',
+  "  const kind = options.kind ?? 'alphanumeric';",
+  '  const token = `${Date.now()}${sequence}`;',
+  '  const length = Math.max(1, options.length ?? 8);',
+  "  if (kind === 'numeric') return token.replace(/\\D/g, '').slice(-(options.length ?? 7));",
+  "  if (kind === 'email') {",
+  "    const [localPart = 'auto', domain = 'example.test'] = seed.trim().split('@');",
+  "    return `${localPart || 'auto'}+${token.slice(-length)}@${domain || 'example.test'}`;",
+  '  }',
+  "  const prefix = seed.trim().replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'auto';",
+  '  return `${prefix}-${token.slice(-length)}`;',
+  '}',
+  '',
+  'export async function retryOnCollision(options: {',
+  '  page: Page;',
+  '  successUrl: string | RegExp;',
+  '  collision: Locator;',
+  '  makeValue: () => string;',
+  '  submit: (value: string) => Promise<void>;',
+  '  attempts?: number;',
+  '  timeout?: number;',
+  '  collisionMessage?: string;',
+  '}): Promise<string> {',
+  '  const attempts = Math.max(1, options.attempts ?? 3);',
+  '  const timeout = options.timeout ?? TIMEOUTS.LONG;',
+  '  for (let attempt = 0; attempt < attempts; attempt += 1) {',
+  '    const value = options.makeValue();',
+  '    await options.submit(value);',
+  '    const outcome = await Promise.race([',
+  "      options.page.waitForURL(options.successUrl, { timeout }).then(() => 'success' as const),",
+  "      options.collision.waitFor({ state: 'visible', timeout }).then(() => 'collision' as const),",
+  '    ]);',
+  "    if (outcome === 'success') return value;",
+  '  }',
+  "  const detail = options.collisionMessage ? `: ${options.collisionMessage}` : '';",
+  '  throw new Error(`Unique-value collision persisted after ${attempts} attempts${detail}`);',
+  '}',
+  '',
+].join('\n');
+
+/** Ensure every generated framework can import the unique-value contract without manual setup. */
+function ensureUniqueDataUtility(fw: string, fields?: UniqueField[]): string | null {
+  if (!fields?.length) return null;
+  const rel = 'src/utils/UniqueData.ts';
+  const file = join(fw, rel);
+  if (existsSync(file)) return null;
+  writeFileSync(file, UNIQUE_DATA_UTILITY_SOURCE);
+  return rel;
+}
+
 /** Run the repo's capability indexer so `.ai-memory` is regenerated (write-back). Best-effort. */
 function refreshIndex(fw: string): Promise<void> {
   return new Promise((resolve) => {
@@ -328,6 +449,8 @@ export async function generateFromTrace(
   if (!art.page?.content || !art.module?.content || !art.spec?.content) {
     throw new Error('Codegen: reply missing page/module/spec content.');
   }
+  assertNoPositionalPageLocators(art.page.file || 'generated Page', art.page.content);
+  assertUniqueFieldsHandled(art);
 
   const files: string[] = [];
   const feat = (job.feature || 'Feature').replace(/[^a-zA-Z0-9]/g, '') || 'Feature';
@@ -342,6 +465,9 @@ export async function generateFromTrace(
   }
   const td = mergeTestData(fw, art.testData);
   if (td) files.push(td.replace(fw, '').replace(/^[\\/]/, '').replace(/\\/g, '/'));
+
+  const uniqueUtility = ensureUniqueDataUtility(fw, art.uniqueFields);
+  if (uniqueUtility) files.push(uniqueUtility);
 
   const rt = mergeRoutes(fw, art.routes);
   if (rt && !files.includes(rt)) files.push(rt);
