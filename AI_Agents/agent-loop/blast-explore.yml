@@ -74,10 +74,11 @@ jobs:
         run: npx playwright install --with-deps chromium
 
       # The agentic driver: Microsoft @playwright/cli + xvfb so the headless browser can start.
+      # ubuntu-latest ships Xvfb preinstalled; only apt-install on the rare image without it.
       - name: Install @playwright/cli + xvfb
         run: |
           npm install -g @playwright/cli@latest
-          sudo apt-get update && sudo apt-get install -y xvfb
+          command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
 
       - name: Install agent-loop deps
         working-directory: .blast-engine/AI_Agents/agent-loop
