@@ -174,6 +174,29 @@ test('coverage counts executable Automation Trace steps, not discovered controls
   assert.ok(disc.inventory.length > positive.coverage.fieldLabels.length, 'inventory is far larger than the trace');
 });
 
+test('data-test fill locator uses its verified accessible name in the Automation Trace', () => {
+  const disc = discoveryFrom(JOB_TITLES_SNAPSHOT, 'Job Title');
+  const trace: AgentStep[] = [
+    {
+      tool: 'fill', args: { value: 'QA Engineer' }, result: '',
+      locator: "await page.locator('[data-test=\"job-title\"]').fill('QA Engineer');",
+      interaction: {
+        controlId: 'job-title-input', action: 'fill', semanticRole: 'textbox', accessibleName: 'Job Title',
+        locatorEvidence: "await page.locator('[data-test=\"job-title\"]').fill('QA Engineer');",
+        interactionTarget: 'textbox "Job Title" [ref=e20]', uniqueness: 1, custom: false,
+        actionability: 'verified-live', provenByLiveTrace: true,
+      },
+    },
+    step('click', undefined, undefined, { locator: "getByRole('button', { name: 'Save' })" }),
+    { tool: 'snapshot', args: { after: 'submit' }, url: 'https://x/viewJobTitleList', result: '' },
+  ];
+  const positive = authorScenariosFromDiscovery({ feature: 'Job Title', url: 'x', maxCases: 6 }, disc, trace)
+    .find((s) => /all fields/i.test(s.title))!;
+  assert.equal(positive.ready, true);
+  assert.deepEqual(positive.coverage.fieldLabels, ['Job Title']);
+  assert.equal(positive.steps[0].action, 'Fill Job Title');
+});
+
 /* ── 4. Discovery count does not affect codegen coverage ──────────────────────── */
 
 test('adding more discovered navigation controls does NOT change codegen coverage', () => {

@@ -2018,6 +2018,7 @@ export function scenariosToCases(scenarios: Scenario[]): PlanCase[] {
 /** Best-effort: which field label did a trace fill/select/check step target? (for trace filtering) */
 function traceStepFieldLabel(step: AgentStep): string {
   if (step.scopeHint?.label) return step.scopeHint.label;
+  if (step.interaction?.accessibleName) return step.interaction.accessibleName;
   const loc = step.locator || '';
   const byLabel = loc.match(/getByLabel\(\s*['"]([^'"]+)['"]/);
   if (byLabel) return byLabel[1];
