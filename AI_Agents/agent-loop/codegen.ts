@@ -22,6 +22,10 @@ import { dirname, join, normalize } from 'node:path';
 import OpenAI from 'openai';
 import ts from 'typescript';
 import { deriveLocatorScopeHint, type AgentStep, type LocatorScopeHint, type InteractionEvidence } from './agent-loop';
+import {
+  assertDependencyArtifactsPreserved, assertResolvedDependenciesUsed, dependencyResolutionContext, writeCapabilityDependencyMemory,
+  type CapabilityDependencyResolution,
+} from './capability-dependencies';
 import type {
   FieldInventoryItem, LocatorEvidence, DiscoveryState, CompletenessGate, ApplicationSummary, DiscoveryResult, StateTransition,
 } from './discovery';
@@ -52,6 +56,8 @@ export interface CodegenJob {
    * callers omit it and codegen falls back to the verified trace alone.
    */
   discoveryEvidence?: DiscoveryEvidence;
+  /** Internal prerequisite plan resolved from verified capabilities; never user-provided. */
+  dependencyResolution?: CapabilityDependencyResolution;
 }
 
 /** The live discovery evidence codegen consumes: durable control inventory + before→after transitions. */
@@ -465,6 +471,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
   const ex = readExemplars(fw);
   const wrappers = wrapperContract(fw);
   const caps = loadCapabilities(fw);
+  const dependencies = dependencyResolutionContext(job.dependencyResolution);
   const loginGuidance = loginGuidanceFor(fw);
   const types = (job.testTypes && job.testTypes.length) ? job.testTypes.join(', ') : 'positive (happy path)';
   const prepopulated = prepopulatedFieldEntries(trace);
@@ -491,6 +498,12 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '',
     '## Reuse index (.ai-memory) — REUSE these before creating anything new; never duplicate',
     caps,
+    '',
+    '## Automatically resolved prerequisite capabilities (INTERNAL — do not ask the user to select these)',
+    dependencies,
+    'The generated Module MUST construct and call every prerequisite workflow listed above before the new feature action. '
+      + 'Those Page/Module/Spec artifacts are already verified: preserve them and implement ONLY the missing capability. '
+      + 'Do NOT recreate a dependency locator or workflow.',
     '',
     '## Route map (src/config routes) — REUSE an existing routes.X; only add a genuinely-new one',
     routesContext(fw),
@@ -1138,7 +1151,7 @@ export function assertPageObjectContracts(
   }
 
   const moduleCalls: ModuleCall[] = [];
-  for (const generated of generatedFiles.filter((entry) => entry.kind === 'spec')) {
+  for (const generated of generatedFiles.filter((entry) => entry.kind === 'module' || entry.kind === 'spec')) {
     const source = ts.createSourceFile(generated.file, generated.content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     const importedModules = moduleImports(generated.file, generated.content);
     const instances = new Map<string, ModuleContract>();
@@ -1520,6 +1533,9 @@ export async function generateFromTrace(
     if (!candidate.page?.content || !candidate.module?.content || !candidate.spec?.content) {
       throw new Error('Codegen: reply missing page/module/spec content.');
     }
+    assertDependencyArtifactsPreserved({
+      page: candidate.page.file || 'Page', module: candidate.module.file || 'Module', spec: candidate.spec.file || 'Spec',
+    }, job.dependencyResolution);
     assertNoPositionalPageLocators(candidate.page.file || 'generated Page', candidate.page.content);
     assertNavigationUrlContract([
       { file: candidate.page.file || 'Page', content: candidate.page.content },
@@ -1531,6 +1547,7 @@ export async function generateFromTrace(
     assertUniqueFieldsHandled(candidate);
     assertNoUndefinedFixtures(fw, candidate);
     assertTraceCoverage(candidate, job.coverageFields);
+    assertResolvedDependenciesUsed(candidate.module.content, job.dependencyResolution);
     assertWrapperMethodsExist(fw, [
       { file: candidate.page.file || 'Page', content: candidate.page.content },
       { file: candidate.module.file || 'Module', content: candidate.module.content },
@@ -1606,6 +1623,12 @@ export async function generateFromTrace(
 
   log(`[codegen] Wrote ${files.length} file(s). Refreshing capability index…`);
   await refreshIndex(fw);
+  const dependencyMemory = writeCapabilityDependencyMemory(fw, job.feature, {
+    page: writes[0][0].replace(fw, '').replace(/^[\\/]/, '').replace(/\\/g, '/'),
+    module: writes[1][0].replace(fw, '').replace(/^[\\/]/, '').replace(/\\/g, '/'),
+    spec: writes[2][0].replace(fw, '').replace(/^[\\/]/, '').replace(/\\/g, '/'),
+  }, job.dependencyResolution);
+  if (dependencyMemory && !files.includes(dependencyMemory)) files.push(dependencyMemory);
   log('[codegen] Capability index refreshed (.ai-memory written back).');
 
   return { domain: art.domain || feat.toLowerCase(), files, reusedExisting: !!(art.reusedFrom && art.reusedFrom.length) };

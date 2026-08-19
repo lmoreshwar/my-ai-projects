@@ -32,6 +32,7 @@ import { spawn } from 'node:child_process';
 import { request } from 'node:https';
 import { runAgentLoop } from './agent-loop';
 import { generateFromTrace, type CodegenJob } from './codegen';
+import { dependencyResolutionContext, resolveCapabilityDependencies } from './capability-dependencies';
 
 const log = (l: string) => console.log(l);
 
@@ -158,7 +159,12 @@ export async function generate(): Promise<{ status: string; prUrl?: string; file
   const maxCases = Number(process.env.MAX_CASES) > 0 ? Number(process.env.MAX_CASES) : 3;
 
   // 1) EXPLORE — verify the real flow live (credentials come from env inside runAgentLoop).
-  const goal = `Explore and verify the "${feature}" feature. Log in if a login form is present, reach the feature, and exercise its primary flow (${testTypes.join(', ')}), confirming the expected outcome.`;
+  const initialDependencies = resolveCapabilityDependencies(fw, feature, url);
+  const goal = `Explore and verify the "${feature}" feature. Log in if a login form is present, reach the feature, and exercise its primary flow (${testTypes.join(', ')}), confirming the expected outcome.
+
+INTERNAL PREREQUISITE CONTEXT (existing verified capabilities):
+${dependencyResolutionContext(initialDependencies)}
+Use an applicable prerequisite only as setup; do not re-automate it as the new feature.`;
   log(`[generate] Exploring "${feature}" at ${url}…`);
   const walk = await runAgentLoop({ url, goal, maxSteps: Math.max(15, maxCases * 8), onLog: log });
   if (walk.status === 'failed' || !walk.steps.length) {
@@ -166,7 +172,11 @@ export async function generate(): Promise<{ status: string; prUrl?: string; file
   }
 
   // 2) CODEGEN — turn the proven trace into Page/Module/Spec (+ capability reuse & write-back).
-  const job: CodegenJob = { feature, url, testTypes, maxCases };
+  const job: CodegenJob = {
+    feature, url, testTypes, maxCases,
+    discoveryEvidence: walk.discovery ? { inventory: walk.discovery.inventory, transitions: walk.discovery.transitions } : undefined,
+    dependencyResolution: resolveCapabilityDependencies(fw, feature, url, walk.discovery),
+  };
   const art = await generateFromTrace(fw, job, walk.steps, log);
   const specRel = art.files.find((f) => f.includes('/tests/')) || '';
 

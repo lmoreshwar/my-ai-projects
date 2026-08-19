@@ -12,6 +12,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runAgentLoop } from './agent-loop';
 import { authorPlanFromTrace, authorScenariosFromDiscovery, scenariosToCases, type CodegenJob, type BlastPlanV2 } from './codegen';
+import { dependencyResolutionContext, resolveCapabilityDependencies } from './capability-dependencies';
 
 const log = (l: string): void => console.log(l);
 
@@ -26,12 +27,22 @@ async function main(): Promise<void> {
   const maxCases = Number(process.env.MAX_CASES) > 0 ? Number(process.env.MAX_CASES) : 6;
   const outDir = process.env.OUTPUT_DIR || fw || '.';
 
-  const goal = `Explore and verify the "${feature}" feature. Log in if a login form is present, reach the feature, and EXHAUSTIVELY exercise its primary flow (${testTypes.join(', ')}): once on the feature form, fill EVERY discovered field (including optional ones) with realistic valid data before saving, and confirm the expected outcome.`;
+  const initialDependencies = resolveCapabilityDependencies(fw, feature, url);
+  const goal = `Explore and verify the "${feature}" feature. Log in if a login form is present, reach the feature, and EXHAUSTIVELY exercise its primary flow (${testTypes.join(', ')}): once on the feature form, fill EVERY discovered field (including optional ones) with realistic valid data before saving, and confirm the expected outcome.
+
+INTERNAL PREREQUISITE CONTEXT (already verified capabilities; do not treat these as new feature scope):
+${dependencyResolutionContext(initialDependencies)}
+When the feature needs one of these states, establish it as setup before verifying the missing capability. Do not re-automate the prerequisite as a new feature.`;
   log(`[explore] Exploring "${feature}" at ${url}…`);
   const walk = await runAgentLoop({ url, goal, feature, discover: true, maxSteps: Math.max(20, maxCases * 8), onLog: log });
 
-  const job: CodegenJob = { feature, url, testTypes, maxCases };
   const discovery = walk.discovery;
+  const dependencies = resolveCapabilityDependencies(fw, feature, url, discovery);
+  const job: CodegenJob = {
+    feature, url, testTypes, maxCases,
+    discoveryEvidence: discovery ? { inventory: discovery.inventory, transitions: discovery.transitions } : undefined,
+    dependencyResolution: dependencies,
+  };
 
   // Build the richer V2 plan when discovery ran; scenarios are the selectable, evidence-linked units.
   const scenarios = (walk.status === 'passed' && discovery)

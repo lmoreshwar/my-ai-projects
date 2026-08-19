@@ -13,6 +13,7 @@ import { generateFromTrace, selectTraceForScenarios, type CodegenJob, type Scena
 import { verifySpec, commitAndOpenPr } from './generate';
 import type { AgentStep } from './agent-loop';
 import type { FieldInventoryItem, StateTransition } from './discovery';
+import { resolveCapabilityDependencies } from './capability-dependencies';
 
 const log = (l: string): void => console.log(l);
 
@@ -66,7 +67,13 @@ async function main(): Promise<void> {
     (Array.isArray(plan.inventory) && plan.inventory.length) || (Array.isArray(plan.transitions) && plan.transitions.length)
       ? { inventory: plan.inventory ?? [], transitions: plan.transitions ?? [] }
       : undefined;
-  const job: CodegenJob = { feature: plan.feature, url: plan.url, testTypes: plan.testTypes, maxCases: plan.maxCases, coverageFields, discoveryEvidence };
+  // Recompute from the approved plan's live evidence + committed capability memory. This deliberately
+  // stays off the plan artifact and approval UI: dependencies are an internal AI decision, never user input.
+  const dependencyResolution = resolveCapabilityDependencies(fw, plan.feature, plan.url, discoveryEvidence);
+  const job: CodegenJob = {
+    feature: plan.feature, url: plan.url, testTypes: plan.testTypes, maxCases: plan.maxCases,
+    coverageFields, discoveryEvidence, dependencyResolution,
+  };
   log(`[approve] Generating from ${trace.length} verified step(s) for "${job.feature}"…`);
   const art = await generateFromTrace(fw, job, trace, log);
 
