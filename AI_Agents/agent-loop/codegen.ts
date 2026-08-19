@@ -180,18 +180,72 @@ function routesContext(fw: string): string {
   return `Existing routes.X keys (REUSE these; only add a NEW key for a screen not listed): ${[...rb.keys].join(', ') || '(none)'}`;
 }
 
-/** Pull public method signatures from a wrapper util so the model calls only real methods. */
-function wrapperSignatures(fw: string, rel: string): string {
-  const src = safeRead(join(fw, rel));
-  if (!src) return '';
-  const sigs: string[] = [];
+/**
+ * The wrapper utils generated code may call, and the `this.<prop>` each is invoked through in a Module
+ * (the repo convention: this.actions = new Actions(page); this.workflowActions = new WorkflowActions(page);
+ * this.waitHelper = new WaitHelper(page); this.logger = Logger.create(...)). This is the SINGLE source of
+ * truth for BOTH the prompt contract and the post-generation validation gate, so the model is told — and
+ * then held to — exactly the same allowed API. Framework-agnostic: only the utils that exist under `fw` count.
+ */
+const WRAPPER_UTILS: ReadonlyArray<{ className: string; prop: string; rel: string }> = [
+  { className: 'Actions', prop: 'actions', rel: 'src/utils/Actions.ts' },
+  { className: 'WorkflowActions', prop: 'workflowActions', rel: 'src/utils/WorkflowActions.ts' },
+  { className: 'WaitHelper', prop: 'waitHelper', rel: 'src/utils/WaitHelper.ts' },
+  { className: 'Logger', prop: 'logger', rel: 'src/utils/Logger.ts' },
+];
+
+/** Line-start tokens the method regex can match that are NOT wrapper methods (control flow / ctor). */
+const NON_METHOD_KEYWORDS = new Set(['constructor', 'if', 'for', 'while', 'switch', 'catch', 'return']);
+
+/**
+ * Extract the PUBLIC instance method names + parameter lists from a TS class source. A `private`/`static`
+ * method is written `private …`/`static …` at the line start, which this line-anchored regex does not
+ * match (it only accepts an optional `public`/`async` then `name(`), so the result is exactly the methods
+ * the generated code is allowed to call via `this.<prop>.<method>()` — the single extraction shared by the
+ * prompt contract and the validation gate.
+ */
+function extractPublicMethods(src: string): Array<{ name: string; params: string }> {
+  const out: Array<{ name: string; params: string }> = [];
   const re = /^\s*(?:public\s+)?(?:async\s+)?([a-zA-Z_]\w*)\s*\(([^)]*)\)/gm;
   let m: RegExpExecArray | null;
   while ((m = re.exec(src))) {
-    if (['constructor', 'if', 'for', 'while', 'switch', 'catch', 'return'].includes(m[1])) continue;
-    sigs.push(`${m[1]}(${m[2].replace(/\s+/g, ' ').trim()})`);
+    if (NON_METHOD_KEYWORDS.has(m[1])) continue;
+    out.push({ name: m[1], params: m[2].replace(/\s+/g, ' ').trim() });
   }
-  return sigs.length ? `${rel}: ${[...new Set(sigs)].join('; ')}` : '';
+  return out;
+}
+
+/** The set of public method NAMES a wrapper util exposes (empty when the util file is absent). */
+function wrapperMethodNames(fw: string, rel: string): Set<string> {
+  const src = safeRead(join(fw, rel));
+  if (!src) return new Set();
+  return new Set(extractPublicMethods(src).map((mm) => mm.name));
+}
+
+/**
+ * Property-qualified wrapper contract for the prompt: each wrapper's REAL methods listed under the exact
+ * `this.<prop>` the Module must call them on. A flat signature dump lets the model call a WorkflowActions
+ * helper on this.actions (the live `this.actions.searchWithOptionalSubmit is not a function` crash);
+ * qualifying every method by its owning property removes that ambiguity at generation time. Read live, so
+ * the contract always matches the framework being generated into.
+ */
+function wrapperContract(fw: string): string {
+  const blocks: string[] = [];
+  for (const w of WRAPPER_UTILS) {
+    const src = safeRead(join(fw, w.rel));
+    if (!src) continue;
+    const sigs = [...new Set(extractPublicMethods(src).map((mm) => `${mm.name}(${mm.params})`))];
+    if (sigs.length) blocks.push(`- this.${w.prop}.<method>()  →  ${w.className}: ${sigs.join('; ')}`);
+  }
+  if (!blocks.length) return '(no wrapper utils found)';
+  return [
+    'Call each method ONLY on the property it is listed under. A method listed under one wrapper does NOT',
+    'exist on the others — calling e.g. this.actions.searchWithOptionalSubmit (a WorkflowActions method)',
+    'crashes at runtime with "is not a function". Construct every wrapper you use in the Module constructor',
+    '(this.actions = new Actions(page); this.workflowActions = new WorkflowActions(page)). If a capability is',
+    'listed on NO wrapper, implement it as a method ON THE NEW MODULE using the primitives below — never invent a util method.',
+    ...blocks,
+  ].join('\n');
 }
 
 /** Read one representative Page/Module/Spec so generated files match the repo's exact style. */
@@ -249,8 +303,7 @@ function prepopulatedFieldEntries(trace: AgentStep[]): PrepopulatedEntry[] {
 
 function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
   const ex = readExemplars(fw);
-  const wrappers = ['src/utils/Actions.ts', 'src/utils/WaitHelper.ts', 'src/utils/Logger.ts', 'src/utils/WorkflowActions.ts']
-    .map((r) => wrapperSignatures(fw, r)).filter(Boolean).join('\n');
+  const wrappers = wrapperContract(fw);
   const caps = loadCapabilities(fw);
   const types = (job.testTypes && job.testTypes.length) ? job.testTypes.join(', ') : 'positive (happy path)';
   const prepopulated = prepopulatedFieldLabels(trace);
@@ -274,8 +327,8 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '## App-prepopulated fields (initial live form snapshot)',
     prepopulated.length ? `${prepopulated.join(', ')} — the application already supplied their values before any agent interaction.` : '(none observed)',
     '',
-    '## Wrapper API contract (call ONLY these methods; never invent a wrapper method)',
-    wrappers || '(no wrapper utils found)',
+    '## Wrapper API contract — call each method ONLY on the property it is listed under; never invent a wrapper method',
+    wrappers,
     '',
     '## Style exemplars — match this EXACT structure',
     '### Page (locators ONLY — no workflows, no assertions)',
@@ -290,10 +343,10 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- LOCATOR STRATEGY (Playwright official priority — pick the HIGHEST-priority strategy the element ACTUALLY supports; fall back only when a higher one does not exist): (1) getByTestId() when the app exposes data-testid/data-test/data-qa; (2) getByRole(role, { name }) for interactive elements (button/link/textbox/checkbox/radio/menuitem/option) — the PRIMARY strategy; (3) getByLabel() for form fields with a real <label>; (4) getByPlaceholder() only when no label/role/testid; (5) getByText({ exact: true }) for static content/links; (6) getByAltText() for images; (7) CSS/XPath LAST RESORT and only SCOPED/chained (e.g. locator(".row", { hasText: "Admin" }).getByRole("textbox")). Default to ONE strategy per element; do NOT stack.',
     '- NEVER write a locator containing an auto-generated id/hash/framework class (e.g. #react-select-3, .MuiButton-root-482, .css-1a2b3c, numeric-suffix classes) — they change every build. Prefer role/label/text even when such an id is visible. NEVER a bare brittle class name.',
     '- DISAMBIGUATION: if a role/text locator matches MANY elements (tables, repeated rows, form fields with no distinct name), SCOPE from a stable parent (row/section/dialog/labelled group) and chain. For every [AMBIGUOUS ...] trace entry, use the supplied EXACT label-anchored Page locator; it was derived by climbing the live snapshot tree to the nearest distinguishing label and then selecting that label\'s nearest container with the target control. NEVER use .nth(), .first(), or .last() in a generated Page locator.',
-    '- DROPDOWNS: detect from the live snapshot whether it is a native <select> (use Actions.selectOption) or a custom JS dropdown (React-select/MUI/PrimeNG/OXD — click-to-open then getByRole("option", { name }) via selectDropdownOption/searchAndSelectOption). Never assume one pattern.',
+    '- DROPDOWNS: detect from the live snapshot whether it is a native <select> (use this.actions.selectOption) or a custom JS dropdown (React-select/MUI/PrimeNG/OXD — click-to-open then getByRole("option", { name }) via this.workflowActions.selectDropdownOption / this.workflowActions.searchAndSelectOption). Never assume one pattern.',
     '- IFRAMES/SHADOW DOM: if the target is inside an iframe or shadow root (per the snapshot), use frameLocator()/shadow-piercing correctly — never fall back to a wrong-scope locator. WAITING: rely on Playwright auto-waiting; never use fixed sleeps — only waitFor(state) for genuinely async/animated UI, with a `// reason:` note.',
     '- Every generated Page locator MUST be based on the verified live explore evidence. Copy a non-positional echoed locator verbatim. When an action has an [AMBIGUOUS ...] scope hint, use its exact supplied locator instead of the CLI echo (which may use .first(), .last(), or .nth()). Never re-guess a locator.',
-    '- Module = workflow methods using this.actions.* and this.logger.step(); construct its Page + Actions from the page in the constructor. Never put a raw locator or an assertion in a Module.',
+    '- Module = workflow methods that call ONLY the wrapper properties + methods listed in the Wrapper API contract above, each on its OWN property (this.actions.* for primitive interactions, this.workflowActions.* for shared interaction helpers, this.waitHelper.* for waits, this.logger.* for logging). CONSTRUCT every wrapper you call in the constructor from the page (e.g. this.actions = new Actions(page); this.workflowActions = new WorkflowActions(page); this.waitHelper = new WaitHelper(page)) — only the ones you actually use. A method listed under one wrapper does NOT exist on another: calling a WorkflowActions helper on this.actions crashes at runtime with "is not a function". Never put a raw locator or an assertion in a Module.',
     '- Spec = import { test, expect } from "../fixtures"; instantiate the new Module directly with the test\'s page, e.g. `const m = new <Feature>Module(page)`. Put all assertions here.',
     '- FIXTURES: the test callback may destructure ONLY { page } plus fixtures already listed in "Fixtures already registered" above (e.g. loginModule for shared login). This feature\'s brand-new Page/Module are NOT fixtures — codegen does not edit src/fixtures/index.ts — so NEVER write `async ({ <feature>Page })` or `async ({ <feature>Module })` (Playwright fails with "unknown parameter"). When the spec needs the new Page for an assertion, instantiate it directly in the test body: `const <feature>Page = new <Feature>Page(page)`; likewise `const <feature>Module = new <Feature>Module(page)`. The reuse exemplar destructures ITS OWN registered fixtures — do not copy that for a not-yet-registered feature.',
     '- For login, the Module\'s login method takes (username, password); the spec passes credentials("app"). Do NOT hardcode credentials.',
@@ -304,7 +357,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- NAVIGATION URL TYPE (hard rule — the wrong type crashes at runtime with "page.goto: url: expected string, got object"): page.goto() takes a URL STRING, so ALWAYS pass urlFor(routes.X). urlRegex(routes.X) returns a RegExp and is valid ONLY for expect(page).toHaveURL(urlRegex(routes.X)) and page.waitForURL(urlRegex(routes.X)). NEVER page.goto(urlRegex(...)), page.goto(/.../), page.goto(new RegExp(...)) or a bare page.goto(routes.X). Feature navigation belongs in the Module goto() using urlFor(routes.X).',
     '- ONE NAVIGATION PATH — no duplicate nav: test.beforeEach does SHARED LOGIN ONLY (loginModule.goto() + loginModule.login(credentials("app"))). Feature navigation lives in the feature Module.goto() called INSIDE each test. Do NOT also navigate to the feature from beforeEach (no page.goto(feature) there) when a test calls <feature>Module.goto() — that double-navigates. Pick the Module.goto() as the single authoritative path.',
     '- SEQUENTIAL, APPEND-ONLY numbering: each spec file owns its own TC_001, TC_002… sequence. When a spec for this feature already exists, read the highest existing TC_XXX and number NEW cases from the next free number (existing TC_001–TC_003 → new TC_004); never renumber, reorder, or overwrite an existing test() block — append after them and return the FULL file with every existing test kept verbatim.',
-    '- Reuse SHARED METHODS/HELPERS, not just locators. Use the shared WorkflowActions/Actions helpers for EVERY common interaction family instead of bespoke code: custom dropdown -> selectDropdownOption(trigger, optionText); searchable/autocomplete -> searchAndSelectOption(input, text, optionText?); native <select> -> Actions.selectOption; checkbox -> setCheckbox(target, checked); radio -> selectRadioOption(label); date field -> selectDate(input, value); table read -> readTableCell(table, rowText, colIndex); table row action -> clickInRow(table, rowText, controlName); table row checkbox -> setRowCheckbox(table, rowText, checked); search box -> searchWithOptionalSubmit. If NONE of the existing helpers fits a new interaction, implement it as a parameterized METHOD ON THE NEW MODULE (workflow logic belongs in the Module) — NEVER inline interaction logic in the spec, and NEVER call or invent a WorkflowActions/Actions method that is not already in the Wrapper API contract (the shared utils are a FIXED API on this path; this JSON output cannot emit a modified util file). Reuse one helper for repeated flows (login/logout/common assertions) too.',
+    '- Reuse SHARED METHODS/HELPERS, not just locators — but ONLY methods present in the Wrapper API contract, each called on its listed property. Typical mappings WHEN the contract lists them: custom dropdown -> this.workflowActions.selectDropdownOption(trigger, optionText); searchable/autocomplete -> this.workflowActions.searchAndSelectOption(input, text, optionText?); native <select> -> this.actions.selectOption(target, value); checkbox -> this.workflowActions.setCheckbox(target, checked); radio -> this.workflowActions.selectRadioOption(label); date field -> this.workflowActions.selectDate(input, value); table read -> this.workflowActions.readTableCell(table, rowText, colIndex); table row action -> this.workflowActions.clickInRow(table, rowText, controlName); table row checkbox -> this.workflowActions.setRowCheckbox(table, rowText, checked); search box -> this.workflowActions.searchWithOptionalSubmit(input, value, submit?). If NONE of the contract helpers fits a new interaction, implement it as a parameterized METHOD ON THE NEW MODULE (workflow logic belongs in the Module) — NEVER inline interaction logic in the spec, NEVER call a listed method on the wrong property, and NEVER invent a wrapper method that is not in the Wrapper API contract (the shared utils are a FIXED API on this path; this JSON output cannot emit a modified util file). Reuse one helper for repeated flows (login/logout/common assertions) too.',
     '- TEST DATA: read every value via the testData accessor (never hardcode usernames/names/roles/expected text in a spec). Reuse an existing matching entry before adding a new one; only add genuinely-new keys. Keep every existing testData key.',
     '- APP-PREPOPULATED FIELDS: every field listed in the App-prepopulated fields section is an application-owned default. Do NOT create a Page locator for it, add testData for it, fill/clear/type it, include it in uniqueFields, or assert its literal value. Leave it untouched unless the approved test case explicitly requests custom entry.',
     '- UNIQUE CONSTRAINTS: identifiers, usernames, email addresses, codes, references, and record numbers must NEVER use a fixed final value. Store only a readable seed in testData, import uniqueValue from "../utils/UniqueData" (add retryOnCollision only in mode B below), and generate a FRESH value for EACH submit via uniqueValue(seed, { kind, length }). TWO modes: (A) DEFAULT — if the live trace NEVER showed an inline duplicate/"already exists" validation for the field, just fill the fresh uniqueValue() and Save (NO retry, NO collision locator); return a uniqueFields descriptor with only testDataPath+kind (+length) and OMIT collisionPageField/collisionMessage. (B) COLLISION RETRY — ONLY when the live trace ACTUALLY exposed an inline collision validation for the field, wrap the submit in retryOnCollision({ page: this.page, successUrl: urlRegex(routes.X), collision: this.<page>.collisionLocator, makeValue: () => uniqueValue(seed, { kind, length }), submit: async (value) => { fill the field with value; click Save; }, collisionMessage }); the Page MUST expose that exact live collision locator, retry ONLY when it appears (all other errors/timeouts fail), and do NOT add a second waitForURL after the helper. Return one uniqueFields descriptor per unique field so codegen can enforce this contract. HARD REQUIREMENT: every uniqueFields entry you declare MUST have a matching uniqueValue(seed, { kind, length }) call AND an `import { uniqueValue } from "../utils/UniqueData"` in the Module that actually fills that field — declaring a uniqueFields descriptor without wiring uniqueValue() into the Module is REJECTED; if you truly cannot make a field fresh, drop its uniqueFields entry entirely rather than leaving it unimplemented.',
@@ -440,6 +493,84 @@ export function assertSingleNavigationPath(spec: { file: string; content: string
       `also navigates (page.goto()/Module.goto()). Keep ONE path: beforeEach performs SHARED LOGIN ONLY ` +
       `(loginModule.goto() + loginModule.login(credentials("app"))), and the feature Module.goto() performs ` +
       `feature navigation inside each test. Remove the feature navigation from beforeEach.`,
+    );
+  }
+}
+
+/**
+ * Anti-hallucination gate for FRAMEWORK (wrapper) APIs. Every `this.<wrapperProp>.<method>()` call in the
+ * generated Page/Module/Spec MUST target a method that actually exists on that wrapper's source class.
+ *
+ * WHY THIS IS NECESSARY: generated code runs transpile-only (tsx / Playwright's esbuild — NO type-check),
+ * so a method invoked on the WRONG wrapper (the live failure: this.actions.searchWithOptionalSubmit, which
+ * is really a WorkflowActions method) compiles fine and only explodes at RUNTIME with "… is not a function".
+ * This gate reads the ACTUAL wrapper sources under `fw` (the single source of truth shared with the prompt
+ * contract), rejects any call whose method is absent from the wrapper it targets, and — when the method
+ * lives on a DIFFERENT wrapper — tells the model the correct property so the self-repair loop fixes it on
+ * the next attempt. Generic across frameworks; never app-specific. A framework exposing no wrapper utils is
+ * a no-op, and calls on non-wrapper properties (this.page, this.<x>Page, Module self-calls) are ignored.
+ */
+export function assertWrapperMethodsExist(fw: string, artFiles: Array<{ file: string; content: string }>): void {
+  // Real public methods per wrapper class + the convention property each is called on — read live so the
+  // allowed API always matches the framework being generated into.
+  const methodsByClass = new Map<string, Set<string>>();
+  const conventionProps = new Map<string, string>();
+  for (const w of WRAPPER_UTILS) {
+    const names = wrapperMethodNames(fw, w.rel);
+    if (!names.size) continue;
+    methodsByClass.set(w.className, names);
+    conventionProps.set(w.prop, w.className);
+  }
+  if (!methodsByClass.size) return; // framework exposes no wrapper utils — nothing to enforce.
+
+  // The wrapper (if any) that DOES define a given method — used to point a misattributed call at the
+  // right property (e.g. searchWithOptionalSubmit → this.workflowActions).
+  const ownerOf = (method: string): { className: string; prop: string } | undefined => {
+    const w = WRAPPER_UTILS.find((x) => methodsByClass.get(x.className)?.has(method));
+    return w ? { className: w.className, prop: w.prop } : undefined;
+  };
+
+  const violations: string[] = [];
+  const seen = new Set<string>();
+  for (const { file, content } of artFiles) {
+    if (!content) continue;
+    // Map each `this.<prop>` to the wrapper class it is actually constructed from in THIS file (so a
+    // non-conventional property name is still validated against the right class); seed with the naming
+    // convention as a backstop for a wrapper used without an explicit `new` in this file.
+    const propClass = new Map<string, string>(conventionProps);
+    for (const a of content.matchAll(/this\.([A-Za-z_]\w*)\s*=\s*new\s+([A-Za-z_]\w*)\s*\(/g)) {
+      if (methodsByClass.has(a[2])) propClass.set(a[1], a[2]);
+    }
+    for (const a of content.matchAll(/this\.([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\.create\s*\(/g)) {
+      if (methodsByClass.has(a[2])) propClass.set(a[1], a[2]);
+    }
+    // Validate every wrapper method call: this.<prop>.<method>( … ).
+    for (const c of content.matchAll(/this\.([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*\(/g)) {
+      const [, prop, method] = c;
+      const className = propClass.get(prop);
+      if (!className) continue; // not a wrapper property (this.page, this.<x>Page, a Module self-call) — skip.
+      if (methodsByClass.get(className)!.has(method)) continue; // real method on the right wrapper — OK.
+      const key = `${file}::${prop}.${method}`;
+      if (seen.has(key)) continue; // report each distinct violation once.
+      seen.add(key);
+      const owner = ownerOf(method);
+      const fix = owner
+        ? `It exists on ${owner.className} — call this.${owner.prop}.${method}(...) instead (construct this.${owner.prop} = new ${owner.className}(page) in the Module constructor).`
+        : `No wrapper (${[...methodsByClass.keys()].join(', ')}) defines "${method}". Use an existing method that performs this action, or implement the workflow as a NEW parameterized method ON THE MODULE using existing primitives — do NOT invent a util method.`;
+      violations.push(
+        `  - ${file}: this.${prop}.${method}(...) — "${method}" does NOT exist on ${className}. ${fix}\n` +
+        `    ${className} methods: ${[...methodsByClass.get(className)!].sort().join(', ')}`,
+      );
+    }
+  }
+
+  if (violations.length) {
+    throw new Error(
+      'Codegen: generated code calls framework wrapper method(s) that do not exist on the wrapper they target ' +
+      '(the shared utils are a FIXED API — call ONLY methods that exist on the specific wrapper, and never invent one):\n' +
+      violations.join('\n') +
+      '\nFix by calling each method on the property that owns it (shown above), or by implementing the missing ' +
+      'behaviour as a Module method built from existing primitives. Re-emit the COMPLETE corrected artifact.',
     );
   }
 }
@@ -718,6 +849,11 @@ export async function generateFromTrace(
     assertUniqueFieldsHandled(candidate);
     assertNoUndefinedFixtures(fw, candidate);
     assertTraceCoverage(candidate, job.coverageFields);
+    assertWrapperMethodsExist(fw, [
+      { file: candidate.page.file || 'Page', content: candidate.page.content },
+      { file: candidate.module.file || 'Module', content: candidate.module.content },
+      { file: candidate.spec.file || 'Spec', content: candidate.spec.content },
+    ]);
     return candidate;
   };
 
