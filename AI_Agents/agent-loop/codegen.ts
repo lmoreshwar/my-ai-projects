@@ -1941,6 +1941,71 @@ export function authorScenariosFromDiscovery(
   return scenarios.slice(0, maxCases);
 }
 
+/**
+ * Author a READ/VIEW verification scenario from the PRIMARY trace (prerequisite + feature steps) when
+ * the feature has no fillable form to discover — e.g. "View Cart", "View Account", "Open Dashboard".
+ * The requested feature was reached and its content verified live (feature-boundary acceptance), so we
+ * emit ONE ready scenario whose Automation Trace is the real navigation the walk performed plus a
+ * terminal verification of the target's content. Fully generic: every step is derived from the live
+ * trace and the feature name — no application- or feature-specific rules. Always yields a non-empty
+ * Automation Trace so the plan is never empty for a successfully-verified read feature.
+ */
+export function authorFeatureVerificationScenarios(
+  job: CodegenJob,
+  primaryTrace: AgentStep[],
+  applicationSummary?: ApplicationSummary | null,
+): Scenario[] {
+  const feat = job.feature || 'feature';
+  // Navigation the walk performed to reach the target: real clicks, excluding credential/login submits.
+  const navSteps: ScenarioStep[] = [];
+  const seen = new Set<string>();
+  for (const s of primaryTrace) {
+    if (s.tool !== 'click') continue;
+    const label = traceStepFieldLabel(s) || locatorRoleName(s.locator);
+    if (!label) continue;
+    const key = coverageKey(label);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    navSteps.push({
+      order: navSteps.length + 1,
+      action: `Click ${label}`,
+      target: label,
+      type: 'click',
+      classification: 'feature-action',
+      liveLocator: s.locator || undefined,
+      snapshotEvidence: s.context,
+    });
+  }
+
+  // Terminal verification: the acceptance evidence is the last on-target snapshot (feature-boundary stop).
+  const acceptance = [...primaryTrace].reverse().find((s) => s.tool === 'snapshot' && s.context);
+  const targetUrl = applicationSummary?.finalUrl || acceptance?.url || traceSuccessUrl(primaryTrace) || job.url;
+  const verifyStep: ScenarioStep = {
+    order: navSteps.length + 1,
+    action: `Verify ${feat} is displayed with its expected content`,
+    target: feat,
+    type: 'assert',
+    classification: 'feature-action',
+    expected: targetUrl
+      ? `The ${feat} page (${targetUrl}) is displayed and its content is present.`
+      : `The ${feat} is displayed and its content is present.`,
+    snapshotEvidence: acceptance?.context,
+  };
+
+  const steps = [...navSteps, verifyStep];
+  const scenario: Scenario = {
+    id: 'TC_001',
+    title: `Verify ${feat} contents`,
+    type: 'positive',
+    ready: true,
+    blocked: false,
+    steps,
+    expectedResults: verifyStep.expected || `The ${feat} is displayed with its expected content.`,
+    coverage: { fieldIds: [], fieldLabels: navSteps.map((s) => s.target) },
+  };
+  return [scenario];
+}
+
 /** Legacy PlanCase projection of the richer scenarios, so older clients still render a plan list. */
 export function scenariosToCases(scenarios: Scenario[]): PlanCase[] {
   return scenarios.map((s) => ({

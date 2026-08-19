@@ -11,8 +11,9 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runAgentLoop } from './agent-loop';
-import { authorPlanFromTrace, authorScenariosFromDiscovery, scenariosToCases, type CodegenJob, type BlastPlanV2 } from './codegen';
+import { authorPlanFromTrace, authorScenariosFromDiscovery, authorFeatureVerificationScenarios, scenariosToCases, type CodegenJob, type BlastPlanV2 } from './codegen';
 import { dependencyResolutionContext, resolveCapabilityDependencies } from './capability-dependencies';
+import { detectFeatureBoundary, splitTrace, resolveFeatureStatus } from './feature-boundary';
 
 const log = (l: string): void => console.log(l);
 
@@ -44,16 +45,31 @@ When the feature needs one of these states, establish it as setup before verifyi
     dependencyResolution: dependencies,
   };
 
-  // Build the richer V2 plan when discovery ran; scenarios are the selectable, evidence-linked units.
-  const scenarios = (walk.status === 'passed' && discovery)
-    ? authorScenariosFromDiscovery(job, discovery, walk.steps)
+  // FEATURE BOUNDARY / TARGET COMPLETION (generic): a VERIFIED feature target is a SUCCESS even when
+  // the walk later wandered into a downstream capability. The PRIMARY trace (prerequisite + feature,
+  // no downstream) is what we author from, and the effective status is never a failure after success.
+  const boundary = detectFeatureBoundary(feature, url, walk.steps);
+  const effStatus = resolveFeatureStatus(walk.status, boundary);
+  const primaryTrace = boundary.acceptanceVerified ? splitTrace(walk.steps, boundary).primaryTrace : walk.steps;
+  if (boundary.acceptanceVerified && walk.status !== 'passed') {
+    log(`[explore] feature boundary: ${boundary.reason} — treating exploration as PASSED (downstream steps ignored).`);
+  }
+
+  // Build the richer V2 plan. When discovery captured a fillable form, author create/fill scenarios.
+  // Otherwise, for a verified READ/VIEW feature (e.g. View Cart), author a view-verification scenario
+  // from the primary trace so the plan always has a ready, automation-ready scenario.
+  let scenarios = (effStatus === 'passed' && discovery && discovery.inventory.some((it) => !it.isAction))
+    ? authorScenariosFromDiscovery(job, discovery, primaryTrace)
     : [];
+  if (!scenarios.length && effStatus === 'passed' && boundary.acceptanceVerified) {
+    scenarios = authorFeatureVerificationScenarios(job, primaryTrace, discovery?.applicationSummary ?? null);
+  }
 
   // Legacy PlanCase list: prefer the scenario projection; fall back to the LLM author for non-discovery walks.
   let cases = scenariosToCases(scenarios);
-  if (!cases.length && walk.status === 'passed' && walk.steps.length) {
-    cases = await authorPlanFromTrace(fw, job, walk.steps, log);
-  } else if (walk.status !== 'passed') {
+  if (!cases.length && effStatus === 'passed' && primaryTrace.length) {
+    cases = await authorPlanFromTrace(fw, job, primaryTrace, log);
+  } else if (effStatus !== 'passed') {
     log(`[explore] The flow could not be verified: ${walk.summary}`);
     for (const d of walk.diagnostics ?? []) {
       log(`[explore] ROOT CAUSE (${d.category}): ${d.headline}`);
@@ -63,7 +79,7 @@ When the feature needs one of these states, establish it as setup before verifyi
 
   const plan: BlastPlanV2 = {
     version: 2, feature, url, testTypes, maxCases,
-    status: walk.status, summary: walk.summary,
+    status: effStatus, summary: walk.summary,
     applicationSummary: discovery?.applicationSummary ?? null,
     inventory: discovery?.inventory ?? [],
     states: discovery?.states ?? [],
@@ -72,7 +88,7 @@ When the feature needs one of these states, establish it as setup before verifyi
     discoveryVersion: discovery?.discoveryVersion,
     completeness: discovery?.completeness ?? null,
     scenarios,
-    trace: walk.steps,
+    trace: primaryTrace,
     cases,
   };
 

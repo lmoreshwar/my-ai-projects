@@ -45,6 +45,10 @@ import {
   collectPageDiagnostics, classifyFailure, formatDiagnosticsReport,
   type FailureDiagnosis,
 } from './page-diagnostics';
+import {
+  featureTokens, featureIntentIsView, pathMatchesFeature, snapshotIdentityMatchesFeature,
+  snapshotHasContent, type FeatureBoundaryResult,
+} from './feature-boundary';
 
 export interface AgentLoopOptions {
   /** Feature name + concrete instructions describing what to explore/verify. */
@@ -129,6 +133,8 @@ export interface AgentLoopResult {
   discovery?: DiscoveryResult;
   /** Root-cause diagnoses captured whenever expected feature content failed to hydrate. */
   diagnostics?: FailureDiagnosis[];
+  /** Set when the requested feature target was reached + verified and exploration STOPPED there. */
+  featureBoundary?: FeatureBoundaryResult;
 }
 
 const SYSTEM_PROMPT = [
@@ -144,6 +150,7 @@ const SYSTEM_PROMPT = [
   '6. CREATE FLOWS: when the INITIAL live form snapshot marks a field as app-prepopulated, never fill, clear, assert a fixed value for, or otherwise overwrite it. For an EMPTY editable identifier, username, email, code, reference, or record-number field, fill a fresh value before Save/Submit. After Save/Submit, call snapshot (not find) and verify the real outcome. If the live page shows a duplicate/collision validation, record that message, change only that empty unique value, submit again, and snapshot the outcome. Never finish passed while still on the form after a failed submit.',
   '7. READ-ONLY UNTIL THE SINGLE SUCCESS SUBMIT: explore, snapshot, and fill fields freely, but click a destructive/persistent control (Save, Submit, Create, Delete, Logout) EXACTLY ONCE — the final controlled success submit after every field is filled. Never delete or repeat destructive actions.',
   '8. When the goal is achieved (or no useful action remains), call `finish` with status "passed" (goal verified), "failed" (a real defect/blocker), or "incomplete".',
+  '9. FEATURE BOUNDARY: the goal names ONE requested feature. As soon as you have reached that feature\'s own page/state and confirmed its expected content is present, call `finish` with "passed". Do NOT continue into downstream or unrelated capabilities (e.g. after viewing a cart, do not proceed into checkout/payment; after opening a record, do not start editing an unrelated one). Stop at the requested feature.',
   '',
   'Work efficiently and do not narrate — just make tool calls.',
 ].join('\n');
@@ -712,12 +719,20 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   let discoveryRan = false;
   const filledLabels = new Set<string>();
 
+  // FEATURE BOUNDARY / TARGET COMPLETION state (generic). For a read/view feature we STOP the walk
+  // the moment its target renders content, so exploration never wanders into downstream capabilities.
+  const featureText = opts.feature || opts.goal;
+  const viewIntent = featureIntentIsView(featureText);
+  const boundaryTokens = featureTokens(featureText);
+  let earlyStopped = false;
+  let featureBoundary: FeatureBoundaryResult | undefined;
+
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: `# Feature URL\n${opts.url}\n\n# Goal\n${opts.goal}` },
   ];
 
-  const finish = (status: AgentLoopResult['status'], summary: string): AgentLoopResult => ({ status, summary, steps, discovery, diagnostics });
+  const finish = (status: AgentLoopResult['status'], summary: string): AgentLoopResult => ({ status, summary, steps, discovery, diagnostics, featureBoundary });
 
   try {
     // Open a headless session, optionally load a saved auth state, then land on the feature URL.
@@ -959,6 +974,37 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         if (discoveryGuidance) toolResult += '\n\nNOTE: the page was scrolled during discovery — call snapshot again to get fresh refs before filling.';
         log(`[agent] snapshot → ${refs.length} interactable element(s)`);
         if (pageUrl) lastPageUrl = pageUrl;
+
+        // FEATURE BOUNDARY / TARGET COMPLETION (generic, evidence-based). For a read/view feature,
+        // once the walk is ON the requested target (its path OR a heading names the feature) AND that
+        // target shows real content, the feature is DONE — STOP before any downstream capability
+        // (e.g. View Cart must not proceed into Checkout). Gated on viewIntent so create/fill flows
+        // still run to their own submit, and on snapshotHasContent so an empty target never stops early.
+        if (
+          viewIntent && !earlyStopped && boundaryTokens.length &&
+          (pathMatchesFeature(snapshotUrl, boundaryTokens) || snapshotIdentityMatchesFeature(yaml, boundaryTokens)) &&
+          snapshotHasContent(yaml)
+        ) {
+          earlyStopped = true;
+          steps.push({
+            tool: 'snapshot',
+            args: { acceptance: true, reason: 'feature-target-verified' },
+            context: redact(yaml, secrets).slice(0, 5000),
+            url: snapshotUrl,
+            result: redact(raw, secrets).slice(0, 5000),
+          });
+          featureBoundary = {
+            featureTokens: boundaryTokens,
+            view: true,
+            featureStartIndex: steps.length - 1,
+            completionIndex: steps.length - 1,
+            targetUrl: snapshotUrl,
+            acceptanceVerified: true,
+            reason: `feature target ${snapshotUrl} reached and content verified — stopped before downstream`,
+          };
+          log(`[agent] feature target reached and verified (${snapshotUrl}) — stopping before downstream exploration.`);
+          return finish('passed', `Feature target ${snapshotUrl} reached and its contents verified — exploration stopped before downstream steps.`);
+        }
       } else {
         const locator = extractRanLocator(raw);
         const pageUrl = extractPageUrl(raw);
