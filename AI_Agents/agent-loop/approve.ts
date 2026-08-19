@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { generateFromTrace, selectTraceForScenarios, type CodegenJob, type Scenario } from './codegen';
 import { verifySpec, commitAndOpenPr } from './generate';
 import type { AgentStep } from './agent-loop';
+import type { FieldInventoryItem, StateTransition } from './discovery';
 
 const log = (l: string): void => console.log(l);
 
@@ -19,6 +20,9 @@ interface Plan {
   feature: string; url: string; testTypes?: string[]; maxCases?: number;
   trace?: AgentStep[];
   scenarios?: Scenario[];
+  // LIVE discovery evidence carried from phase 1 so codegen grounds locators/options (optional).
+  inventory?: FieldInventoryItem[];
+  transitions?: StateTransition[];
   completeness?: { passed?: boolean; missing?: string[] } | null;
 }
 
@@ -56,7 +60,13 @@ async function main(): Promise<void> {
     log(`[approve] ${chosen.length} scenario(s) selected → ${coverageFields.length} executable Automation Trace step(s) to cover from ${trace.length} verified trace step(s).`);
   }
 
-  const job: CodegenJob = { feature: plan.feature, url: plan.url, testTypes: plan.testTypes, maxCases: plan.maxCases, coverageFields };
+  // Carry the LIVE discovery evidence (inventory + state transitions) from the plan into codegen so it
+  // grounds every locator/option in what was actually observed. Absent in legacy plans → undefined.
+  const discoveryEvidence =
+    (Array.isArray(plan.inventory) && plan.inventory.length) || (Array.isArray(plan.transitions) && plan.transitions.length)
+      ? { inventory: plan.inventory ?? [], transitions: plan.transitions ?? [] }
+      : undefined;
+  const job: CodegenJob = { feature: plan.feature, url: plan.url, testTypes: plan.testTypes, maxCases: plan.maxCases, coverageFields, discoveryEvidence };
   log(`[approve] Generating from ${trace.length} verified step(s) for "${job.feature}"…`);
   const art = await generateFromTrace(fw, job, trace, log);
 

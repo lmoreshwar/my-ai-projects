@@ -56,6 +56,9 @@ async function main(): Promise<void> {
     applicationSummary: discovery?.applicationSummary ?? null,
     inventory: discovery?.inventory ?? [],
     states: discovery?.states ?? [],
+    // LIVE state-transition evidence (dropdown options, date-picker, dependent fields) for codegen.
+    transitions: discovery?.transitions ?? [],
+    discoveryVersion: discovery?.discoveryVersion,
     completeness: discovery?.completeness ?? null,
     scenarios,
     trace: walk.steps,
@@ -66,7 +69,7 @@ async function main(): Promise<void> {
   writeFileSync(outFile, JSON.stringify(plan, null, 2));
   const evidenceFile = join(outDir, 'blast-explore-evidence.json');
   writeFileSync(evidenceFile, JSON.stringify({ status: plan.status, summary: plan.summary, trace: plan.trace, completeness: plan.completeness, diagnostics: walk.diagnostics ?? [] }, null, 2));
-  log(`[explore] Wrote plan v2 (${scenarios.length} scenario(s), ${plan.inventory.length} control(s), ${plan.trace.length} verified step(s)) → ${outFile}`);
+  log(`[explore] Wrote plan v2 (${scenarios.length} scenario(s), ${plan.inventory.length} control(s), ${(plan.transitions ?? []).length} transition(s), ${plan.trace.length} verified step(s)) → ${outFile}`);
 
   // Always exit 0 so the plan artifact uploads; the website reads plan.status to
   // decide WaitingForApproval (cases present) vs Blocked (no verified flow).

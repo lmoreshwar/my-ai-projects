@@ -79,8 +79,9 @@ const ADD_CANDIDATE_SNAPSHOT = `
 function discoveryFrom(snapshot: string, feature: string): DiscoveryResult {
   const inventory = parseInventory(snapshot);
   return {
+    discoveryVersion: 2,
     applicationSummary: { application: 'OrangeHRM', feature, entryUrl: '', finalUrl: '', pageTitle: '', headings: [], authenticated: true },
-    inventory, states: [], scrolls: 1, snapshots: 1,
+    inventory, states: [], transitions: [], scrolls: 1, snapshots: 1,
     stoppedReason: 'stable',
     completeness: { passed: true, checks: [], missing: [] },
   };

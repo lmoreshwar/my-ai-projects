@@ -843,13 +843,17 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
             try {
               discovery = await runDiscovery(session, {
                 featureUrl: snapshotUrl, feature: opts.feature || opts.goal.slice(0, 60),
-                log, exploreStates: process.env.DISCOVER_STATES === '1',
+                log,
+                // Deep-crawl (bounded, reversible state-transition capture) is ON by default so codegen
+                // gets live dropdown options / date-picker / dependent-field evidence. DEEP_CRAWL=0 opts out.
+                deepCrawl: process.env.DEEP_CRAWL !== '0',
+                exploreStates: process.env.DISCOVER_STATES === '1',
               });
               discoveredInventory = discovery.inventory;
               discoveryGuidance = inventoryGuidance(discoveredInventory);
               // Discovery moved the page (scroll/goto) — the model must re-snapshot before acting.
               liveRefs = new Set();
-              log(`[agent] discovery complete — ${discoveredInventory.length} control(s); completeness ${discovery.completeness.passed ? 'PASS' : 'gaps: ' + discovery.completeness.missing.join('; ')}`);
+              log(`[agent] discovery complete — ${discoveredInventory.length} control(s), ${discovery.transitions.length} transition(s); completeness ${discovery.completeness.passed ? 'PASS' : 'gaps: ' + discovery.completeness.missing.join('; ')}`);
             } catch (e) {
               log(`[agent] discovery skipped: ${(e as Error).message}`);
             }

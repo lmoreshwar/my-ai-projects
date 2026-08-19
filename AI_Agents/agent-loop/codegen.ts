@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import OpenAI from 'openai';
 import { deriveLocatorScopeHint, type AgentStep, type LocatorScopeHint } from './agent-loop';
 import type {
-  FieldInventoryItem, LocatorEvidence, DiscoveryState, CompletenessGate, ApplicationSummary, DiscoveryResult,
+  FieldInventoryItem, LocatorEvidence, DiscoveryState, CompletenessGate, ApplicationSummary, DiscoveryResult, StateTransition,
 } from './discovery';
 
 // Some gateways force a default reasoning_effort that conflicts with structured/tool calls on
@@ -45,6 +45,18 @@ export interface CodegenJob {
    * undefined = legacy behaviour (use the full trace, no coverage gate).
    */
   coverageFields?: string[];
+  /**
+   * Enriched LIVE discovery evidence (full-screen inventory + captured state transitions) so codegen
+   * grounds every locator/option in what was actually OBSERVED, never inferred. Optional — legacy
+   * callers omit it and codegen falls back to the verified trace alone.
+   */
+  discoveryEvidence?: DiscoveryEvidence;
+}
+
+/** The live discovery evidence codegen consumes: durable control inventory + before→after transitions. */
+export interface DiscoveryEvidence {
+  inventory: FieldInventoryItem[];
+  transitions: StateTransition[];
 }
 
 export interface GeneratedArtifacts {
@@ -82,6 +94,8 @@ export interface ScenarioStep {
   snapshotEvidence?: string; // the a11y-tree context proving the control exists
   blocked?: boolean;     // true = present in scope but NOT executable (e.g. upload with no fixture)
   blockedReason?: string;
+  /** Live dropdown/option values captured by deep-crawl for a select step (evidence, never invented). */
+  optionEvidence?: string[];
 }
 
 /** A proposed, evidence-backed scenario the user can select for automation in the approval UI. */
@@ -109,6 +123,10 @@ export interface BlastPlanV2 {
   applicationSummary: ApplicationSummary | null;
   inventory: FieldInventoryItem[];
   states: DiscoveryState[];
+  // Optional (backward compatible): LIVE before→action→after state-transition evidence + its schema
+  // version. Older plans predate deep-crawl and simply omit these; readers must treat them as optional.
+  transitions?: StateTransition[];
+  discoveryVersion?: number;
   completeness: CompletenessGate | null;
   scenarios: Scenario[];
   trace: AgentStep[];                   // the VERIFIED success trace — evidence for codegen
@@ -285,6 +303,34 @@ function renderTrace(trace: AgentStep[]): string {
   }).join('\n');
 }
 
+/** Render the LIVE discovery inventory as durable locator + option evidence (never invented). */
+function renderDiscoveryInventory(ev?: DiscoveryEvidence): string {
+  const inv = (ev?.inventory || []).filter((it) => !it.isAction);
+  if (!inv.length) return '(no live discovery inventory attached)';
+  return inv.slice(0, 40).map((it) => {
+    const req = it.required === true ? 'required' : it.required === false ? 'optional' : 'req?';
+    const loc = it.locatorEvidence?.locator
+      ? ` locator=${it.locatorEvidence.locator}`
+      : (it.accessibleName ? ` role=${it.role} name="${it.accessibleName}"` : ` role=${it.role}`);
+    const opts = it.options?.length ? ` options=[${it.options.slice(0, 8).join(', ')}]` : '';
+    const flags = [it.prepopulated ? 'app-prepopulated: never fill/assert' : '', it.blocked ? `BLOCKED: ${it.blockedReason || 'no fixture'}` : ''].filter(Boolean).join('; ');
+    return `- ${it.label} [${it.type}, ${req}]${opts}${loc}${flags ? ` (${flags})` : ''}`;
+  }).join('\n');
+}
+
+/** Render LIVE before→action→after transitions (dropdown options, date-picker, dependent fields). */
+function renderStateTransitions(ev?: DiscoveryEvidence): string {
+  const tr = ev?.transitions || [];
+  if (!tr.length) return '(no state transitions captured)';
+  return tr.slice(0, 20).map((t) => {
+    const opts = t.options?.length ? ` options=[${t.options.slice(0, 12).join(', ')}]` : '';
+    const sel = t.selectedOption ? ` selected="${t.selectedOption}"${t.resultingValue ? ` → value="${t.resultingValue}"` : ''}` : '';
+    const rev = t.revealedFields.length ? ` reveals=[${t.revealedFields.slice(0, 8).join(', ')}]` : '';
+    const loc = t.triggerLocator ? ` trigger=${t.triggerLocator}` : '';
+    return `- ${t.kind} on "${t.trigger}"${opts}${sel}${rev}${loc} [VERIFIED live]`;
+  }).join('\n');
+}
+
 function prepopulatedFieldLabels(trace: AgentStep[]): string[] {
   return [...new Set(trace.flatMap((step) => step.prepopulatedFields || []).map((field) => field.label).filter(Boolean))];
 }
@@ -313,6 +359,16 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '',
     '## Verified live actions (HIGHEST-PRIORITY EVIDENCE — copy non-positional locators verbatim; an AMBIGUOUS scope hint overrides a positional CLI echo)',
     renderTrace(trace),
+    '',
+    '## Evidence priority (STRICT — a lower tier must NEVER override a higher one)',
+    'VERIFIED LIVE TRACE  >  LIVE DISCOVERY INVENTORY  >  STATE TRANSITION EVIDENCE  >  REUSE INDEX (.ai-memory)  >  MODEL INFERENCE.',
+    'Use ONLY locators and option values that appear in the evidence in this prompt. If no verified locator exists for a control, DO NOT invent one — omit that control. Never emit a dropdown/select option that the state-transition evidence below did not actually observe.',
+    '',
+    '## Live discovery inventory (durable locator + option evidence for every control on the feature screen)',
+    renderDiscoveryInventory(job.discoveryEvidence),
+    '',
+    '## State transition evidence (LIVE before→action→after — dropdown options, date-picker, dependent fields, selected→resulting value)',
+    renderStateTransitions(job.discoveryEvidence),
     '',
     '## Reuse index (.ai-memory) — REUSE these before creating anything new; never duplicate',
     caps,
@@ -1114,7 +1170,7 @@ function buildAutomationTrace(trace: AgentStep[], inventory: FieldInventoryItem[
 }
 
 /** Shape an Automation Trace step into the scenario/plan step model (with live evidence attached). */
-function automationToScenarioStep(step: AutomationStep, order: number, expected?: string): ScenarioStep {
+function automationToScenarioStep(step: AutomationStep, order: number, expected?: string, transitions?: StateTransition[]): ScenarioStep {
   const verb = step.isSubmit ? 'Click'
     : step.action === 'select' ? 'Select'
     : step.action === 'check' ? 'Check'
@@ -1136,7 +1192,20 @@ function automationToScenarioStep(step: AutomationStep, order: number, expected?
     snapshotEvidence: step.snapshotEvidence,
     blocked: step.blocked || undefined,
     blockedReason: step.blockedReason,
+    optionEvidence: optionEvidenceFor(step, transitions),
   };
+}
+
+/** Prefer LIVE transition options, else the inventory item's captured options — never invented. */
+function optionEvidenceFor(step: AutomationStep, transitions?: StateTransition[]): string[] | undefined {
+  const item = step.item;
+  if (!item) return undefined;
+  if (transitions && transitions.length) {
+    const key = coverageKey(item.label);
+    const t = transitions.find((tr) => (tr.fieldId && tr.fieldId === item.id) || coverageKey(tr.trigger) === key);
+    if (t?.options?.length) return t.options;
+  }
+  return item.options?.length ? item.options : undefined;
 }
 
 /**
@@ -1171,7 +1240,7 @@ export function authorScenariosFromDiscovery(
   // A — positive over the full Automation Trace: every executable feature field, listed blocked controls, + submit.
   if (executable.length || submit) {
     const steps: ScenarioStep[] = [];
-    executable.forEach((s) => steps.push(automationToScenarioStep(s, steps.length + 1)));
+    executable.forEach((s) => steps.push(automationToScenarioStep(s, steps.length + 1, undefined, discovery.transitions)));
     blocked.forEach((s) => steps.push(automationToScenarioStep(s, steps.length + 1)));
     if (submit) steps.push(automationToScenarioStep(submit, steps.length + 1, positiveExpected));
     scenarios.push({
@@ -1185,7 +1254,7 @@ export function authorScenariosFromDiscovery(
   // B — required-only positive (only when required is a strict, non-empty subset).
   if (required.length && required.length < executable.length) {
     const steps: ScenarioStep[] = [];
-    required.forEach((s) => steps.push(automationToScenarioStep(s, steps.length + 1)));
+    required.forEach((s) => steps.push(automationToScenarioStep(s, steps.length + 1, undefined, discovery.transitions)));
     if (submit) steps.push(automationToScenarioStep(submit, steps.length + 1, positiveExpected));
     scenarios.push({
       id: nextId(), title: `Create ${feat} with only the required fields`, type: 'positive',

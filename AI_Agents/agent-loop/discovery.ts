@@ -94,6 +94,42 @@ export interface DiscoveryState {
   revealedFieldIds: string[];
 }
 
+/**
+ * A live, reversible STATE TRANSITION captured by the deep-crawl layer: the before/after evidence
+ * around ONE safe interaction (open a dropdown, open a date picker, switch a tab/accordion). This is
+ * the evidence codegen previously lacked — it proves WHICH options a dropdown really has, that a date
+ * field opens a calendar, and which dependent fields appear after a reveal. Every field is OBSERVED
+ * live and never invented. Unlike the read-only inventory (which is only DISCOVERED), a transition is
+ * VERIFIED — it was actually driven — so `verified` is always true here.
+ */
+export interface StateTransition {
+  id: string;
+  kind: 'dropdown' | 'date-picker' | 'tab' | 'accordion' | 'menu';
+  /** The control label that triggers the transition (from the inventory). */
+  trigger: string;
+  /** Durable locator evidence for the trigger — role/label-anchored, NEVER an ephemeral CLI ref. */
+  triggerLocator?: string;
+  /** Links back to the FieldInventoryItem this transition exercised. */
+  fieldId?: string;
+  /** Normalised signature of the page state BEFORE the interaction (dedup + evidence). */
+  beforeState: string;
+  /** Normalised signature of the page state AFTER the interaction (dedup + evidence). */
+  afterState: string;
+  /** Options revealed by the transition (dropdown list / menu items) — observed, never invented. */
+  options?: string[];
+  /** The option actually selected during a bounded reversible select, when one was performed. */
+  selectedOption?: string;
+  /** The control value that resulted from the selection (e.g. the date textbox value). */
+  resultingValue?: string;
+  /** Labels of fields that APPEARED only after the transition (dependent/dynamic fields). */
+  revealedFields: string[];
+  /** A small bounded slice of the live tree proving the after-state (kept under the doc cap). */
+  afterExcerpt: string;
+  source: 'deep-crawl';
+  /** true = the transition was actually driven live (VERIFIED evidence, not merely discovered). */
+  verified: boolean;
+}
+
 export interface ApplicationSummary {
   application: string;
   feature: string;
@@ -119,9 +155,13 @@ export interface CompletenessGate {
 }
 
 export interface DiscoveryResult {
+  /** Versioned artifact shape: 2 adds `transitions` (state-transition evidence) to the v1 inventory. */
+  discoveryVersion: 2;
   applicationSummary: ApplicationSummary;
   inventory: FieldInventoryItem[];
   states: DiscoveryState[];
+  /** Live, reversible before→after evidence captured by the bounded deep-crawl layer (may be empty). */
+  transitions: StateTransition[];
   scrolls: number;
   snapshots: number;
   stoppedReason: 'stable' | 'max-scrolls' | 'max-snapshots' | 'timeout';
@@ -136,23 +176,36 @@ export interface DiscoveryOptions {
   limits?: Partial<DiscoveryLimits>;
   /** Best-effort reversible-state (dropdown-open) discovery — OFF by default (read-only-safe scroll+inventory is the tested core). */
   exploreStates?: boolean;
+  /**
+   * Deep-crawl: capture bounded, SAFE, REVERSIBLE state transitions (dropdown open→options→select,
+   * date-picker open→calendar, tab/accordion reveal→dependent fields). Additive evidence — it never
+   * submits, never clicks a destructive control, and always restores the baseline. Default OFF here;
+   * explore.ts turns it ON unless DEEP_CRAWL=0. Implies `exploreStates`.
+   */
+  deepCrawl?: boolean;
 }
 
 export interface DiscoveryLimits {
   maxScrolls: number;
   maxSnapshots: number;
   maxStates: number;
+  /** Cap on the number of state transitions the deep-crawl layer captures (never an unbounded crawl). */
+  maxTransitions: number;
   maxDurationMs: number;
   /** Consecutive no-new-control scrolls that declare the page fully traversed. */
   stability: number;
+  /** Stop the deep crawl after this many consecutive already-seen (duplicate) states. */
+  maxRepeatedState: number;
 }
 
 const DEFAULT_LIMITS: DiscoveryLimits = {
   maxScrolls: 12,
   maxSnapshots: 30,
   maxStates: 15,
+  maxTransitions: 12,
   maxDurationMs: 120000,
   stability: 2,
+  maxRepeatedState: 3,
 };
 
 /* ── Classification helpers (heuristic, but evidence-driven — no invention) ───── */
@@ -396,19 +449,26 @@ function summarise(snapshot: string, url: string, feature: string, application: 
   };
 }
 
+/** Shared, mutable crawl budget so the scroll pass and the deep-crawl pass respect ONE snapshot/time cap. */
+interface CrawlBudget {
+  snapshots: number;
+  started: number;
+  limits: DiscoveryLimits;
+}
+
 /**
  * Run bounded, read-only discovery on the CURRENT page (the caller has already logged in and
- * navigated to `featureUrl`). Never submits, never uploads. Returns a full inventory + completeness.
+ * navigated to `featureUrl`). Never submits, never uploads. Returns a full inventory + completeness,
+ * plus (when deep-crawl is enabled) live before→after STATE-TRANSITION evidence.
  */
 export async function runDiscovery(session: CliSession, opts: DiscoveryOptions): Promise<DiscoveryResult> {
   const log = opts.log || (() => {});
   const L: DiscoveryLimits = { ...DEFAULT_LIMITS, ...(opts.limits || {}) };
-  const started = Date.now();
-  let snapshots = 0;
+  const budget: CrawlBudget = { snapshots: 0, started: Date.now(), limits: L };
 
   const snap = async (): Promise<{ yaml: string; url: string }> => {
     const raw = await session.run(['snapshot']);
-    snapshots += 1;
+    budget.snapshots += 1;
     return { yaml: extractYaml(raw), url: extractPageUrl(raw) };
   };
 
@@ -423,8 +483,8 @@ export async function runDiscovery(session: CliSession, opts: DiscoveryOptions):
   let stoppedReason: DiscoveryResult['stoppedReason'] = 'stable';
   while (stable < L.stability) {
     if (scrolls >= L.maxScrolls) { stoppedReason = 'max-scrolls'; break; }
-    if (snapshots >= L.maxSnapshots) { stoppedReason = 'max-snapshots'; break; }
-    if (Date.now() - started > L.maxDurationMs) { stoppedReason = 'timeout'; break; }
+    if (budget.snapshots >= L.maxSnapshots) { stoppedReason = 'max-snapshots'; break; }
+    if (Date.now() - budget.started > L.maxDurationMs) { stoppedReason = 'timeout'; break; }
     await session.run(['press', 'PageDown']);
     scrolls += 1;
     const s = await snap();
@@ -434,53 +494,206 @@ export async function runDiscovery(session: CliSession, opts: DiscoveryOptions):
   }
   log(`[discovery] Inventory: ${inventory.length} control(s) after ${scrolls} scroll(s) (${stoppedReason}).`);
 
-  // Best-effort reversible-state discovery (OFF by default): open custom dropdowns to read options,
-  // then restore the baseline with a fresh authenticated goto so the caller resumes on a clean form.
+  // Deep-crawl / reversible-state discovery. `deepCrawl` captures full before→action→after transition
+  // evidence (dropdown options, date-picker, dependent fields); `exploreStates` is the legacy alias.
+  // Either way it is bounded, reversible, fully defensive, and restores the clean baseline afterwards
+  // so the caller resumes on a clean form for its single controlled success submit.
   const states: DiscoveryState[] = [];
-  if (opts.exploreStates) {
-    await discoverReversibleStates(session, opts, inventory, states, L, log).catch((e) => {
-      log(`[discovery] reversible-state discovery skipped: ${(e as Error).message}`);
+  const transitions: StateTransition[] = [];
+  if (opts.deepCrawl || opts.exploreStates) {
+    await deepCrawlTransitions(session, opts, inventory, states, transitions, budget, log).catch((e) => {
+      log(`[discovery] deep-crawl skipped: ${(e as Error).message}`);
     });
-    // Always restore the clean baseline for the caller's controlled success submit.
     await session.run(['goto', opts.featureUrl]).catch(() => {});
   }
 
-  const completeness = evaluateCompleteness({ inventory, states, scrolls, snapshots, stoppedReason });
+  const completeness = evaluateCompleteness({ inventory, states, scrolls, snapshots: budget.snapshots, stoppedReason });
 
-  return { applicationSummary: summary, inventory, states, scrolls, snapshots, stoppedReason, completeness };
+  return { discoveryVersion: 2, applicationSummary: summary, inventory, states, transitions, scrolls, snapshots: budget.snapshots, stoppedReason, completeness };
+}
+
+/* ── Deep-crawl layer: bounded, SAFE, REVERSIBLE state-transition evidence ─────────────────────────
+ * Reuses the proven "reveal-aware" concept from the legacy crawler (open a control, snapshot the
+ * revealed state, capture options/dependent fields, then restore) — but on the @playwright/cli
+ * CliSession, so refs stay ephemeral and the durable evidence is a role/label locator. It NEVER
+ * clicks a destructive/persistent control (Save/Submit/Delete/Logout/Reset/…), NEVER uploads, and is
+ * strictly bounded (maxTransitions/maxSnapshots/maxDuration + duplicate-state stop). */
+
+/** Destructive/persistent action verbs the deep crawl must NEVER trigger (generic, not app-specific). */
+const DEEP_CRAWL_DESTRUCTIVE = /\b(save|submit|create|delete|remove|logout|sign\s?out|reset|clear|cancel|discard|deactivate|apply|confirm|proceed|update|register|download|next|back)\b/i;
+
+/** Normalised, bounded signature of a page state for dedup: url + heading + control set + open/closed. */
+export function normalizeStateSignature(url: string, snapshot: string): string {
+  const s = String(snapshot || '');
+  const heading = (s.match(/^\s*-?\s*heading\s+"([^"]+)"/m)?.[1] || '').trim().toLowerCase();
+  const controls = [...s.matchAll(/^\s*-?\s*(textbox|combobox|listbox|checkbox|radio|button|option|menuitem|tab|gridcell)\b[^\n]*?(?:"([^"]*)")?/gm)]
+    .map((m) => `${m[1]}:${(m[2] || '').trim().toLowerCase()}`);
+  const opened = /^\s*-?\s*(option|menuitem|listbox|dialog|gridcell)\b/m.test(s) ? 'open' : 'closed';
+  const sig = [...new Set(controls)].sort().slice(0, 40).join('|');
+  return `${String(url || '').split('?')[0]}::${heading}::${opened}::${sig}`;
+}
+
+/** Find a LIVE ref for an inventory control in a fresh snapshot (refs churn — always re-derive). */
+function findLiveRef(snapshot: string, item: FieldInventoryItem): string {
+  const needle = (item.accessibleName || item.label || '').toLowerCase().slice(0, 14);
+  const roleRe = new RegExp(`^\\s*-?\\s*${item.role}\\b[^\\n]*\\[ref=`);
+  const lines = snapshot.split('\n');
+  if (needle) {
+    for (const line of lines) {
+      if (roleRe.test(line) && line.toLowerCase().includes(needle)) {
+        const ref = line.match(/\[ref=([a-z0-9]+)\]/)?.[1];
+        if (ref) return ref;
+      }
+    }
+  }
+  // Unnamed control (e.g. a bare combobox) → fall back to the first control of the same role.
+  for (const line of lines) {
+    if (roleRe.test(line)) {
+      const ref = line.match(/\[ref=([a-z0-9]+)\]/)?.[1];
+      if (ref) return ref;
+    }
+  }
+  return '';
+}
+
+/** Options revealed on an opened dropdown/menu (native options + menu items), placeholder-filtered. */
+function extractRevealedOptions(snapshot: string): string[] {
+  const opts = [...snapshot.matchAll(/^\s*-?\s*(?:option|menuitem|menuitemradio|menuitemcheckbox)\s+"([^"]+)"/gm)]
+    .map((m) => m[1].trim())
+    .filter((o) => o && !isPlaceholderish(o));
+  return [...new Set(opts)];
+}
+
+/** First pickable option row (ref + name) for a bounded reversible select — non-placeholder, non-destructive. */
+function firstPickableOption(snapshot: string): { ref: string; name: string } | null {
+  for (const line of snapshot.split('\n')) {
+    const m = line.match(/^\s*-?\s*option\s+"([^"]+)"[^\n]*\[ref=([a-z0-9]+)\]/);
+    if (!m) continue;
+    const name = m[1].trim();
+    if (!name || isPlaceholderish(name) || DEEP_CRAWL_DESTRUCTIVE.test(name)) continue;
+    return { ref: m[2], name };
+  }
+  return null;
+}
+
+/** Labels present in `after` but not `before` — fields that appeared because of the transition. */
+function revealedControlLabels(before: string, after: string): string[] {
+  const had = new Set(parseInventory(before).map((i) => i.label.toLowerCase()));
+  const out: string[] = [];
+  for (const it of parseInventory(after)) if (!had.has(it.label.toLowerCase())) out.push(it.label);
+  return [...new Set(out)].slice(0, 12);
+}
+
+/** Read the value a control shows in a snapshot (inline textbox value or selected dropdown option). */
+function readControlValueByLabel(snapshot: string, item: FieldInventoryItem): string {
+  const needle = (item.accessibleName || item.label || '').toLowerCase().slice(0, 14);
+  const roleRe = new RegExp(`^\\s*-?\\s*${item.role}\\b`);
+  for (const line of snapshot.split('\n')) {
+    if (!roleRe.test(line)) continue;
+    if (needle && !line.toLowerCase().includes(needle)) continue;
+    const inline = line.match(/:\s*"([^"]+)"/)?.[1]?.trim();
+    if (inline && !isPlaceholderish(inline)) return inline;
+  }
+  return '';
 }
 
 /**
- * Open each custom dropdown once, snapshot its revealed options, and close it (Escape). Strictly
- * capped and fully defensive — any flake is caught and the baseline is restored by the caller. This
- * NEVER submits or navigates away; it only reads option evidence for combobox fields.
+ * Capture bounded, reversible STATE TRANSITIONS. For each safe trigger (custom dropdown, date field,
+ * tab) it: snapshots the BEFORE state (fresh ref), OPENS the control, snapshots the AFTER state,
+ * records the revealed options + dependent fields, optionally selects the first safe option to capture
+ * the resulting value, then RESTORES the baseline. Duplicate/unchanged states are skipped; the whole
+ * pass is capped and any flake is caught. Populates `transitions` (rich evidence) and `states` (legacy).
  */
-async function discoverReversibleStates(
+async function deepCrawlTransitions(
   session: CliSession,
   opts: DiscoveryOptions,
   inventory: FieldInventoryItem[],
   states: DiscoveryState[],
-  L: DiscoveryLimits,
+  transitions: StateTransition[],
+  budget: CrawlBudget,
   log: (l: string) => void,
 ): Promise<void> {
-  const dropdowns = inventory.filter((it) => it.type === 'combobox' && (!it.options || !it.options.length));
-  let visited = 0;
-  for (const dd of dropdowns) {
-    if (visited >= L.maxStates) break;
-    visited += 1;
-    // Re-snapshot to get a fresh ref for this control (refs churn between actions).
-    const fresh = extractYaml(await session.run(['snapshot']));
-    const ref = fresh.split('\n').find((l) => new RegExp(`${dd.role}[^\\n]*\\[ref=`).test(l) && l.toLowerCase().includes((dd.accessibleName || dd.label).toLowerCase().slice(0, 12)))?.match(/\[ref=([a-z0-9]+)\]/)?.[1];
-    if (!ref) continue;
-    await session.run(['click', ref]);
-    const opened = extractYaml(await session.run(['snapshot']));
-    const options = [...opened.matchAll(/^\s*-?\s*option\s+"([^"]+)"/gm)].map((m) => m[1].trim()).filter((o) => !isPlaceholderish(o));
-    if (options.length) {
-      dd.options = [...new Set(options)];
-      states.push({ id: `state-${dd.id}`, kind: 'dropdown', trigger: dd.label, options: dd.options, revealedFieldIds: [] });
-      log(`[discovery] dropdown "${dd.label}" → ${dd.options.length} option(s).`);
-    }
+  const L = budget.limits;
+  const takeSnap = async (): Promise<string> => {
+    const y = extractYaml(await session.run(['snapshot']));
+    budget.snapshots += 1;
+    return y;
+  };
+  const overBudget = (): boolean =>
+    budget.snapshots >= L.maxSnapshots ||
+    (Date.now() - budget.started) > L.maxDurationMs ||
+    transitions.length >= L.maxTransitions;
+  const restore = async (): Promise<void> => {
     await session.run(['press', 'Escape']).catch(() => {});
+    await session.run(['goto', opts.featureUrl]).catch(() => {});
+  };
+
+  // Candidate triggers: custom dropdowns (combobox), date fields, and tabs — all reversible opens.
+  const triggers = inventory.filter((it) =>
+    !it.isAction && !it.blocked &&
+    (it.type === 'combobox' || it.type === 'date' || it.type === 'tab') &&
+    !DEEP_CRAWL_DESTRUCTIVE.test(it.label));
+
+  const visited = new Set<string>();
+  let repeated = 0;
+  let idx = 0;
+
+  for (const item of triggers) {
+    if (overBudget()) { log(`[deep-crawl] budget reached (${transitions.length} transition(s), ${budget.snapshots} snapshot(s)).`); break; }
+    if (repeated >= L.maxRepeatedState) { log('[deep-crawl] stopping — repeated duplicate states.'); break; }
+    try {
+      const before = await takeSnap();
+      const beforeSig = normalizeStateSignature(opts.featureUrl, before);
+      const ref = findLiveRef(before, item);
+      if (!ref) continue;
+
+      await session.run(['click', ref]);
+      const after = await takeSnap();
+      const afterSig = normalizeStateSignature(opts.featureUrl, after);
+      if (afterSig === beforeSig || visited.has(afterSig)) { repeated += 1; await restore(); continue; }
+      visited.add(afterSig);
+      repeated = 0;
+
+      const options = extractRevealedOptions(after);
+      let revealedFields = revealedControlLabels(before, after);
+      const kind: StateTransition['kind'] =
+        item.type === 'date' ? 'date-picker' : item.type === 'tab' ? 'tab' : 'dropdown';
+
+      // Bounded reversible SELECT: for a real dropdown with options, pick the first safe option and read
+      // the resulting value so codegen sees open→options→select→value (never a destructive option).
+      let selectedOption: string | undefined;
+      let resultingValue: string | undefined;
+      if (kind === 'dropdown' && !overBudget()) {
+        const pick = firstPickableOption(after);
+        if (pick) {
+          await session.run(['click', pick.ref]);
+          const selected = await takeSnap();
+          selectedOption = pick.name;
+          resultingValue = readControlValueByLabel(selected, item) || pick.name;
+          // Dependent/cascading fields often appear only AFTER a value is chosen — capture them too.
+          const dependent = revealedControlLabels(before, selected);
+          if (dependent.length) revealedFields = [...new Set([...revealedFields, ...dependent])];
+        }
+      }
+
+      transitions.push({
+        id: `transition-${++idx}`, kind, trigger: item.label, triggerLocator: item.locatorEvidence?.locator, fieldId: item.id,
+        beforeState: beforeSig, afterState: afterSig,
+        options: options.length ? options : undefined,
+        selectedOption, resultingValue,
+        revealedFields, afterExcerpt: after.slice(0, 600),
+        source: 'deep-crawl', verified: true,
+      });
+      // Mirror into the legacy DiscoveryState list + enrich the inventory item's options (backward compat).
+      states.push({ id: `state-${item.id}`, kind: kind === 'date-picker' ? 'dialog' : kind === 'tab' ? 'tab' : 'dropdown', trigger: item.label, options: options.length ? options : undefined, revealedFieldIds: [] });
+      if (options.length && (!item.options || !item.options.length)) item.options = options;
+      log(`[deep-crawl] ${kind} "${item.label}" → ${options.length} option(s)${revealedFields.length ? `, ${revealedFields.length} revealed field(s)` : ''}${selectedOption ? `, selected "${selectedOption}"` : ''}.`);
+
+      await restore();
+    } catch (e) {
+      log(`[deep-crawl] "${item.label}" skipped: ${(e as Error).message}`);
+      await restore();
+    }
   }
 }
 
