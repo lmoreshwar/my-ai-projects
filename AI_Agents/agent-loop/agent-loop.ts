@@ -47,7 +47,7 @@ import {
 } from './page-diagnostics';
 import {
   featureTokens, featureIntentIsView, pathMatchesFeature, snapshotIdentityMatchesFeature,
-  snapshotHasContent, type FeatureBoundaryResult,
+  snapshotHasContent, detectFeatureBoundary, type FeatureBoundaryResult,
 } from './feature-boundary';
 
 export interface AgentLoopOptions {
@@ -151,6 +151,7 @@ const SYSTEM_PROMPT = [
   '7. READ-ONLY UNTIL THE SINGLE SUCCESS SUBMIT: explore, snapshot, and fill fields freely, but click a destructive/persistent control (Save, Submit, Create, Delete, Logout) EXACTLY ONCE — the final controlled success submit after every field is filled. Never delete or repeat destructive actions.',
   '8. When the goal is achieved (or no useful action remains), call `finish` with status "passed" (goal verified), "failed" (a real defect/blocker), or "incomplete".',
   '9. FEATURE BOUNDARY: the goal names ONE requested feature. As soon as you have reached that feature\'s own page/state and confirmed its expected content is present, call `finish` with "passed". Do NOT continue into downstream or unrelated capabilities (e.g. after viewing a cart, do not proceed into checkout/payment; after opening a record, do not start editing an unrelated one). Stop at the requested feature.',
+  '10. SELF-HEALING: reaching a RELATED page or completing a prerequisite (e.g. adding an item, opening a menu) is NOT the same as reaching the requested feature itself — do not call finish("passed") until you have actually navigated to and seen the requested feature\'s own page/content. If an action does not change the page, or a direct URL navigation gets redirected elsewhere (e.g. to a login page), do not repeat it — snapshot again and try a genuinely different path (a different icon/link/menu item), and if you were redirected away from a target you still need, explicitly navigate back to it once you are able to.',
   '',
   'Work efficiently and do not narrate — just make tool calls.',
 ].join('\n');
@@ -491,6 +492,16 @@ function looksLikeLoginForm(snapshot: string): boolean {
   return hasLoginButton && hasUserField;
 }
 
+/**
+ * A cheap fingerprint of "what state is the page in" — url + the set of interactable role/name pairs.
+ * Two consecutive snapshots with the SAME signature mean the last action produced no visible change
+ * (a stagnant action), which is the generic trigger for a self-healing "try something different" nudge.
+ */
+export function snapshotSignature(url: string, yaml: string): string {
+  const refs = parseRefs(yaml).slice(0, 30).map((r) => `${r.role}:${r.name}`).sort().join('|');
+  return `${url}##${refs}`;
+}
+
 /** The label a fill/select/check action targeted — the control's own name, else its live scoped label. */
 function filledLabelForRef(snapshot: string, rows: Map<string, RefRow>, ref: string): string {
   const name = rows.get(ref)?.name || '';
@@ -727,6 +738,49 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   let earlyStopped = false;
   let featureBoundary: FeatureBoundaryResult | undefined;
 
+  // SELF-HEALING state (generic, evidence-based — no app/feature-specific rules). The agent must keep
+  // the ORIGINAL requested target in view: when an action stops making forward progress, or a direct
+  // navigation to the target gets redirected away from it (e.g. an auth guard sending it to login),
+  // the loop nudges the model to try a genuinely DIFFERENT approach instead of repeating the same
+  // action or silently drifting onto an unrelated page. Bounded so it can never loop forever.
+  const MAX_ALTERNATIVE_ATTEMPTS = 4;
+  const NO_PROGRESS_LIMIT = 3;
+  let alternativeAttempts = 0;
+  let noProgressStreak = 0;
+  let lastSignature = '';
+  let pendingReturnUrl: string | null = null; // set when a goto at the target got redirected away from it
+  const attemptedApproaches: string[] = [];
+
+  /**
+   * Called on every snapshot: detects a stagnant loop (same page state as last time — the action
+   * taken did not move things forward) and reminds the model to explicitly finish returning to the
+   * target when it was earlier redirected away (e.g. to login). Returns text to append to the tool
+   * result; empty when nothing is amiss. Never blocks progress — it only nudges.
+   */
+  function selfHealingNote(url: string, yaml: string): string {
+    let note = '';
+    if (boundaryTokens.length && pathMatchesFeature(url, boundaryTokens)) pendingReturnUrl = null;
+    if (pendingReturnUrl) {
+      note += `\n\nSELF-HEALING REMINDER: you were redirected away from the originally requested target (${pendingReturnUrl}) earlier. You must EXPLICITLY navigate back to it (an in-app link/icon/menu item is often required, not just repeating the same URL) before finishing — do not assume you already reached it.`;
+    }
+    const sig = snapshotSignature(url, yaml);
+    if (sig === lastSignature) {
+      noProgressStreak += 1;
+      if (noProgressStreak >= NO_PROGRESS_LIMIT && alternativeAttempts < MAX_ALTERNATIVE_ATTEMPTS) {
+        alternativeAttempts += 1;
+        noProgressStreak = 0;
+        const attempt = `attempt ${alternativeAttempts}: ${NO_PROGRESS_LIMIT} action(s) in a row produced no visible change at ${url}`;
+        attemptedApproaches.push(attempt);
+        log(`[agent] \u26a0 stagnant loop detected at ${url} — requesting alternative approach ${alternativeAttempts}/${MAX_ALTERNATIVE_ATTEMPTS}.`);
+        note += `\n\nSELF-HEALING: the last ${NO_PROGRESS_LIMIT} action(s) produced no visible change on this page. Do NOT repeat the same action — reassess ALL available navigation options here (menu items, icons, links) and try a genuinely DIFFERENT one to reach the requested feature. (Alternative attempt ${alternativeAttempts}/${MAX_ALTERNATIVE_ATTEMPTS}.)`;
+      }
+    } else {
+      noProgressStreak = 0;
+      lastSignature = sig;
+    }
+    return note;
+  }
+
   const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: `# Feature URL\n${opts.url}\n\n# Goal\n${opts.goal}` },
@@ -784,6 +838,31 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       if (name === 'finish') {
         const status = (['passed', 'failed', 'incomplete'].includes(String(args.status)) ? args.status : 'incomplete') as AgentLoopResult['status'];
         const summary = String(args.summary || '');
+
+        // SELF-HEALING GATE: before honoring a self-reported "passed", verify the requested feature's
+        // OWN target was actually reached and evidenced — not just that some plausible action along the
+        // way succeeded (the exact "View Cart" bug: the model finished after "Add to cart" without ever
+        // visiting the cart page). If not yet verified, reject the finish and make the model try a
+        // genuinely different approach, bounded so it can never loop forever.
+        if (status === 'passed' && boundaryTokens.length && !earlyStopped) {
+          const boundary = detectFeatureBoundary(featureText, opts.url, steps);
+          if (!boundary.acceptanceVerified) {
+            if (alternativeAttempts < MAX_ALTERNATIVE_ATTEMPTS) {
+              alternativeAttempts += 1;
+              const attempt = `attempt ${alternativeAttempts}: model reported "passed" after "${summary}" without visiting the requested target (tokens: ${boundaryTokens.join(', ')})`;
+              attemptedApproaches.push(attempt);
+              const msg = `Not verified yet: no page matching the requested feature ("${featureText}") has been reached and shown to have real content. Adding/selecting/opening a related item is a PREREQUISITE, not the requested feature itself. Do NOT call finish yet. Take a snapshot and try a DIFFERENT, genuinely alternative path to reach it — e.g. an in-app icon/link/menu item (not just repeating a direct URL navigation) — then verify its content before finishing. (Alternative attempt ${alternativeAttempts}/${MAX_ALTERNATIVE_ATTEMPTS}.)`;
+              messages.push({ role: 'tool', tool_call_id: call.id, content: msg });
+              log(`[agent] ✗ finish("passed") rejected — ${boundary.reason}; requesting alternative approach ${alternativeAttempts}/${MAX_ALTERNATIVE_ATTEMPTS}.`);
+              continue;
+            }
+            messages.push({ role: 'tool', tool_call_id: call.id, content: 'ok' });
+            const give = `Could not verify the requested feature ("${featureText}") after ${MAX_ALTERNATIVE_ATTEMPTS} alternative attempt(s). Tried: ${attemptedApproaches.join('; ')}.`;
+            log(`[agent] finish → failed (self-healing budget exhausted): ${give}`);
+            return finish('failed', give);
+          }
+        }
+
         messages.push({ role: 'tool', tool_call_id: call.id, content: 'ok' });
         log(`[agent] finish → ${status}: ${summary}`);
         return finish(status, summary);
@@ -970,7 +1049,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           }
         }
 
-        toolResult = `Current URL: ${pageUrl || '(unchanged)'}\n\nInteractable elements you may act on now:\n${renderRefs(refs)}\n\nPage tree (context):\n${yaml.slice(0, 2500)}${prepopulatedSummary}${discoveryGuidance}${readinessNote}`;
+        toolResult = `Current URL: ${pageUrl || '(unchanged)'}\n\nInteractable elements you may act on now:\n${renderRefs(refs)}\n\nPage tree (context):\n${yaml.slice(0, 2500)}${prepopulatedSummary}${discoveryGuidance}${readinessNote}${selfHealingNote(snapshotUrl, yaml)}`;
         if (discoveryGuidance) toolResult += '\n\nNOTE: the page was scrolled during discovery — call snapshot again to get fresh refs before filling.';
         log(`[agent] snapshot → ${refs.length} interactable element(s)`);
         if (pageUrl) lastPageUrl = pageUrl;
@@ -1013,6 +1092,18 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         const scopeHint = deriveLocatorScopeHint(latestSnapshot, String(args.ref || ''), positionalLocator);
         // After any navigation/action the old refs are stale — force a fresh snapshot next.
         if (name === 'goto' || name === 'goBack') liveRefs = new Set();
+        // SELF-HEALING: a `goto` aimed at the requested target that lands somewhere else (e.g. an
+        // auth guard redirecting to login) means the target was NOT reached — remember it so the
+        // model is explicitly reminded to navigate back after handling whatever interrupted it.
+        if (name === 'goto' && boundaryTokens.length) {
+          const requestedUrl = String(args.url || '');
+          if (pathMatchesFeature(requestedUrl, boundaryTokens) && pageUrl && !pathMatchesFeature(pageUrl, boundaryTokens)) {
+            pendingReturnUrl = requestedUrl;
+            attemptedApproaches.push(`direct navigation to ${requestedUrl} redirected to ${pageUrl}`);
+            log(`[agent] \u26a0 goto(${requestedUrl}) redirected to ${pageUrl} — will remind the model to return to the target.`);
+          }
+        }
+        if (pendingReturnUrl && pageUrl && boundaryTokens.length && pathMatchesFeature(pageUrl, boundaryTokens)) pendingReturnUrl = null;
         // Persist the PLACEHOLDER (never the real credential) so codegen stays secret-free.
         const recordedArgs = placeholderValue
           ? { ...args, ...(name === 'fill' ? { value: placeholderValue } : { text: placeholderValue }) }
@@ -1041,6 +1132,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         toolResult = [
           locator ? `Ran: ${redact(locator, secrets)}` : 'Action executed.',
           pageUrl ? `Current URL: ${pageUrl}` : '',
+          pendingReturnUrl ? `SELF-HEALING REMINDER: you still need to explicitly navigate back to the originally requested target (${pendingReturnUrl}) — it was not reached yet.` : '',
           'Call snapshot to see the updated page before your next ref-based action.',
         ].filter(Boolean).join('\n');
         log(`[agent] ${step}. ${name} ✓${pageUrl ? ` (→ ${pageUrl})` : ''}`);
@@ -1074,7 +1166,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       messages.push({ role: 'tool', tool_call_id: call.id, content: redact(toolResult, secrets) });
     }
 
-    return finish('incomplete', `Reached the ${maxSteps}-step budget without finishing.`);
+    const budgetNote = attemptedApproaches.length ? ` Alternative approaches tried: ${attemptedApproaches.join('; ')}.` : '';
+    return finish('incomplete', `Reached the ${maxSteps}-step budget without finishing.${budgetNote}`);
   } catch (e) {
     return finish('failed', `Loop error: ${(e as Error).message}`);
   } finally {
