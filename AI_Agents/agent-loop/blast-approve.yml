@@ -78,9 +78,30 @@ jobs:
       - name: Install framework deps
         run: npm ci || npm install
 
-      # Needed for the green-before-PR verify run (npx playwright test — headless, no xvfb).
+      # Read the EXACT Playwright version from the freshly-installed deps (never hardcoded) so a
+      # version bump yields a new cache key instead of restoring incompatible browser binaries.
+      - name: Determine Playwright version
+        id: playwright-version
+        run: echo "version=$(node -p "require('./node_modules/@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+
+      # Restore the Chromium binary from a prior run — the SAME cache strategy as blast-explore.yml.
+      # Keyed on OS + arch + Playwright version so caches never mix across runners/versions. cache-hit
+      # is 'true' ONLY on an exact key match; any miss (first run, new version, or cache unavailable)
+      # falls through to the browser install below.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ runner.arch }}-${{ steps.playwright-version.outputs.version }}
+
+      # Browser binary — download ONLY on a cache MISS; on a HIT it is already restored above.
+      # Needed for the green-before-PR verify run (npx playwright test — headless, no xvfb). No
+      # --with-deps: GitHub's Ubuntu runners already ship Chromium's OS libs, and the apt-get it
+      # triggers is slow and intermittently hangs the job on package-list fetch.
       - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
 
       - name: Install agent-loop deps
         working-directory: .blast-engine/AI_Agents/agent-loop

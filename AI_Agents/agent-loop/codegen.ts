@@ -178,7 +178,7 @@ function loadCapabilities(fw: string): string {
 }
 
 /** Locate and parse the `export const routes = { ... } as const;` map so we know which routes exist. */
-function readRoutesBlock(fw: string): { file: string; body: string; keys: Set<string> } | null {
+export function readRoutesBlock(fw: string): { file: string; body: string; keys: Set<string> } | null {
   for (const rel of ['src/config/index.ts', 'src/config.ts', 'src/config/routes.ts']) {
     const src = safeRead(join(fw, rel));
     if (!src) continue;
@@ -581,7 +581,7 @@ function mergeTestData(fw: string, additions?: Record<string, unknown>): string 
 }
 
 /** Add any NEW routes.X keys to src/config's routes map (union — never overwrite/drop an existing key). */
-function mergeRoutes(fw: string, additions?: Record<string, string>): string | null {
+export function mergeRoutes(fw: string, additions?: Record<string, string>): string | null {
   if (!additions || !Object.keys(additions).length) return null;
   const rb = readRoutesBlock(fw);
   if (!rb) return null;
@@ -605,17 +605,33 @@ function mergeRoutes(fw: string, additions?: Record<string, string>): string | n
 }
 
 /**
+ * Remove line/block comments and single/double-quoted string literals so a `routes.X` only counts as
+ * a REAL code reference. A JSDoc example (e.g. `urlRegex(routes.dashboard)` in the urlRegex doc block)
+ * or a quoted string must NOT be treated as a live route usage. Template literals are left intact so a
+ * genuine `routes.X` inside a `${…}` interpolation is still validated. Purely lexical + generic.
+ */
+export function stripCommentsAndStrings(src: string): string {
+  return String(src || '')
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')        // block comments (incl. JSDoc)
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')     // line comments (but not the // in http://)
+    .replace(/'(?:\\.|[^'\\])*'/g, "''")      // single-quoted strings
+    .replace(/"(?:\\.|[^"\\])*"/g, '""');     // double-quoted strings
+}
+
+/**
  * Fail fast (before verifySpec) if a generated file references routes.X that is not defined in the
  * config routes map — turns the cryptic runtime `Cannot read properties of undefined (reading
- * 'startsWith')` into a clear build error naming the missing route.
+ * 'startsWith')` into a clear build error naming the missing route. Comments/strings are stripped
+ * first so a JSDoc example (e.g. the `urlRegex(routes.dashboard)` sample in config) can never be
+ * mistaken for a live, undefined route reference.
  */
-function assertRoutesDefined(fw: string, files: string[]): void {
+export function assertRoutesDefined(fw: string, files: string[]): void {
   const rb = readRoutesBlock(fw); // re-read AFTER mergeRoutes so freshly-added keys count as defined
   if (!rb) return; // this framework has no routes map — nothing to validate
   const missing = new Map<string, string>();
   for (const rel of files) {
     if (!rel.endsWith('.ts')) continue;
-    const src = safeRead(join(fw, rel));
+    const src = stripCommentsAndStrings(safeRead(join(fw, rel)));
     for (const m of src.matchAll(/\broutes\.([A-Za-z_]\w*)/g)) {
       if (!rb.keys.has(m[1]) && !missing.has(m[1])) missing.set(m[1], rel);
     }
