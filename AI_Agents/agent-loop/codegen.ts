@@ -555,7 +555,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- Reuse SHARED METHODS/HELPERS, not just locators — but ONLY methods present in the Wrapper API contract, each called on its listed property. Typical mappings WHEN the contract lists them: custom dropdown -> this.workflowActions.selectDropdownOption(trigger, optionText); searchable/autocomplete -> this.workflowActions.searchAndSelectOption(input, text, optionText?); native <select> -> this.actions.selectOption(target, value); checkbox -> this.workflowActions.setCheckbox(target, checked); radio -> this.workflowActions.selectRadioOption(label); date field -> this.workflowActions.selectDate(input, value); table read -> this.workflowActions.readTableCell(table, rowText, colIndex); table row action -> this.workflowActions.clickInRow(table, rowText, controlName); table row checkbox -> this.workflowActions.setRowCheckbox(table, rowText, checked); search box -> this.workflowActions.searchWithOptionalSubmit(input, value, submit?). If NONE of the contract helpers fits a new interaction, implement it as a parameterized METHOD ON THE NEW MODULE (workflow logic belongs in the Module) — NEVER inline interaction logic in the spec, NEVER call a listed method on the wrong property, and NEVER invent a wrapper method that is not in the Wrapper API contract (the shared utils are a FIXED API on this path; this JSON output cannot emit a modified util file). Reuse one helper for repeated flows (login/logout/common assertions) too.',
     '- TEST DATA: read every value via the testData accessor (never hardcode usernames/names/roles/expected text in a spec). Reuse an existing matching entry before adding a new one; only add genuinely-new keys. Keep every existing testData key.',
     '- APP-PREPOPULATED FIELDS: every field listed in the App-prepopulated fields section is an application-owned default. Do NOT create a Page locator for it, add testData for it, fill/clear/type it, include it in uniqueFields, or assert its literal value. For a prepopulated dropdown/radio, do NOT re-select/re-check the value it already holds. Leave it untouched unless the approved test case explicitly requests custom entry. This does NOT forbid using a page/section heading or a static label as a READ-ONLY readiness or visibility assertion (e.g. asserting the "Products" heading is visible) — a heading/label is page chrome, not a prepopulated input value.',
-    '- UNIQUE CONSTRAINTS: identifiers, usernames, email addresses, codes, references, and record numbers must NEVER use a fixed final value. Store only a readable seed in testData, import uniqueValue from "../utils/UniqueData" (add retryOnCollision only in mode B below), and generate a FRESH value for EACH submit via uniqueValue(seed, { kind, length }). TWO modes: (A) DEFAULT — if the live trace NEVER showed an inline duplicate/"already exists" validation for the field, just fill the fresh uniqueValue() and Save (NO retry, NO collision locator); return a uniqueFields descriptor with only testDataPath+kind (+length) and OMIT collisionPageField/collisionMessage. (B) COLLISION RETRY — ONLY when the live trace ACTUALLY exposed an inline collision validation for the field, wrap the submit in retryOnCollision({ page: this.page, successUrl: urlRegex(routes.X), collision: this.<page>.collisionLocator, makeValue: () => uniqueValue(seed, { kind, length }), submit: async (value) => { fill the field with value; click Save; }, collisionMessage }); the Page MUST expose that exact live collision locator, retry ONLY when it appears (all other errors/timeouts fail), and do NOT add a second waitForURL after the helper. Return one uniqueFields descriptor per unique field so codegen can enforce this contract. HARD REQUIREMENT: every uniqueFields entry you declare MUST have a matching uniqueValue(seed, { kind, length }) call AND an `import { uniqueValue } from "../utils/UniqueData"` in the Module that actually fills that field — declaring a uniqueFields descriptor without wiring uniqueValue() into the Module is REJECTED; if you truly cannot make a field fresh, drop its uniqueFields entry entirely rather than leaving it unimplemented.',
+    '- UNIQUE CONSTRAINTS (evidence-gated): treat a field as uniqueness-constrained ONLY when the LIVE trace actually exposed a duplicate/"already exists"/"already taken" validation for it. A field NAME alone is NOT evidence: a postal/ZIP code, phone/house/street number, or any "…code"/"…number"/"…id" the app accepts as a plain value is ORDINARY reusable testData — store a FIXED readable value, do NOT call uniqueValue(), and do NOT emit a uniqueFields entry for it. When (and only when) the live trace proved a uniqueness constraint on a genuine identifier/username/email/record-number, store only a readable seed in testData, import uniqueValue from "../utils/UniqueData" (add retryOnCollision only in mode B below), and generate a FRESH value for EACH submit via uniqueValue(seed, { kind, length }). TWO modes: (A) DEFAULT — if the field is proven-unique but the collision message is not an inline-recoverable locator, just fill the fresh uniqueValue() and Save (NO retry, NO collision locator); return a uniqueFields descriptor with only testDataPath+kind (+length) and OMIT collisionPageField/collisionMessage. (B) COLLISION RETRY — when the live trace exposed an inline collision validation with a locatable message for the field, wrap the submit in retryOnCollision({ page: this.page, successUrl: urlRegex(routes.X), collision: this.<page>.collisionLocator, makeValue: () => uniqueValue(seed, { kind, length }), submit: async (value) => { fill the field with value; click Save; }, collisionMessage }); the Page MUST expose that exact live collision locator, retry ONLY when it appears (all other errors/timeouts fail), and do NOT add a second waitForURL after the helper. Return one uniqueFields descriptor per unique field so codegen can enforce this contract. HARD REQUIREMENT: every uniqueFields entry you declare MUST have a matching uniqueValue(seed, { kind, length }) call AND an `import { uniqueValue } from "../utils/UniqueData"` in the Module that actually fills that field — declaring a uniqueFields descriptor without wiring uniqueValue() into the Module is REJECTED; if a field is not proven-unique, use ordinary FIXED testData for it rather than leaving an unimplemented uniqueFields entry.',
     '- TAGS — industry standard, stacked in the test() title: a feature/module tag in PascalCase (e.g. @AdminAddUser) PLUS suite tags — @Smoke on the primary happy-path case, @Regression on ALL cases. Do NOT use @Positive/@Negative. Match the domain naming already used in the repo.',
     '- TEST INDEPENDENCE: every test() runs STANDALONE (a case may be run individually via grep). Each test does its OWN login + navigation (prefer test.beforeEach for shared setup) and never depends on state left by a sibling test.',
     '- CLEAN CODE: match the exemplars\' indentation, no unused imports, no dead code, no duplicated boilerplate that belongs in a shared helper. One short comment only above a non-obvious step.',
@@ -1303,6 +1303,18 @@ export function assertPrepopulatedFieldsUntouched(art: LlmArtifacts, trace: Agen
 
 const UNIQUE_KEY = /(?:id|identifier|username|email|code|reference|number)$/i;
 
+// A real uniqueness constraint is one the LIVE app proved — a duplicate/"already exists" validation
+// surfaced during the explore walk. A field NAME alone is NOT evidence: "postalCode", "phoneNumber",
+// and "areaCode" all match the name pattern yet are ordinary reusable values the app accepts as-is.
+const UNIQUENESS_EVIDENCE_RE = /\b(already exists|already taken|already in use|already registered|duplicate|must be unique)\b/i;
+
+/** True only when the VERIFIED trace surfaced a real duplicate/uniqueness validation from the live app. */
+export function traceExposedUniquenessConstraint(trace: AgentStep[]): boolean {
+  return (trace || []).some((step) =>
+    UNIQUENESS_EVIDENCE_RE.test(String(step.result || '')) ||
+    UNIQUENESS_EVIDENCE_RE.test(String(step.context || '')));
+}
+
 function collectLikelyUniqueDataPaths(value: unknown, prefix = ''): string[] {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
   const paths: string[] = [];
@@ -1317,13 +1329,19 @@ function collectLikelyUniqueDataPaths(value: unknown, prefix = ''): string[] {
   return paths;
 }
 
-function assertUniqueFieldsHandled(art: LlmArtifacts): void {
-  const likelyUniquePaths = collectLikelyUniqueDataPaths(art.testData);
+export function assertUniqueFieldsHandled(art: LlmArtifacts, uniquenessObserved: boolean): void {
   const fields = art.uniqueFields || [];
-  const plannedPaths = new Set(fields.map((field) => field.testDataPath.replace(/^testData\./, '')));
-  const missingPlans = likelyUniquePaths.filter((path) => !plannedPaths.has(path));
-  if (missingPlans.length) {
-    throw new Error(`Codegen: static value(s) for unique field(s) ${missingPlans.join(', ')} require a uniqueFields descriptor and retryOnCollision handling.`);
+  // FORCE a uniqueFields descriptor for a name-matching value ONLY when the live app actually proved
+  // uniqueness (a duplicate/"already exists" validation observed during explore). Without that
+  // evidence a "…code"/"…number"/"…id" value (postalCode, phoneNumber) is ordinary reusable testData
+  // and must NEVER be pushed into uniqueValue()/retryOnCollision handling from its name alone.
+  if (uniquenessObserved) {
+    const likelyUniquePaths = collectLikelyUniqueDataPaths(art.testData);
+    const plannedPaths = new Set(fields.map((field) => field.testDataPath.replace(/^testData\./, '')));
+    const missingPlans = likelyUniquePaths.filter((path) => !plannedPaths.has(path));
+    if (missingPlans.length) {
+      throw new Error(`Codegen: static value(s) for unique field(s) ${missingPlans.join(', ')} require a uniqueFields descriptor and retryOnCollision handling.`);
+    }
   }
   for (const field of fields) {
     if (!field.testDataPath) {
@@ -1393,20 +1411,63 @@ function coverageKey(label: string): string {
 }
 
 /**
+ * Every identity a generated artifact may legitimately use to reference a trace field's control:
+ * its human label/accessible name AND the verified locator identifiers (a data-test/testid id, a
+ * getByTestId/getByLabel/getByPlaceholder/role-name argument). This lets the coverage gate accept a
+ * field implemented via its PROVEN locator even when that id differs from the human label — e.g.
+ * "Zip/Postal Code" filled through [data-test="postalCode"] (label ≠ test id). Evidence-only: every
+ * token comes from the verified trace, never inference.
+ */
+function traceFieldIdentityTokens(step: AgentStep): string[] {
+  const tokens: string[] = [];
+  const push = (v?: string): void => { if (v) tokens.push(v); };
+  push(step.interaction?.accessibleName);
+  push(step.interaction?.controlId);
+  push(step.scopeHint?.label);
+  const loc = `${step.locator || ''} ${step.interaction?.locatorEvidence || ''} ${step.scopeHint?.locator || ''}`;
+  for (const m of loc.matchAll(/data-(?:test|testid|qa)\s*=\s*["']([^"']+)["']/g)) push(m[1]);
+  for (const m of loc.matchAll(/getByTestId\(\s*['"]([^'"]+)['"]/g)) push(m[1]);
+  for (const m of loc.matchAll(/getByLabel\(\s*['"]([^'"]+)['"]/g)) push(m[1]);
+  for (const m of loc.matchAll(/getByPlaceholder\(\s*['"]([^'"]+)['"]/g)) push(m[1]);
+  for (const m of loc.matchAll(/name:\s*['"]([^'"]+)['"]/g)) push(m[1]);
+  return tokens;
+}
+
+/**
  * Automation-Trace coverage gate. `coverageFields` lists the EXECUTABLE Automation Trace steps the
  * approved scenario exercises — feature controls only, never the discovery inventory and never blocked
  * (e.g. upload) steps. This gate rejects a reply that silently drops any executable trace step: the
- * generated Page+Module+Spec together must reference each one (by its label appearing in a
- * getByLabel/getByRole locator, a method name, a testData key, or plain text). Coverage is measured
- * against trace steps, NOT discovered controls, so unrelated navigation can never fail codegen. No
- * selection = legacy behaviour (gate is a no-op).
+ * generated Page+Module+Spec together must reference each one — by its label OR by any VERIFIED
+ * locator identity for it (a data-test id / getByTestId / getByLabel argument from the trace),
+ * appearing in a locator, a method name, a testData key, or plain text. Coverage is measured against
+ * trace steps, NOT discovered controls, so unrelated navigation can never fail codegen. No selection =
+ * legacy behaviour (gate is a no-op).
  */
-function assertTraceCoverage(art: LlmArtifacts, coverageFields?: string[]): void {
+export function assertTraceCoverage(art: LlmArtifacts, coverageFields?: string[], trace?: AgentStep[]): void {
   if (!coverageFields || !coverageFields.length) return;
   const haystack = coverageKey([art.page.content, art.module.content, art.spec.content, JSON.stringify(art.testData || {})].join('\n'));
+  // Map each coverage label to the alternative identity tokens the verified trace proves for it, so a
+  // field implemented via its data-test id (differing from the label) still counts as covered.
+  const identityByLabel = new Map<string, Set<string>>();
+  for (const step of trace || []) {
+    const label = traceStepFieldLabel(step);
+    if (!label) continue;
+    const key = coverageKey(label);
+    let set = identityByLabel.get(key);
+    if (!set) { set = new Set<string>(); identityByLabel.set(key, set); }
+    for (const token of traceFieldIdentityTokens(step)) {
+      const tokenKey = coverageKey(token);
+      if (tokenKey.length >= 2) set.add(tokenKey);
+    }
+  }
   const missing = coverageFields.filter((label) => {
     const key = coverageKey(label);
-    return key.length >= 2 && !haystack.includes(key);
+    if (key.length < 2) return false;
+    if (haystack.includes(key)) return false;
+    for (const alt of identityByLabel.get(key) || []) {
+      if (haystack.includes(alt)) return false;
+    }
+    return true;
   });
   if (missing.length) {
     throw new Error(
@@ -1524,6 +1585,10 @@ export async function generateFromTrace(
     { role: 'user', content: buildPrompt(fw, job, trace) },
   ];
 
+  // Did the live explore walk actually prove a uniqueness constraint (a duplicate/"already exists"
+  // validation)? Only then may codegen FORCE unique-value handling on a name-matching field.
+  const uniquenessObserved = traceExposedUniquenessConstraint(trace);
+
   // Parse the reply and run EVERY in-memory quality gate. Throws one clear message the model can repair against.
   const parseAndValidate = (raw: string): LlmArtifacts => {
     const match = raw.match(/\{[\s\S]*\}/);
@@ -1544,9 +1609,9 @@ export async function generateFromTrace(
     ]);
     assertSingleNavigationPath({ file: candidate.spec.file || 'Spec', content: candidate.spec.content });
     assertPrepopulatedFieldsUntouched(candidate, trace);
-    assertUniqueFieldsHandled(candidate);
+    assertUniqueFieldsHandled(candidate, uniquenessObserved);
     assertNoUndefinedFixtures(fw, candidate);
-    assertTraceCoverage(candidate, job.coverageFields);
+    assertTraceCoverage(candidate, job.coverageFields, trace);
     assertResolvedDependenciesUsed(candidate.module.content, job.dependencyResolution);
     assertWrapperMethodsExist(fw, [
       { file: candidate.page.file || 'Page', content: candidate.page.content },
@@ -1594,6 +1659,12 @@ export async function generateFromTrace(
         'Fix ONLY this problem and re-emit the COMPLETE corrected artifact as STRICT JSON',
         '(all of page/module/spec plus testData/routes/uniqueFields as needed), keeping every other',
         'file and locator exactly as before. No prose, no markdown fences.',
+        '',
+        'HARD CONSTRAINT (applies to EVERY repair attempt): full Automation Trace coverage is',
+        'non-negotiable. NEVER drop, rename, or skip a field/step to dodge a gate — every executable',
+        'Automation Trace step must stay fully implemented (filled/selected/clicked + referenced). If a',
+        'gate is about a field\'s CLASSIFICATION (e.g. unique vs ordinary testData), CORRECT the',
+        'classification for that same field; do not remove the field.',
       ].join('\n') });
     }
   }

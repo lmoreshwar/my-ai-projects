@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseInventory } from '../discovery';
 import type { DiscoveryResult, FieldInventoryItem } from '../discovery';
-import { authorScenariosFromDiscovery, scenariosToCases, selectTraceForScenarios, assertNavigationUrlContract, assertSingleNavigationPath } from '../codegen';
+import { authorScenariosFromDiscovery, scenariosToCases, selectTraceForScenarios, assertNavigationUrlContract, assertSingleNavigationPath, assertUniqueFieldsHandled, traceExposedUniquenessConstraint, assertTraceCoverage } from '../codegen';
 import type { AgentStep } from '../agent-loop';
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────────── */
@@ -403,4 +403,83 @@ test.describe('X', () => {
   });
 });`;
   assert.doesNotThrow(() => assertSingleNavigationPath({ file: 'spec', content: clean }));
+});
+
+/* ── 11. Unique-field classification is gated on LIVE evidence, never a field name ─────── */
+
+/** A minimal generated-artifact bundle for the uniqueFields gate (cast to the gate's param type). */
+function uniqueArt(parts: { module?: string; page?: string; testData?: Record<string, unknown>; uniqueFields?: unknown[] }) {
+  return {
+    domain: 'checkout',
+    page: { file: 'src/pages/CheckoutPage.ts', content: parts.page || '' },
+    module: { file: 'src/modules/CheckoutModule.ts', content: parts.module || '' },
+    spec: { file: 'src/tests/checkout.spec.ts', content: '' },
+    testData: parts.testData || {},
+    uniqueFields: parts.uniqueFields || [],
+  } as Parameters<typeof assertUniqueFieldsHandled>[0];
+}
+
+// The exact Checkout bug: postalCode ends in "code" so the name pattern flags it, but SauceDemo's
+// checkout form NEVER shows a duplicate/"already exists" validation → it is ordinary reusable data.
+test('no live uniqueness evidence: a postal code + names are ordinary testData, not forced unique', () => {
+  const art = uniqueArt({
+    testData: { checkoutYourInformation: { firstName: 'Jane', lastName: 'Doe', postalCode: '90210' } },
+    uniqueFields: [],
+  });
+  // uniquenessObserved = false → the gate must NOT demand a uniqueFields descriptor for postalCode.
+  assert.doesNotThrow(() => assertUniqueFieldsHandled(art, false));
+});
+
+// Backward compatibility: when the live app DID prove uniqueness, a name-matching field with no
+// descriptor is still rejected so genuine identifiers keep their fresh-value handling.
+test('with live uniqueness evidence: a name-matching field without a descriptor is still rejected', () => {
+  const art = uniqueArt({
+    testData: { addUser: { username: 'seed_user' } },
+    uniqueFields: [],
+  });
+  assert.throws(() => assertUniqueFieldsHandled(art, true), /require a uniqueFields descriptor/);
+});
+
+// A properly declared+wired uniqueFields entry passes regardless of the evidence flag.
+test('a declared unique field wired to uniqueValue() passes the gate', () => {
+  const art = uniqueArt({
+    module: "import { uniqueValue } from '../utils/UniqueData';\nconst v = uniqueValue(seed, { kind: 'alphanumeric', length: 7 });",
+    testData: { addUser: { username: 'seed_user' } },
+    uniqueFields: [{ testDataPath: 'testData.addUser.username', kind: 'alphanumeric', length: 7 }],
+  });
+  assert.doesNotThrow(() => assertUniqueFieldsHandled(art, true));
+});
+
+test('traceExposedUniquenessConstraint detects a live duplicate validation and ignores clean traces', () => {
+  assert.equal(traceExposedUniquenessConstraint(jobTitlesTrace()), false, 'a clean create trace has no uniqueness evidence');
+  const collided: AgentStep[] = [
+    ...jobTitlesTrace(),
+    { tool: 'snapshot', args: {}, url: 'https://x/add', result: '- text: Employee Id already exists' },
+  ];
+  assert.equal(traceExposedUniquenessConstraint(collided), true, 'an "already exists" validation is live uniqueness evidence');
+});
+
+/* ── 12. Coverage gate accepts a field's VERIFIED locator identity, not only its human label ── */
+
+// The exact Checkout coverage bug: "Zip/Postal Code" is filled through [data-test="postalCode"],
+// so the human label ("zippostalcode") never appears when the model uses the verified data-test id.
+// The gate must accept the field via its proven identity — but still reject a genuinely dropped field.
+test('coverage gate accepts a field referenced by its verified data-test id, not only its label', () => {
+  const trace: AgentStep[] = [
+    {
+      tool: 'fill', args: { value: '94107' }, url: 'https://www.saucedemo.com/checkout-step-one.html',
+      locator: 'await page.locator(\'[data-test="postalCode"]\').fill(\'94107\');',
+      interaction: {
+        controlId: 'postalCode', action: 'fill', semanticRole: 'textbox', accessibleName: 'Zip/Postal Code',
+        locatorEvidence: 'await page.locator(\'[data-test="postalCode"]\').fill(\'94107\');',
+      },
+    } as unknown as AgentStep,
+  ];
+  // Implemented via getByTestId('postalCode') — no "Zip/Postal Code" text anywhere → must still pass.
+  const byTestId = uniqueArt({ page: "postalCodeInput = (): Locator => this.page.getByTestId('postalCode');", testData: { checkout: { postalCode: '94107' } } });
+  assert.doesNotThrow(() => assertTraceCoverage(byTestId, ['Zip/Postal Code'], trace));
+
+  // A genuinely dropped field (no label, no data-test id, no testData key) is still rejected.
+  const dropped = uniqueArt({ page: "firstNameInput = (): Locator => this.page.getByTestId('firstName');" });
+  assert.throws(() => assertTraceCoverage(dropped, ['Zip/Postal Code'], trace), /does not implement/);
 });
