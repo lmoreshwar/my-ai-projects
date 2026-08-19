@@ -20,7 +20,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import OpenAI from 'openai';
-import { deriveLocatorScopeHint, type AgentStep, type LocatorScopeHint } from './agent-loop';
+import { deriveLocatorScopeHint, type AgentStep, type LocatorScopeHint, type InteractionEvidence } from './agent-loop';
 import type {
   FieldInventoryItem, LocatorEvidence, DiscoveryState, CompletenessGate, ApplicationSummary, DiscoveryResult, StateTransition,
 } from './discovery';
@@ -331,6 +331,18 @@ function renderStateTransitions(ev?: DiscoveryEvidence): string {
   }).join('\n');
 }
 
+/** Render the proven interaction target for every custom/ambiguous checkable-or-select control. */
+function renderInteractionEvidence(trace: AgentStep[]): string {
+  const risky = riskyInteractions(trace);
+  if (!risky.length) return '(no custom/ambiguous interactive controls — standard role/label locators are fine)';
+  return risky.map((ev) => {
+    const why = ev.uniqueness > 1
+      ? `${ev.uniqueness} same-role matches (ambiguous)`
+      : 'custom unnamed widget (native input overlaid by a wrapper/switch span)';
+    return `- ${ev.action} "${ev.controlId}" [${ev.semanticRole}] — ${why}. USE this proven target: ${ev.locatorEvidence}  (NEVER a bare getByRole('${ev.semanticRole}'))`;
+  }).join('\n');
+}
+
 function prepopulatedFieldLabels(trace: AgentStep[]): string[] {
   return [...new Set(trace.flatMap((step) => step.prepopulatedFields || []).map((field) => field.label).filter(Boolean))];
 }
@@ -361,8 +373,12 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     renderTrace(trace),
     '',
     '## Evidence priority (STRICT — a lower tier must NEVER override a higher one)',
-    'VERIFIED LIVE TRACE  >  LIVE DISCOVERY INVENTORY  >  STATE TRANSITION EVIDENCE  >  REUSE INDEX (.ai-memory)  >  MODEL INFERENCE.',
+    'VERIFIED LIVE INTERACTION EVIDENCE  >  VERIFIED LIVE TRACE  >  LIVE DISCOVERY INVENTORY  >  STATE TRANSITION EVIDENCE  >  REUSE INDEX (.ai-memory)  >  MODEL INFERENCE.',
     'Use ONLY locators and option values that appear in the evidence in this prompt. If no verified locator exists for a control, DO NOT invent one — omit that control. Never emit a dropdown/select option that the state-transition evidence below did not actually observe.',
+    'For a custom or ambiguous checkable/select control, NEVER emit a bare getByRole(\'checkbox\'|\'switch\'|\'radio\'|\'combobox\'): reuse the exact proven interaction target below (a bare role locator resolves to a native input whose click a wrapper/switch span intercepts, or matches several controls).',
+    '',
+    '## Verified interaction evidence (custom/ambiguous controls — reuse the proven target, NEVER a bare role locator)',
+    renderInteractionEvidence(trace),
     '',
     '## Live discovery inventory (durable locator + option evidence for every control on the feature screen)',
     renderDiscoveryInventory(job.discoveryEvidence),
@@ -505,6 +521,52 @@ function assertRoutesDefined(fw: string, files: string[]): void {
 function assertNoPositionalPageLocators(file: string, content: string): void {
   if (!/\.(?:nth|first|last)\s*\(/.test(content)) return;
   throw new Error(`Codegen: positional locator found in ${file}. Scope the live control from its stable label/group instead of using .nth().`);
+}
+
+/** Roles for which a bare getByRole('<role>') is a known trap on custom widgets / ambiguous pages. */
+const RISKY_INTERACTION_ROLES = ['checkbox', 'switch', 'radio', 'combobox'];
+
+/** The custom/ambiguous interactive controls proven live during exploration (deduped by role+control). */
+function riskyInteractions(trace: AgentStep[]): InteractionEvidence[] {
+  const seen = new Set<string>();
+  const out: InteractionEvidence[] = [];
+  for (const step of trace) {
+    const ev = step.interaction;
+    if (!ev || !ev.custom || !RISKY_INTERACTION_ROLES.includes(ev.semanticRole)) continue;
+    const key = `${ev.semanticRole}:${ev.controlId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(ev);
+  }
+  return out;
+}
+
+/**
+ * VERIFIED-LIVE interaction gate (pre-execution). When exploration proved a control is a CUSTOM checkable
+ * widget (an unnamed checkbox/switch/radio) or an AMBIGUOUS role, a bare getByRole('<role>') is unsafe: it
+ * resolves to a native input whose click a wrapper/switch span intercepts, or it matches several controls.
+ * This rejects that exact locator BEFORE Playwright runs and hands the repair loop the proven target to
+ * reuse. Generic across every application — driven only by observed live evidence, never app selectors.
+ */
+export function assertProvenInteractionLocators(artFiles: Array<{ file: string; content: string }>, trace: AgentStep[]): void {
+  for (const ev of riskyInteractions(trace)) {
+    // A BARE role locator is chained DIRECTLY off the page: `page.getByRole('checkbox')` (also matches
+    // `this.page.getByRole(...)`). A label/group-scoped form — `page.getByText('…').locator('…').getByRole('checkbox')`
+    // or `.filter(…).getByRole('checkbox')` — is intentionally allowed because the scoping call sits between
+    // `page.` and `getByRole`, so this pattern never matches it. A named getByRole('checkbox', { name: '…' })
+    // carries a comma and is allowed too.
+    const bare = new RegExp(`page\\.getByRole\\(\\s*['"]${ev.semanticRole}['"]\\s*\\)`);
+    const hit = artFiles.find((f) => bare.test(f.content));
+    if (!hit) continue;
+    const why = ev.uniqueness > 1
+      ? `the live trace shows ${ev.uniqueness} same-role ${ev.semanticRole} controls (ambiguous)`
+      : `the live trace shows a custom (unnamed) ${ev.semanticRole} whose click is intercepted by a sibling/ancestor wrapper (e.g. a switch span)`;
+    throw new Error(
+      `Codegen: locator for "${ev.controlId}" in ${hit.file} resolves to a bare getByRole('${ev.semanticRole}'), but `
+      + `${why}. Do NOT use generic getByRole('${ev.semanticRole}'). Reuse the EXACT live interaction target `
+      + `captured during exploration: ${ev.locatorEvidence || '(the label-scoped locator from the trace)'}.`,
+    );
+  }
 }
 
 /**
@@ -910,6 +972,11 @@ export async function generateFromTrace(
       { file: candidate.module.file || 'Module', content: candidate.module.content },
       { file: candidate.spec.file || 'Spec', content: candidate.spec.content },
     ]);
+    assertProvenInteractionLocators([
+      { file: candidate.page.file || 'Page', content: candidate.page.content },
+      { file: candidate.module.file || 'Module', content: candidate.module.content },
+      { file: candidate.spec.file || 'Spec', content: candidate.spec.content },
+    ], trace);
     return candidate;
   };
 

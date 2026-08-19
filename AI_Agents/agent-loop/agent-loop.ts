@@ -78,6 +78,8 @@ export interface AgentStep {
   context?: string;
   scopeHint?: LocatorScopeHint;
   prepopulatedFields?: PrepopulatedField[];
+  /** VERIFIED-LIVE interaction contract for a ref-based action (the strongest codegen evidence). */
+  interaction?: InteractionEvidence;
   url?: string;
   result: string;
 }
@@ -90,6 +92,26 @@ export interface LocatorScopeHint {
   label: string;
   locator: string;
 }
+
+/**
+ * A LocatorContract captured the instant an action ran against the REAL browser — the highest-priority
+ * evidence codegen has. It records what was actually resolved and acted on, so codegen reuses the proven
+ * interaction target instead of re-deriving a semantically weak locator (e.g. a bare getByRole('checkbox')
+ * that resolves to a native input whose click a custom switch/wrapper span intercepts). Fully generic.
+ */
+export interface InteractionEvidence {
+  controlId: string;          // stable label/name identifying the control
+  action: string;             // click | check | uncheck | select | fill | type
+  semanticRole: string;       // checkbox | switch | radio | combobox | textbox | button | …
+  accessibleName: string;     // '' for an unnamed custom control (the switch/checkbox fingerprint)
+  locatorEvidence: string;    // the proven interaction target: the label-scoped hint, else the CLI-run locator
+  interactionTarget: string;  // the resolved control + ref actually acted on
+  uniqueness: number;         // controls sharing this role/name in the live snapshot (1 = unique)
+  custom: boolean;            // unnamed checkable OR ambiguous role ⇒ a bare role locator is unsafe
+  actionability: 'verified-live'; // it really ran green against the live page
+  provenByLiveTrace: true;
+}
+
 
 export interface PrepopulatedField {
   ref: string;
@@ -208,13 +230,53 @@ export function deriveLocatorScopeHint(snapshot: string, ref: string, forceAmbig
   const target = controls.find((control) => lines[control.index].includes(`[ref=${ref}]`));
   if (!target) return undefined;
   const matches = controls.filter((control) => control.role === target.role && control.name === target.name);
-  if (!forceAmbiguous && matches.length < 2) return undefined;
+  // An UNNAMED checkable (checkbox/switch/radio) is a custom-widget fingerprint: a bare getByRole is
+  // both weak (its native input is often overlaid by a wrapper span) and usually non-unique, so scope it
+  // to its label even when it is the only one on the page.
+  const unnamedCheckable = ['checkbox', 'radio', 'switch'].includes(target.role) && !target.name;
+  if (!forceAmbiguous && matches.length < 2 && !unnamedCheckable) return undefined;
   const label = nearestLabelInSnapshot(lines, target);
   if (!label) return undefined;
   const roleOptions = target.name ? `, { name: '${escapeTsLiteral(target.name)}' }` : '';
   const locator = `page.getByText('${escapeTsLiteral(label)}', { exact: true }).locator('xpath=ancestor::*[${descendantPredicate(target.role)}][1]').getByRole('${target.role}'${roleOptions})`;
-  return { role: target.role, name: target.name, matches: Math.max(matches.length, 2), label, locator };
+  return { role: target.role, name: target.name, matches: Math.max(matches.length, unnamedCheckable ? 1 : 2), label, locator };
 }
+
+/**
+ * Build the VERIFIED-LIVE interaction contract for a ref-based action, from the snapshot the action ran
+ * against. `custom` flags the cases where a bare getByRole is unsafe: an unnamed checkable widget or an
+ * ambiguous role. Generic — no app-specific classes or names.
+ */
+export function interactionEvidenceForRef(
+  snapshot: string,
+  ref: string,
+  action: string,
+  provenLocator: string,
+  scopeHint?: LocatorScopeHint,
+): InteractionEvidence | undefined {
+  if (!snapshot || !ref) return undefined;
+  const lines = snapshot.split('\n');
+  const controls = lines.map(snapshotControl).filter((control): control is SnapshotControl => Boolean(control));
+  const target = controls.find((control) => lines[control.index].includes(`[ref=${ref}]`));
+  if (!target) return undefined;
+  const uniqueness = controls.filter((control) => control.role === target.role && control.name === target.name).length;
+  const label = scopeHint?.label || nearestLabelInSnapshot(lines, target) || target.name;
+  const unnamedCheckable = ['checkbox', 'radio', 'switch'].includes(target.role) && !target.name;
+  const custom = unnamedCheckable || uniqueness > 1;
+  return {
+    controlId: label || target.name || ref,
+    action,
+    semanticRole: target.role,
+    accessibleName: target.name,
+    locatorEvidence: scopeHint?.locator || provenLocator || '',
+    interactionTarget: `${target.role}${target.name ? ` "${target.name}"` : ' (unnamed)'} [ref=${ref}]`,
+    uniqueness,
+    custom,
+    actionability: 'verified-live',
+    provenByLiveTrace: true,
+  };
+}
+
 
 const UNIQUE_FIELD_LABEL = /\b(employee\s*id|identifier|username|e-?mail|code|reference|record\s*number)\b/i;
 const FINAL_SUBMIT_LABEL = /^(save|submit|create|register)$/i;
@@ -883,12 +945,17 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
           const label = filledLabelForRef(latestSnapshot, liveRows, actionRef);
           if (label) filledLabels.add(normalizeLabel(label));
         }
+        // Capture the VERIFIED-LIVE interaction contract for ref-based actions (strongest codegen evidence).
+        const interaction = actionRef
+          ? interactionEvidenceForRef(latestSnapshot, actionRef, name, locator, scopeHint)
+          : undefined;
         steps.push({
           tool: name,
           args: recordedArgs,
           locator,
           context: context ? redact(context, secrets) : undefined,
           scopeHint,
+          interaction,
           url: pageUrl,
           result: redact(raw, secrets).slice(0, 400),
         });
