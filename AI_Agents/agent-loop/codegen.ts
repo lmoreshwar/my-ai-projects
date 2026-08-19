@@ -266,19 +266,124 @@ function wrapperContract(fw: string): string {
   ].join('\n');
 }
 
-/** Read one representative Page/Module/Spec so generated files match the repo's exact style. */
+/**
+ * Canonical fallback exemplars used when the framework has no representative Page/Module/feature-spec
+ * yet (e.g. a freshly reset repo). They encode the EXACT repo conventions — arrow-getter Page,
+ * wrapper-driven Module with Logger, and a Spec that imports the fixtures barrel and instantiates the
+ * Module directly — so a from-scratch generation still matches the 3-layer contract.
+ */
+const FALLBACK_PAGE_EXEMPLAR = `import { type Locator, type Page } from '@playwright/test';
+
+export class SampleLoginPage {
+  constructor(private readonly page: Page) {}
+
+  usernameInput = (): Locator => this.page.getByRole('textbox', { name: 'Username' });
+  passwordInput = (): Locator => this.page.getByRole('textbox', { name: 'Password' });
+  loginButton = (): Locator => this.page.getByRole('button', { name: 'Login' });
+  errorMessage = (): Locator => this.page.getByRole('alert');
+}
+`;
+
+const FALLBACK_MODULE_EXEMPLAR = `import { type Page } from '@playwright/test';
+import { Actions } from '../utils/Actions';
+import { Logger } from '../utils/Logger';
+import { routes, urlFor } from '../config';
+import { SampleLoginPage } from '../pages/SampleLoginPage';
+
+export class SampleLoginModule {
+  private readonly page: Page;
+  private readonly actions: Actions;
+  private readonly logger = Logger.create('SampleLoginModule');
+  private readonly loginPage: SampleLoginPage;
+
+  constructor(page: Page) {
+    this.page = page;
+    this.actions = new Actions(page);
+    this.loginPage = new SampleLoginPage(page);
+  }
+
+  async goto(): Promise<void> {
+    this.logger.step(1, 'Open the login page');
+    await this.actions.navigate(urlFor(routes.login), { readyElement: this.loginPage.usernameInput() });
+  }
+
+  async login(username: string, password: string): Promise<void> {
+    this.logger.step(2, 'Submit credentials');
+    await this.actions.fill(this.loginPage.usernameInput(), username);
+    await this.actions.fill(this.loginPage.passwordInput(), password);
+    await this.actions.click(this.loginPage.loginButton());
+  }
+}
+`;
+
+const FALLBACK_SPEC_EXEMPLAR = `import { test, expect } from '../fixtures';
+import { credentials, routes, urlRegex } from '../config';
+import { SampleLoginModule } from '../modules/SampleLoginModule';
+
+test.describe('Sample Login', () => {
+  test('TC_001 valid credentials reach the app @SampleLogin @Smoke @Regression', async ({ page }) => {
+    const loginModule = new SampleLoginModule(page);
+    const { username, password } = credentials('app');
+    await loginModule.goto();
+    await loginModule.login(username, password);
+    await expect(page).toHaveURL(urlRegex(routes.inventory));
+  });
+});
+`;
+
+/** Whether the framework already has a reusable login Module and/or a registered login fixture. */
+function loginAssets(fw: string): { hasLoginModule: boolean; loginFixture: string | null } {
+  let hasLoginModule = false;
+  const modulesDir = join(fw, 'src/modules');
+  if (existsSync(modulesDir)) {
+    hasLoginModule = readdirSync(modulesDir).some((f) => /login/i.test(f) && f.endsWith('Module.ts'));
+  }
+  let loginFixture: string | null = null;
+  const fixturesSrc = safeRead(join(fw, 'src/fixtures/index.ts'));
+  for (const m of fixturesSrc.matchAll(/^\s*(\w+)\s*:\s*async\s*\(/gm)) {
+    if (/login/i.test(m[1])) { loginFixture = m[1]; break; }
+  }
+  return { hasLoginModule, loginFixture };
+}
+
+/**
+ * Build the SHARED LOGIN rule for the prompt from what ACTUALLY exists in the framework, so codegen
+ * never tells the model to use a `loginModule` fixture that was never registered (the exact
+ * "unknown parameter" crash on a reset repo). Three cases: a registered login fixture -> destructure
+ * it; a LoginModule class but no fixture -> instantiate it; neither -> generate login from scratch.
+ */
+function loginGuidanceFor(fw: string): string {
+  const { hasLoginModule, loginFixture } = loginAssets(fw);
+  if (loginFixture) {
+    return `- SHARED LOGIN: a '${loginFixture}' fixture IS registered - destructure it (async ({ page, ${loginFixture} }) => ...) and log in in test.beforeEach (${loginFixture}.goto() + ${loginFixture}.login(credentials("app"))). Feature navigation stays in the feature Module.goto() inside each test.`;
+  }
+  if (hasLoginModule) {
+    return '- SHARED LOGIN: a LoginModule exists but is NOT a registered fixture - instantiate it in the beforeEach/test body (const loginModule = new LoginModule(page)) and call loginModule.goto() + loginModule.login(credentials("app")). NEVER destructure a `loginModule` fixture (it is not registered).';
+  }
+  return '- LOGIN FROM SCRATCH: there is NO login Module or login fixture yet. If the app requires login, generate the login step inside THIS feature\'s Module (a login() method that fills username/password from credentials("app") and submits) - do NOT reference a `loginModule` fixture (destructuring it fails with "unknown parameter"). Feature navigation stays in the feature Module.goto() inside each test.';
+}
+
+/** Read one representative Page/Module/feature-Spec so generated files match the repo's exact style. */
 function readExemplars(fw: string): { page: string; module: string; spec: string } {
-  const pick = (dir: string, prefer: RegExp): string => {
+  // A representative FEATURE spec imports the fixtures barrel ('../fixtures'). Framework unit tests
+  // (e.g. navigation.spec.ts) import '@playwright/test' directly and drive a fake page - using one as
+  // the exemplar teaches the wrong import + shape, so exclude it and fall back to the canonical spec.
+  const isFeatureSpec = (src: string): boolean =>
+    /from\s+['"][^'"]*\/fixtures['"]/.test(src) && !/from\s+['"]@playwright\/test['"]/.test(src);
+  const pick = (dir: string, prefer: RegExp, accept?: (src: string) => boolean): string => {
     const d = join(fw, dir);
     if (!existsSync(d)) return '';
-    const files = readdirSync(d).filter((f) => f.endsWith('.ts'));
-    const chosen = files.find((f) => prefer.test(f)) || files[0];
-    return chosen ? safeRead(join(d, chosen)) : '';
+    const candidates = readdirSync(d)
+      .filter((f) => f.endsWith('.ts') && !f.endsWith('.d.ts'))
+      .map((f) => ({ f, src: safeRead(join(d, f)) }))
+      .filter((x) => x.src && (!accept || accept(x.src)));
+    const chosen = candidates.find((x) => prefer.test(x.f)) || candidates[0];
+    return chosen ? chosen.src : '';
   };
   return {
-    page: pick('src/pages', /login/i),
-    module: pick('src/modules', /login/i),
-    spec: pick('src/tests', /login/i),
+    page: pick('src/pages', /login/i) || FALLBACK_PAGE_EXEMPLAR,
+    module: pick('src/modules', /login/i) || FALLBACK_MODULE_EXEMPLAR,
+    spec: pick('src/tests', /login/i, isFeatureSpec) || FALLBACK_SPEC_EXEMPLAR,
   };
 }
 
@@ -363,6 +468,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
   const ex = readExemplars(fw);
   const wrappers = wrapperContract(fw);
   const caps = loadCapabilities(fw);
+  const loginGuidance = loginGuidanceFor(fw);
   const types = (job.testTypes && job.testTypes.length) ? job.testTypes.join(', ') : 'positive (happy path)';
   const prepopulated = prepopulatedFieldLabels(trace);
   return [
@@ -422,10 +528,11 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- Spec = import { test, expect } from "../fixtures"; instantiate the new Module directly with the test\'s page, e.g. `const m = new <Feature>Module(page)`. Put all assertions here.',
     '- FIXTURES: the test callback may destructure ONLY { page } plus fixtures already listed in "Fixtures already registered" above (e.g. loginModule for shared login). This feature\'s brand-new Page/Module are NOT fixtures — codegen does not edit src/fixtures/index.ts — so NEVER write `async ({ <feature>Page })` or `async ({ <feature>Module })` (Playwright fails with "unknown parameter"). When the spec needs the new Page for an assertion, instantiate it directly in the test body: `const <feature>Page = new <Feature>Page(page)`; likewise `const <feature>Module = new <Feature>Module(page)`. The reuse exemplar destructures ITS OWN registered fixtures — do not copy that for a not-yet-registered feature.',
     '- For login, the Module\'s login method takes (username, password); the spec passes credentials("app"). Do NOT hardcode credentials.',
+    loginGuidance,
     '- Reuse an existing Page/Module method from the reuse index when one already does the job.',
-    '- ZERO hardcoded URLs (Pages, Modules AND specs). If src/config exposes a routes map + urlFor(path)/urlRegex(path), use urlFor(routes.X) for every goto() and urlRegex(routes.X) for every toHaveURL() assertion AND every waitForURL() navigation wait; otherwise use a RELATIVE path resolved by the configured baseURL. NEVER embed a full "https://host/..." literal NOR a raw inline URL regex (e.g. /\\/web\\/index\\.php\\/pim\\/.../ ) in a module or spec — a navigation wait on a dynamic landing path MUST use urlRegex(routes.X) on the stable prefix route.',
-    '- NEW ROUTES: if you reference a routes.X key that is NOT already listed in the Route map above, you MUST also return it in a top-level "routes" object mapping that key to its VERIFIED RELATIVE path taken from the trace url (e.g. "pimAddEmployee": "/web/index.php/pim/addEmployee"). Every routes.X you reference must either already exist or be returned in "routes" — an undefined route fails the build.',
-    '- URL ASSERTIONS: assert the ACTUAL post-action landing URL observed in the trace (the FINAL step\'s [url: ...]), not the form/origin URL. If that landing path contains a DYNAMIC segment (numeric id, hash, empNumber/245, uuid), assert urlRegex on the STABLE PREFIX route (e.g. urlRegex(routes.pimViewPersonalDetails)) — never assert an exact URL that embeds a run-specific id.',
+    '- ZERO hardcoded URLs (Pages, Modules AND specs). If src/config exposes a routes map + urlFor(path)/urlRegex(path), use urlFor(routes.X) for every goto() and urlRegex(routes.X) for every toHaveURL() assertion AND every waitForURL() navigation wait; otherwise use a RELATIVE path resolved by the configured baseURL. NEVER embed a full "https://host/..." literal NOR a raw inline URL regex (e.g. /\\/records\\/\\d+/ ) in a module or spec — a navigation wait on a dynamic landing path MUST use urlRegex(routes.X) on the stable prefix route.',
+    '- NEW ROUTES: if you reference a routes.X key that is NOT already listed in the Route map above, you MUST also return it in a top-level "routes" object mapping that key to its VERIFIED RELATIVE path taken from the trace url (e.g. "createRecord": "/records/new"). Every routes.X you reference must either already exist or be returned in "routes" — an undefined route fails the build.',
+    '- URL ASSERTIONS: assert the ACTUAL post-action landing URL observed in the trace (the FINAL step\'s [url: ...]), not the form/origin URL. If that landing path contains a DYNAMIC segment (numeric id, hash, /records/245, uuid), assert urlRegex on the STABLE PREFIX route (e.g. urlRegex(routes.recordDetails)) — never assert an exact URL that embeds a run-specific id.',
     '- NAVIGATION URL TYPE (hard rule — the wrong type crashes at runtime with "page.goto: url: expected string, got object"): page.goto() takes a URL STRING, so ALWAYS pass urlFor(routes.X). urlRegex(routes.X) returns a RegExp and is valid ONLY for expect(page).toHaveURL(urlRegex(routes.X)) and page.waitForURL(urlRegex(routes.X)). NEVER page.goto(urlRegex(...)), page.goto(/.../), page.goto(new RegExp(...)) or a bare page.goto(routes.X). Feature navigation belongs in the Module goto() using urlFor(routes.X).',
     '- ONE NAVIGATION PATH — no duplicate nav: test.beforeEach does SHARED LOGIN ONLY (loginModule.goto() + loginModule.login(credentials("app"))). Feature navigation lives in the feature Module.goto() called INSIDE each test. Do NOT also navigate to the feature from beforeEach (no page.goto(feature) there) when a test calls <feature>Module.goto() — that double-navigates. Pick the Module.goto() as the single authoritative path.',
     '- SEQUENTIAL, APPEND-ONLY numbering: each spec file owns its own TC_001, TC_002… sequence. When a spec for this feature already exists, read the highest existing TC_XXX and number NEW cases from the next free number (existing TC_001–TC_003 → new TC_004); never renumber, reorder, or overwrite an existing test() block — append after them and return the FULL file with every existing test kept verbatim.',
@@ -444,7 +551,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '  "module": { "file": "src/modules/<Feature>Module.ts","content": "<full file>" },',
     '  "spec":   { "file": "src/tests/<feature>.spec.ts",   "content": "<full file>" },',
     '  "testData": { <any new keys the spec reads, or omit> },',
-    '  "routes": { <NEW routes.X keys → verified relative path (e.g. "pimAddEmployee": "/web/index.php/pim/addEmployee"), or omit if none are new> },',
+    '  "routes": { <NEW routes.X keys → verified relative path (e.g. "createRecord": "/records/new"), or omit if none are new> },',
     '  "uniqueFields": [{ "testDataPath": "<testData seed path>", "kind": "numeric|alphanumeric|email", "length": 7, "collisionPageField": "<Page collision locator property — ONLY if a live collision validation exists; OMIT otherwise>", "collisionMessage": "<exact live validation text — only alongside collisionPageField>" }],',
     '  "reusedFrom": ["<existing class/method you reused>"]',
     '}',
@@ -595,7 +702,7 @@ export function assertNavigationUrlContract(artFiles: Array<{ file: string; cont
 /**
  * One authoritative feature-navigation path. Catches the double-nav bug: beforeEach navigates to the
  * feature (raw page.goto or a feature Module.goto()) AND a test ALSO navigates via <feature>Module.goto().
- * loginModule.goto() is the login page, not feature navigation, so it never counts. Reject the duplicate so
+ * A login Module/fixture goto() is the login page, not feature navigation, so it never counts. Reject the duplicate so
  * beforeEach is reduced to shared login only and the Module.goto() owns feature navigation. Generic.
  */
 export function assertSingleNavigationPath(spec: { file: string; content: string }): void {
@@ -603,13 +710,14 @@ export function assertSingleNavigationPath(spec: { file: string; content: string
   const be = src.match(/beforeEach\s*\([\s\S]*?=>\s*\{([\s\S]*?)\n\s*\}\s*\)\s*;?/);
   const beforeBody = be?.[1] || '';
   const rest = be ? src.replace(be[0], '') : src;
-  // Feature navigation = a raw page.goto() OR a non-login Module.goto().
-  const FEATURE_NAV = /\bpage\.goto\s*\(|\b(?!loginModule\b)\w*Module\.goto\s*\(\s*\)/;
+  // Feature navigation = a raw page.goto() OR a Module.goto() whose module name does NOT contain
+  // "login" (a login Module/fixture is shared setup, not feature navigation).
+  const FEATURE_NAV = /\bpage\.goto\s*\(|\b(?![A-Za-z_]*[Ll]ogin)\w*Module\.goto\s*\(\s*\)/;
   if (FEATURE_NAV.test(beforeBody) && FEATURE_NAV.test(rest)) {
     throw new Error(
       `Codegen: duplicate feature navigation in ${spec.file}. beforeEach navigates to the feature AND a test ` +
       `also navigates (page.goto()/Module.goto()). Keep ONE path: beforeEach performs SHARED LOGIN ONLY ` +
-      `(loginModule.goto() + loginModule.login(credentials("app"))), and the feature Module.goto() performs ` +
+      `(your login Module/fixture goto() + login(credentials("app"))), and the feature Module.goto() performs ` +
       `feature navigation inside each test. Remove the feature navigation from beforeEach.`,
     );
   }
@@ -858,23 +966,12 @@ const UNIQUE_DATA_UTILITY_SOURCE = [
   '',
   "export type UniqueValueKind = 'numeric' | 'alphanumeric' | 'email';",
   '',
-  'let sequence = 0;',
-  '',
-  'export function uniqueValue(seed: string, options: { kind?: UniqueValueKind; length?: number } = {}): string {',
-  '  sequence += 1;',
-  "  const kind = options.kind ?? 'alphanumeric';",
-  '  const token = `${Date.now()}${sequence}`;',
-  '  const length = Math.max(1, options.length ?? 8);',
-  "  if (kind === 'numeric') return token.replace(/\\D/g, '').slice(-(options.length ?? 7));",
-  "  if (kind === 'email') {",
-  "    const [localPart = 'auto', domain = 'example.test'] = seed.trim().split('@');",
-  "    return `${localPart || 'auto'}+${token.slice(-length)}@${domain || 'example.test'}`;",
-  '  }',
-  "  const prefix = seed.trim().replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'auto';",
-  '  return `${prefix}-${token.slice(-length)}`;',
+  'export interface UniqueValueOptions {',
+  '  kind?: UniqueValueKind;',
+  '  length?: number;',
   '}',
   '',
-  'export async function retryOnCollision(options: {',
+  'export interface CollisionRetryOptions {',
   '  page: Page;',
   '  successUrl: string | RegExp;',
   '  collision: Locator;',
@@ -883,8 +980,30 @@ const UNIQUE_DATA_UTILITY_SOURCE = [
   '  attempts?: number;',
   '  timeout?: number;',
   '  collisionMessage?: string;',
-  '}): Promise<string> {',
-  '  const attempts = Math.max(1, options.attempts ?? 3);',
+  '}',
+  '',
+  'const DEFAULT_COLLISION_ATTEMPTS = 3;',
+  'const MIN_COLLISION_ATTEMPTS = 1;',
+  'const DEFAULT_NUMERIC_LENGTH = 7;',
+  'const DEFAULT_TOKEN_LENGTH = 8;',
+  'let sequence = 0;',
+  '',
+  'export function uniqueValue(seed: string, options: UniqueValueOptions = {}): string {',
+  '  sequence += 1;',
+  "  const kind = options.kind ?? 'alphanumeric';",
+  '  const token = `${Date.now()}${sequence}`;',
+  '  const length = Math.max(MIN_COLLISION_ATTEMPTS, options.length ?? DEFAULT_TOKEN_LENGTH);',
+  "  if (kind === 'numeric') return token.replace(/\\D/g, '').slice(-(options.length ?? DEFAULT_NUMERIC_LENGTH));",
+  "  if (kind === 'email') {",
+  "    const [localPart = 'auto', domain = 'example.test'] = seed.trim().split('@');",
+  "    return `${localPart || 'auto'}+${token.slice(-length)}@${domain || 'example.test'}`;",
+  '  }',
+  "  const prefix = seed.trim().replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'auto';",
+  '  return `${prefix}-${token.slice(-length)}`;',
+  '}',
+  '',
+  'export async function retryOnCollision(options: CollisionRetryOptions): Promise<string> {',
+  '  const attempts = Math.max(MIN_COLLISION_ATTEMPTS, options.attempts ?? DEFAULT_COLLISION_ATTEMPTS);',
   '  const timeout = options.timeout ?? TIMEOUTS.LONG;',
   '  for (let attempt = 0; attempt < attempts; attempt += 1) {',
   '    const value = options.makeValue();',
