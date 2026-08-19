@@ -101,12 +101,15 @@ export interface PageDiagnostics {
   page: PageState;
   a11y: { interactable: number; featureFields: number; heading: string };
   screenshotPath: string;
+  /** True when the loop arrived at this page via a successful form submit (fills + submit + URL change). */
+  arrivedViaSubmit?: boolean;
 }
 
 export type FailureCategory =
   | 'application-error'
   | 'snapshot-gap'
   | 'feature-unavailable'
+  | 'feature-completed-via-redirect'
   | 'unknown';
 
 export interface FailureDiagnosis {
@@ -124,6 +127,8 @@ export interface CollectOptions {
   a11yInteractable?: number;
   a11yFields?: number;
   a11yHeading?: string;
+  /** True when this page was reached via a successful form submit (fills + submit + URL change). */
+  arrivedViaSubmit?: boolean;
   /** console min-level (e.g. "warning"); default: no arg → all levels. */
   consoleLevel?: string;
   timeoutMs?: number;
@@ -387,6 +392,22 @@ export function classifyFailure(d: PageDiagnostics): FailureDiagnosis {
   }
 
   if (domInputs < 2) {
+    // A post-submit confirmation/next-step page legitimately has no form of its own. When we arrived
+    // here via a successful submit (fields filled + submit + URL change, no app error above), that is
+    // CORROBORATING success — a category distinct from a genuinely unavailable feature.
+    if (d.arrivedViaSubmit) {
+      const okHint = d.page.alerts.length ? ` Visible message: "${d.page.alerts[0]}".` : '';
+      return {
+        category: 'feature-completed-via-redirect',
+        headline: `Post-submit page reached — the form was submitted and the app advanced here (URL changed, no errors); this destination has no form controls (inputs=${domInputs}) because it is a confirmation/next-step page.${okHint}`,
+        detail:
+          'The requested write flow already completed on the PREVIOUS page: its fields were filled and a submit/continue/save action navigated here with no validation error. Treat this page as CORROBORATING evidence of SUCCESS — do NOT require the destination to contain the original feature form. If the requested feature was to submit that form, report passed.',
+        evidence: [
+          d.page.headings.length ? `headings: ${d.page.headings.join(' | ')}` : '',
+          d.page.visibleText ? `visibleText: ${d.page.visibleText.slice(0, 240)}` : '',
+        ].filter(Boolean),
+      };
+    }
     const hint = d.page.alerts.length ? ` Visible message: "${d.page.alerts[0]}".` : '';
     return {
       category: 'feature-unavailable',
@@ -510,5 +531,6 @@ export async function collectPageDiagnostics(session: CliRunner, opts: CollectOp
       heading: opts.a11yHeading || '',
     },
     screenshotPath: opts.screenshotPath || '',
+    arrivedViaSubmit: opts.arrivedViaSubmit ?? false,
   };
 }

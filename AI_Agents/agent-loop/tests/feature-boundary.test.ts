@@ -12,7 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   featureTokens, featureIntentIsView, pathMatchesFeature, snapshotHasContent,
-  detectFeatureBoundary, splitTrace, resolveFeatureStatus,
+  detectFeatureBoundary, detectSubmitCompletion, splitTrace, resolveFeatureStatus,
 } from '../feature-boundary';
 import { authorFeatureVerificationScenarios } from '../codegen';
 import type { AgentStep } from '../agent-loop';
@@ -41,6 +41,7 @@ const CHECKOUT_OVERVIEW = `
 
 const INVENTORY = 'https://www.saucedemo.com/inventory.html';
 const CART = 'https://www.saucedemo.com/cart.html';
+const STEP_ONE = 'https://www.saucedemo.com/checkout-step-one.html';
 const CHECKOUT = 'https://www.saucedemo.com/checkout-step-two.html';
 
 function step(partial: Partial<AgentStep>): AgentStep {
@@ -173,4 +174,56 @@ test('10. View Cart produces an automation-ready verification scenario', () => {
   assert.ok(sc.steps.some((s) => /verify/i.test(s.action)));
   // No downstream/checkout step leaked into the authored scenario.
   assert.equal(sc.steps.every((s) => !/checkout/i.test(s.action)), true);
+});
+
+// A realistic "Checkout – Your Information" WRITE walk: login → cart → open checkout form → fill the 3
+// fields → click Continue, which advances to the Overview (checkout-step-two) page that has NO form.
+function checkoutInfoWalk(): AgentStep[] {
+  return [
+    step({ tool: 'click', args: {}, locator: "getByRole('button', { name: 'Login' })", url: INVENTORY }),
+    step({ tool: 'click', args: {}, locator: "getByRole('link', { name: 'Cart' })", url: CART }),
+    step({ tool: 'click', args: {}, locator: "getByRole('button', { name: 'Checkout' })", url: STEP_ONE }),
+    step({ tool: 'fill', args: { value: 'Jane' }, locator: "getByRole('textbox', { name: 'First Name' })", url: STEP_ONE }),
+    step({ tool: 'fill', args: { value: 'Doe' }, locator: "getByRole('textbox', { name: 'Last Name' })", url: STEP_ONE }),
+    step({ tool: 'fill', args: { value: '90210' }, locator: "getByRole('textbox', { name: 'Zip/Postal Code' })", url: STEP_ONE }),
+    step({ tool: 'click', args: {}, context: '- button "Continue" [ref=e40]', locator: "getByRole('button', { name: 'Continue' })", url: CHECKOUT }),
+  ];
+}
+
+// 11. Write-flow completion is detected from INTERACTION evidence: fills + submit click + URL change.
+test('11. write-flow submit completion is detected from fills + submit click + URL change', () => {
+  const walk = checkoutInfoWalk();
+  const c = detectSubmitCompletion(walk, INVENTORY);
+  assert.ok(c, 'a submit completion is detected');
+  assert.equal(c?.completionIndex, 6); // the Continue click
+  assert.equal(c?.formIndex, 3);       // first fill on the form page
+  assert.equal(c?.formUrl, STEP_ONE);
+  assert.equal(c?.destUrl, CHECKOUT);
+  assert.equal(c?.control, 'Continue');
+});
+
+// 12. A write feature whose post-submit page has NO form still resolves as passed (completed-via-redirect),
+//     with completion recorded at the Continue click — not oscillating back to the form.
+test('12. Checkout Your Information passes via redirect (post-submit page has no form)', () => {
+  const walk = checkoutInfoWalk();
+  const b = detectFeatureBoundary('Checkout - Your Information', INVENTORY, walk);
+  assert.equal(b.view, false);
+  assert.equal(b.acceptanceVerified, true);
+  assert.equal(b.completedViaRedirect, true);
+  assert.equal(b.completionIndex, 6);
+  assert.equal(resolveFeatureStatus('failed', b), 'passed');
+  const { primaryTrace, downstreamTrace } = splitTrace(walk, b);
+  assert.equal(primaryTrace.length, b.completionIndex + 1);
+  assert.equal(primaryTrace[primaryTrace.length - 1].url, CHECKOUT); // ends at the Continue click
+  assert.equal(downstreamTrace.length, 0);
+});
+
+// 13. A blocked submit (validation kept the same URL) is NOT a completion — failure is preserved.
+test('13. a submit that does not navigate (validation) is not a completion', () => {
+  const walk = checkoutInfoWalk();
+  walk[6] = step({ tool: 'click', args: {}, context: '- button "Continue" [ref=e40]', locator: "getByRole('button', { name: 'Continue' })", url: STEP_ONE }); // stayed on the form
+  assert.equal(detectSubmitCompletion(walk, INVENTORY), null);
+  const b = detectFeatureBoundary('Checkout - Your Information', INVENTORY, walk);
+  assert.equal(b.acceptanceVerified, false);
+  assert.equal(resolveFeatureStatus('failed', b), 'failed');
 });

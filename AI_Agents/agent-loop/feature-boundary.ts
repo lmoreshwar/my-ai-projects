@@ -147,6 +147,78 @@ export function snapshotHasContent(snapshot: string): boolean {
   return dataRegion || actionButton || fields >= 2 || contentNodes >= 3;
 }
 
+/**
+ * Submit/advance/persist button verbs whose click ENDS a form-submission-style feature. Deliberately
+ * EXCLUDES `login`/`sign in`/`cancel`/`back` so a prerequisite login or a bail-out is never mistaken
+ * for feature completion. Matched against the clicked button's accessible name.
+ */
+const SUBMIT_BUTTON_RE = /\b(save|submit|apply|create|update|confirm|continue|next|proceed|finish|complete|place|pay|checkout|register|generate)\b/i;
+
+/** True when two URLs address the same page (path only — host/query/hash ignored). */
+export function samePagePath(a: string, b: string): boolean {
+  return urlPath(a) === urlPath(b);
+}
+
+/** The clicked button's label for a click step (interaction evidence first, snapshot context fallback). */
+function submitButtonLabel(step: AgentStep): string {
+  if (step.tool !== 'click') return '';
+  const ix = step.interaction;
+  if (ix && ix.semanticRole === 'button') {
+    const named = ix.accessibleName || ix.controlId || '';
+    if (named) return named;
+  }
+  const m = String(step.context || '').match(/button\s+"([^"]+)"/i);
+  return m ? m[1] : '';
+}
+
+/** A detected write-flow completion: fields filled on a form page, then a submit click advanced away. */
+export interface SubmitCompletion {
+  /** Index of the first fill on the form page. */
+  formIndex: number;
+  /** Index of the submit/continue/save click that completed the flow. */
+  completionIndex: number;
+  formUrl: string;
+  destUrl: string;
+  /** The submit button's label. */
+  control: string;
+}
+
+/**
+ * Detect a form-submission-style completion from live INTERACTION evidence (generic — no app rules):
+ * at least one fill on a form page, followed by a submit/continue/save button click whose result
+ * NAVIGATES to a different page (URL changed ⇒ the app accepted the submit — a blocking validation
+ * would keep the same URL). The destination is often a summary/confirmation page with no form of its
+ * own; that redirect IS the success signal, not a sign the feature was never reached. Returns the LAST
+ * such sequence in the walk (the feature's own submit, after any prerequisite submits like login).
+ */
+export function detectSubmitCompletion(steps: AgentStep[], initialUrl = ''): SubmitCompletion | null {
+  if (!steps || !steps.length) return null;
+  // The page each step was INITIATED on: fills inherit the current page; a nav click's own url is the
+  // NEXT page, so it is recorded here as having happened on the PREVIOUS page.
+  const pageOf: string[] = [];
+  let carry = initialUrl || '';
+  for (let i = 0; i < steps.length; i += 1) {
+    pageOf[i] = carry;
+    if (steps[i].url) carry = String(steps[i].url);
+  }
+  let best: SubmitCompletion | null = null;
+  for (let i = 0; i < steps.length; i += 1) {
+    const control = submitButtonLabel(steps[i]);
+    if (!control || !SUBMIT_BUTTON_RE.test(control)) continue;
+    const formUrl = pageOf[i];
+    const destUrl = String(steps[i].url || '');
+    if (!formUrl || !destUrl || samePagePath(formUrl, destUrl)) continue; // no navigation ⇒ not accepted yet
+    let firstFill = -1;
+    for (let j = 0; j < i; j += 1) {
+      const t = steps[j].tool;
+      if ((t === 'fill' || t === 'type') && samePagePath(pageOf[j], formUrl)) { firstFill = j; break; }
+    }
+    if (firstFill < 0) continue; // at least one field must have been filled on the form page
+    best = { formIndex: firstFill, completionIndex: i, formUrl, destUrl, control };
+  }
+  return best;
+}
+
 /** The result of analyzing a completed walk for its feature boundary. */
 export interface FeatureBoundaryResult {
   featureTokens: string[];
@@ -160,6 +232,8 @@ export interface FeatureBoundaryResult {
   targetUrl: string | null;
   /** True when the target was reached AND its acceptance content was verified. */
   acceptanceVerified: boolean;
+  /** True when acceptance came from a write-flow submit that advanced to a post-submit page. */
+  completedViaRedirect?: boolean;
   reason: string;
 }
 
@@ -195,6 +269,21 @@ export function detectFeatureBoundary(feature: string, initialUrl: string, steps
     }
   }
 
+  // WRITE-FLOW COMPLETION (generic): a create/edit/submit feature is DONE when its fields were filled
+  // and a submit/continue/save click advanced the page (URL changed, no error). The destination is
+  // often a summary/confirmation page with NO form of its own — INTERACTION evidence is the primary
+  // completion signal, and that post-submit page must NOT be mistaken for "feature never reached".
+  let completedViaRedirect = false;
+  if (completionIndex < 0 && !view) {
+    const submit = detectSubmitCompletion(steps, initialUrl);
+    if (submit) {
+      completionIndex = submit.completionIndex;
+      if (featureStartIndex < 0) featureStartIndex = submit.formIndex;
+      if (!targetUrl) targetUrl = submit.formUrl;
+      completedViaRedirect = true;
+    }
+  }
+
   const acceptanceVerified = completionIndex >= 0;
   return {
     featureTokens: tokens,
@@ -203,8 +292,11 @@ export function detectFeatureBoundary(feature: string, initialUrl: string, steps
     completionIndex,
     targetUrl,
     acceptanceVerified,
+    completedViaRedirect,
     reason: acceptanceVerified
-      ? `feature target ${targetUrl} reached and content verified at step ${completionIndex + 1}`
+      ? completedViaRedirect
+        ? `write flow completed via submit "${targetUrl}" — fields filled then the page advanced to a post-submit page (feature-completed-via-redirect)`
+        : `feature target ${targetUrl} reached and content verified at step ${completionIndex + 1}`
       : featureStartIndex >= 0
         ? `feature target ${targetUrl} reached but no acceptance content verified`
         : 'feature target never reached',

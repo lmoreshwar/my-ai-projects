@@ -237,6 +237,18 @@ test('classifyFailure: nothing conclusive → unknown', () => {
   assert.equal(classifyFailure(d).category, 'feature-unavailable');
 });
 
+test('classifyFailure: post-submit page with no form + arrivedViaSubmit → feature-completed-via-redirect', () => {
+  const d = mkDiag({ arrivedViaSubmit: true, page: { ...mkDiag().page, inputs: 0, headings: ['Checkout: Overview'], visibleText: 'Payment Information: SauceCard #31337' } });
+  const diag = classifyFailure(d);
+  assert.equal(diag.category, 'feature-completed-via-redirect');
+  assert.match(diag.headline, /post-submit/i);
+});
+
+test('classifyFailure: no-form page WITHOUT arrivedViaSubmit stays feature-unavailable', () => {
+  const d = mkDiag({ arrivedViaSubmit: false, page: { ...mkDiag().page, inputs: 0, headings: ['Checkout: Overview'] } });
+  assert.equal(classifyFailure(d).category, 'feature-unavailable');
+});
+
 /* ── report formatting ───────────────────────────────────────────────────────── */
 
 test('formatDiagnosticsReport: includes category, redacted url, and failed requests', () => {

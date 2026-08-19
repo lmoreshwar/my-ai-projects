@@ -47,7 +47,8 @@ import {
 } from './page-diagnostics';
 import {
   featureTokens, featureIntentIsView, pathMatchesFeature, snapshotIdentityMatchesFeature,
-  snapshotHasContent, detectFeatureBoundary, type FeatureBoundaryResult,
+  snapshotHasContent, detectFeatureBoundary, detectSubmitCompletion, samePagePath,
+  type FeatureBoundaryResult,
 } from './feature-boundary';
 
 export interface AgentLoopOptions {
@@ -861,6 +862,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
             log(`[agent] finish → failed (self-healing budget exhausted): ${give}`);
             return finish('failed', give);
           }
+          // Verified (view content OR write-flow submit completion): record the boundary for trace-splitting.
+          featureBoundary = boundary;
         }
 
         messages.push({ role: 'tool', tool_call_id: call.id, content: 'ok' });
@@ -955,11 +958,15 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         if (settle.attempts > 1) log(`[agent] content-readiness settled after ${settle.attempts} snapshot attempt(s) — ${settle.verdict.reason}`);
         if (!settle.settled) {
           const diagUrl = extractPageUrl(raw) || lastPageUrl;
+          const submitDone = detectSubmitCompletion(steps, opts.url);
+          const arrivedViaSubmit = !!(submitDone && submitDone.destUrl && samePagePath(submitDone.destUrl, diagUrl));
           const diag = buildReadinessDiagnostics(settle.snapshot, diagUrl, settle.verdict, settle.attempts);
           const shotPath = `blast-readiness-${Date.now().toString(36)}.png`;
           await session.run(['screenshot', shotPath]).catch(() => {});
           log(`[agent] \u26a0 readiness diagnostics — reason="${diag.reason}" url=${diag.url} heading="${diag.heading}" interactable=${diag.interactable} nav=${diag.navControls} fields=${diag.featureFields} loading=${diag.loadingIndicator} attempts=${diag.attempts} screenshot=${shotPath}`);
-          readinessNote = `\n\nREADINESS DIAGNOSTIC (this does NOT relax any success gate): after ${diag.attempts} bounded re-snapshots the page still shows ${diag.reason}. url=${diag.url}; heading="${diag.heading}"; interactable=${diag.interactable}; navControls=${diag.navControls}; formFields=${diag.featureFields}; loadingIndicator=${diag.loadingIndicator}. If this feature should render a form it did not hydrate; otherwise the signed-in user may lack the data/permission to see it. Never report success without the actual form.`;
+          readinessNote = `\n\nREADINESS DIAGNOSTIC (this does NOT relax any success gate): after ${diag.attempts} bounded re-snapshots the page still shows ${diag.reason}. url=${diag.url}; heading="${diag.heading}"; interactable=${diag.interactable}; navControls=${diag.navControls}; formFields=${diag.featureFields}; loadingIndicator=${diag.loadingIndicator}. ` + (arrivedViaSubmit
+            ? `This looks like a POST-SUBMIT confirmation/next-step page: the form was already submitted and the app advanced here (URL changed) with no error, which CORROBORATES success. If the requested feature was to submit that form, call finish("passed"); do NOT treat the missing form here as failure.`
+            : `If this feature should render a form it did not hydrate; otherwise the signed-in user may lack the data/permission to see it. Never report success without the actual form.`);
 
           // GENERIC dynamic-page failure diagnosis: gather browser-level root-cause evidence
           // (console errors, failed/4xx-5xx network, DOM/page state, iframes) via the CLI's real
@@ -973,13 +980,16 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
               a11yInteractable: diag.interactable,
               a11yFields: diag.featureFields,
               a11yHeading: diag.heading,
+              arrivedViaSubmit,
             });
             const diagnosis = classifyFailure(pd);
             diagnostics.push(diagnosis);
             const report = redact(formatDiagnosticsReport(pd, diagnosis), secrets);
             log(`[agent] \ud83d\udd2c dynamic-failure diagnosis — category=${diagnosis.category} console=${pd.console.errors}e/${pd.console.warnings}w network=${pd.network.failed.length}failed/${pd.network.total} domInputs=${pd.page.inputs} readyState=${pd.readyState || '?'}`);
             for (const line of report.split('\n')) log(`[diag] ${line}`);
-            readinessNote += `\n\n${report}\n\nUse this to decide the outcome: if the feature form is genuinely absent, call finish("failed") and state the root-cause category (${diagnosis.category}); never report success without the actual form.`;
+            readinessNote += `\n\n${report}\n\n` + (diagnosis.category === 'feature-completed-via-redirect'
+              ? `Use this to decide the outcome: the write flow already completed on the previous page (fields filled + submit navigated here, no errors). If the requested feature was to submit that form, call finish("passed").`
+              : `Use this to decide the outcome: if the feature form is genuinely absent, call finish("failed") and state the root-cause category (${diagnosis.category}); never report success without the actual form.`);
           } catch (e) {
             log(`[agent] dynamic-failure diagnosis skipped: ${(e as Error).message}`);
           }
