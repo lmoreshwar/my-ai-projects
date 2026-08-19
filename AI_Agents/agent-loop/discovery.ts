@@ -306,6 +306,22 @@ function classify(role: string, label: string, name: string, contextText: string
 }
 
 /**
+ * Roles that accept user input — the ONLY controls that can hold an app-prepopulated value or be
+ * filled by a test. A heading, static text, paragraph, link, button, tab, image, list item or
+ * table header is never an input, so it can never be a "prepopulated field" nor enter the fill /
+ * unique / testData / coverage sets. Single source of truth for the input-capable gate.
+ */
+export const INPUT_CAPABLE_ROLES = new Set<string>([
+  'textbox', 'searchbox', 'spinbutton', 'textarea', 'combobox', 'listbox',
+  'checkbox', 'radio', 'switch', 'slider', 'menuitemcheckbox', 'menuitemradio',
+]);
+
+/** True only for genuine user-input controls (see INPUT_CAPABLE_ROLES). */
+export function isInputCapableRole(role: string): boolean {
+  return INPUT_CAPABLE_ROLES.has(String(role || '').toLowerCase());
+}
+
+/**
  * Parse the FULL accessibility tree into a field inventory. Unlike `parseRefs` (which returns only
  * an interactable shortlist for the agent to click), this captures EVERY semantic control so the
  * plan can list an explicit step per field. Unnamed controls (duplicate "Type here" textboxes) are
@@ -369,7 +385,8 @@ export function parseInventory(snapshot: string): FieldInventoryItem[] {
       required: required === null ? null : Boolean(required),
       placeholder: ctrl.name && isPlaceholderish(ctrl.name) ? ctrl.name : undefined,
       defaultValue: ctrl.inlineValue && !isPlaceholderish(ctrl.inlineValue) ? ctrl.inlineValue : undefined,
-      prepopulated: Boolean(ctrl.inlineValue && !isPlaceholderish(ctrl.inlineValue)) || (ctrl.role === 'radio' && ctrl.checked),
+      prepopulated: isInputCapableRole(ctrl.role)
+        && (Boolean(ctrl.inlineValue && !isPlaceholderish(ctrl.inlineValue)) || (ctrl.role === 'radio' && ctrl.checked)),
       options: options.length ? [...new Set(options)] : undefined,
       dynamic: false,
       executable: !isFile, // normalised in the loop below

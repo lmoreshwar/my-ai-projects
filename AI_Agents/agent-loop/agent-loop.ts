@@ -311,11 +311,42 @@ function lineIndent(line: string): number {
   return (line.match(/^(\s*)/)?.[1].length) || 0;
 }
 
-/** The nearest PRECEDING label line that names a control (never the value line itself). */
+/**
+ * Roles that are NEVER a form-field label. A field label may only be borrowed from a genuine
+ * adjacent label (a plain `text`/`paragraph` node that names one input, e.g. an unnamed OrangeHRM
+ * "Email" textbox anchored to its "Email*" text). Page/section chrome — headings, navigation,
+ * links, buttons, images, tabs, list/menu items and table headers — and interactive controls
+ * themselves are NOT labels. This is what keeps a screen title (e.g. a "Products" heading) or a nav
+ * item from being adopted as the identity of a prepopulated control.
+ */
+const NON_FIELD_LABEL_ROLES = new Set<string>([
+  'heading', 'link', 'button', 'img', 'image', 'banner', 'navigation', 'contentinfo', 'main',
+  'region', 'complementary', 'article', 'form', 'search', 'tab', 'tablist', 'tabpanel', 'menu',
+  'menubar', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option', 'list', 'listitem',
+  'listbox', 'table', 'grid', 'row', 'cell', 'gridcell', 'columnheader', 'rowheader', 'rowgroup',
+  'separator', 'toolbar', 'status', 'alert', 'progressbar', 'combobox', 'textbox', 'searchbox',
+  'spinbutton', 'checkbox', 'radio', 'switch', 'slider', 'dialog',
+]);
+
+/** Leading ARIA role token of a snapshot line (e.g. "heading", "text", "combobox"), else ''. */
+function lineRole(line: string): string {
+  return line.match(/^\s*-?\s*([a-zA-Z]+)\b/)?.[1]?.toLowerCase() || '';
+}
+
+/**
+ * The nearest PRECEDING genuine field-label line that names a control. Skips page/section chrome
+ * (headings, navigation, links, buttons, table headers, options) and control rows so a screen
+ * title is never adopted as a field label — it may still be used downstream as a read-only
+ * readiness/heading assertion. Never the value line itself. Falls back to `Field <ref>` (which
+ * codegen deliberately ignores) when no real field label is adjacent.
+ */
 function precedingLabel(lines: string[], index: number, ref: string): string {
-  return [...lines.slice(Math.max(0, index - 4), index)].reverse()
-    .map((line) => line.match(/:\s*(.+?)\s*$/)?.[1]?.replace(/"/g, '').replace(/\*$/, '').trim() || '')
-    .find((text) => text && !/^\d+$/.test(text) && !text.includes('[ref=')) || `Field ${ref}`;
+  for (let j = index - 1; j >= Math.max(0, index - 4); j -= 1) {
+    if (NON_FIELD_LABEL_ROLES.has(lineRole(lines[j]))) continue;
+    const text = lines[j].match(/:\s*(.+?)\s*$/)?.[1]?.replace(/"/g, '').replace(/\*$/, '').trim() || '';
+    if (text && !/^\d+$/.test(text) && !text.includes('[ref=')) return text;
+  }
+  return `Field ${ref}`;
 }
 
 /** The SELECTED value shown inside an OXD/native dropdown control, read from its child lines.
@@ -334,8 +365,10 @@ function dropdownSelectedValue(lines: string[], controlIndex: number): string {
 }
 
 /** Capture non-empty fields present on the first snapshot of a form page before the agent touches
- * them — text inputs (value inline), dropdowns (value on a child line), and pre-checked radios. */
-function prepopulatedFields(snapshot: string, filledRefs: Set<string>): PrepopulatedField[] {
+ * them — text inputs (value inline), dropdowns (value on a child line), and pre-checked radios.
+ * Only genuine input-capable controls are considered; headings, static text, links and other
+ * non-interactive chrome can never become a prepopulated field. */
+export function prepopulatedFields(snapshot: string, filledRefs: Set<string>): PrepopulatedField[] {
   const lines = snapshot.split('\n');
   const fields: PrepopulatedField[] = [];
   const seen = new Set<string>();

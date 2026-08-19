@@ -448,14 +448,10 @@ function renderInteractionEvidence(trace: AgentStep[]): string {
   }).join('\n');
 }
 
-function prepopulatedFieldLabels(trace: AgentStep[]): string[] {
-  return [...new Set(trace.flatMap((step) => step.prepopulatedFields || []).map((field) => field.label).filter(Boolean))];
-}
-
 interface PrepopulatedEntry { label: string; value: string; kind?: string; }
 
 /** Every prepopulated field captured across the trace, unique by label, with its kind + real value. */
-function prepopulatedFieldEntries(trace: AgentStep[]): PrepopulatedEntry[] {
+export function prepopulatedFieldEntries(trace: AgentStep[]): PrepopulatedEntry[] {
   const byLabel = new Map<string, PrepopulatedEntry>();
   for (const field of trace.flatMap((step) => step.prepopulatedFields || [])) {
     if (!field.label || byLabel.has(field.label)) continue;
@@ -470,7 +466,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
   const caps = loadCapabilities(fw);
   const loginGuidance = loginGuidanceFor(fw);
   const types = (job.testTypes && job.testTypes.length) ? job.testTypes.join(', ') : 'positive (happy path)';
-  const prepopulated = prepopulatedFieldLabels(trace);
+  const prepopulated = prepopulatedFieldEntries(trace);
   return [
     `Generate Playwright test files for the feature "${job.feature}" at ${job.url}.`,
     `Cover these test types only: ${types}. Author at most ${job.maxCases || 3} test case(s).`,
@@ -503,7 +499,13 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     'retryOnCollision({ page, successUrl, collision, makeValue, submit, attempts?, collisionMessage? }) retries ONLY when the live collision locator becomes visible; it returns on success URL and rethrows every other timeout/error.',
     '',
     '## App-prepopulated fields (initial live form snapshot)',
-    prepopulated.length ? `${prepopulated.join(', ')} — the application already supplied their values before any agent interaction.` : '(none observed)',
+    prepopulated.length
+      ? prepopulated.map(({ label, value, kind }) =>
+        (!kind || kind === 'text')
+          ? `${label} (text field — the app already filled it; do not create a locator/testData, fill, clear, or assert its value)`
+          : `${kind} already set to "${value}" (do not re-select/re-check this value; a page heading or static label of the same name may still be used as a read-only readiness/visibility assertion)`,
+      ).join('; ')
+      : '(none observed)',
     '',
     '## Wrapper API contract — call each method ONLY on the property it is listed under; never invent a wrapper method',
     wrappers,
@@ -538,7 +540,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- SEQUENTIAL, APPEND-ONLY numbering: each spec file owns its own TC_001, TC_002… sequence. When a spec for this feature already exists, read the highest existing TC_XXX and number NEW cases from the next free number (existing TC_001–TC_003 → new TC_004); never renumber, reorder, or overwrite an existing test() block — append after them and return the FULL file with every existing test kept verbatim.',
     '- Reuse SHARED METHODS/HELPERS, not just locators — but ONLY methods present in the Wrapper API contract, each called on its listed property. Typical mappings WHEN the contract lists them: custom dropdown -> this.workflowActions.selectDropdownOption(trigger, optionText); searchable/autocomplete -> this.workflowActions.searchAndSelectOption(input, text, optionText?); native <select> -> this.actions.selectOption(target, value); checkbox -> this.workflowActions.setCheckbox(target, checked); radio -> this.workflowActions.selectRadioOption(label); date field -> this.workflowActions.selectDate(input, value); table read -> this.workflowActions.readTableCell(table, rowText, colIndex); table row action -> this.workflowActions.clickInRow(table, rowText, controlName); table row checkbox -> this.workflowActions.setRowCheckbox(table, rowText, checked); search box -> this.workflowActions.searchWithOptionalSubmit(input, value, submit?). If NONE of the contract helpers fits a new interaction, implement it as a parameterized METHOD ON THE NEW MODULE (workflow logic belongs in the Module) — NEVER inline interaction logic in the spec, NEVER call a listed method on the wrong property, and NEVER invent a wrapper method that is not in the Wrapper API contract (the shared utils are a FIXED API on this path; this JSON output cannot emit a modified util file). Reuse one helper for repeated flows (login/logout/common assertions) too.',
     '- TEST DATA: read every value via the testData accessor (never hardcode usernames/names/roles/expected text in a spec). Reuse an existing matching entry before adding a new one; only add genuinely-new keys. Keep every existing testData key.',
-    '- APP-PREPOPULATED FIELDS: every field listed in the App-prepopulated fields section is an application-owned default. Do NOT create a Page locator for it, add testData for it, fill/clear/type it, include it in uniqueFields, or assert its literal value. Leave it untouched unless the approved test case explicitly requests custom entry.',
+    '- APP-PREPOPULATED FIELDS: every field listed in the App-prepopulated fields section is an application-owned default. Do NOT create a Page locator for it, add testData for it, fill/clear/type it, include it in uniqueFields, or assert its literal value. For a prepopulated dropdown/radio, do NOT re-select/re-check the value it already holds. Leave it untouched unless the approved test case explicitly requests custom entry. This does NOT forbid using a page/section heading or a static label as a READ-ONLY readiness or visibility assertion (e.g. asserting the "Products" heading is visible) — a heading/label is page chrome, not a prepopulated input value.',
     '- UNIQUE CONSTRAINTS: identifiers, usernames, email addresses, codes, references, and record numbers must NEVER use a fixed final value. Store only a readable seed in testData, import uniqueValue from "../utils/UniqueData" (add retryOnCollision only in mode B below), and generate a FRESH value for EACH submit via uniqueValue(seed, { kind, length }). TWO modes: (A) DEFAULT — if the live trace NEVER showed an inline duplicate/"already exists" validation for the field, just fill the fresh uniqueValue() and Save (NO retry, NO collision locator); return a uniqueFields descriptor with only testDataPath+kind (+length) and OMIT collisionPageField/collisionMessage. (B) COLLISION RETRY — ONLY when the live trace ACTUALLY exposed an inline collision validation for the field, wrap the submit in retryOnCollision({ page: this.page, successUrl: urlRegex(routes.X), collision: this.<page>.collisionLocator, makeValue: () => uniqueValue(seed, { kind, length }), submit: async (value) => { fill the field with value; click Save; }, collisionMessage }); the Page MUST expose that exact live collision locator, retry ONLY when it appears (all other errors/timeouts fail), and do NOT add a second waitForURL after the helper. Return one uniqueFields descriptor per unique field so codegen can enforce this contract. HARD REQUIREMENT: every uniqueFields entry you declare MUST have a matching uniqueValue(seed, { kind, length }) call AND an `import { uniqueValue } from "../utils/UniqueData"` in the Module that actually fills that field — declaring a uniqueFields descriptor without wiring uniqueValue() into the Module is REJECTED; if you truly cannot make a field fresh, drop its uniqueFields entry entirely rather than leaving it unimplemented.',
     '- TAGS — industry standard, stacked in the test() title: a feature/module tag in PascalCase (e.g. @AdminAddUser) PLUS suite tags — @Smoke on the primary happy-path case, @Regression on ALL cases. Do NOT use @Positive/@Negative. Match the domain naming already used in the repo.',
     '- TEST INDEPENDENCE: every test() runs STANDALONE (a case may be run individually via grep). Each test does its OWN login + navigation (prefer test.beforeEach for shared setup) and never depends on state left by a sibling test.',
@@ -811,7 +813,7 @@ function fieldIdentifier(label: string): string {
 }
 
 /** App-created defaults are evidence, not test input; reject any generated interaction with them. */
-function assertPrepopulatedFieldsUntouched(art: LlmArtifacts, trace: AgentStep[]): void {
+export function assertPrepopulatedFieldsUntouched(art: LlmArtifacts, trace: AgentStep[]): void {
   const generated = [
     art.page.content,
     art.module.content,
@@ -819,7 +821,14 @@ function assertPrepopulatedFieldsUntouched(art: LlmArtifacts, trace: AgentStep[]
     JSON.stringify(art.testData || {}),
     JSON.stringify(art.uniqueFields || []),
   ].join('\n');
-  for (const label of prepopulatedFieldLabels(trace)) {
+  const entries = prepopulatedFieldEntries(trace);
+  // A prepopulated TEXT field's identity IS its label, so protect it by name (no locator, testData,
+  // fill or value assertion). Dropdowns/radios are protected by their selected VALUE below — NEVER
+  // by their label: an unnamed widget's label may have been anchored to an adjacent page/section
+  // title (e.g. "Products"), and the scenario must stay free to use that heading/label as a
+  // READ-ONLY readiness/visibility assertion. Only a text field's label gates codegen here.
+  for (const { label, kind } of entries) {
+    if (kind && kind !== 'text') continue;
     if (!label || /^Field\s+/i.test(label)) continue;
     const identifier = fieldIdentifier(label);
     const labelMatch = new RegExp(escapeRegex(label), 'i');
@@ -831,7 +840,7 @@ function assertPrepopulatedFieldsUntouched(art: LlmArtifacts, trace: AgentStep[]
   // Dropdowns/radios are overwritten by VALUE (select/check), not by clearing a textbox — so also
   // reject any generated select/check that re-applies the real value the detector already found
   // chosen. This mirrors the Employee Id (text) protection for non-text prepopulated widgets.
-  for (const { label, value, kind } of prepopulatedFieldEntries(trace)) {
+  for (const { label, value, kind } of entries) {
     if ((kind !== 'dropdown' && kind !== 'radio') || !value) continue;
     const selectOver = new RegExp(
       `(selectOption|selectDropdownOption|searchAndSelectOption|chooseOption|selectByLabel|getByRole\\(\\s*['"]option['"]|\\.check\\s*\\()[\\s\\S]{0,120}${escapeRegex(value)}`,
