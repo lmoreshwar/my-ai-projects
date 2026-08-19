@@ -18,8 +18,9 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join, normalize } from 'node:path';
 import OpenAI from 'openai';
+import ts from 'typescript';
 import { deriveLocatorScopeHint, type AgentStep, type LocatorScopeHint, type InteractionEvidence } from './agent-loop';
 import type {
   FieldInventoryItem, LocatorEvidence, DiscoveryState, CompletenessGate, ApplicationSummary, DiscoveryResult, StateTransition,
@@ -819,6 +820,425 @@ export function assertWrapperMethodsExist(fw: string, artFiles: Array<{ file: st
   }
 }
 
+export interface PageObjectArtifacts {
+  page: { file: string; content: string };
+  module: { file: string; content: string };
+  spec: { file: string; content: string };
+}
+
+interface PageObjectMember {
+  locatorSource: string;
+}
+
+interface PageObjectContract {
+  className: string;
+  file: string;
+  generated: boolean;
+  members: Map<string, PageObjectMember>;
+}
+
+interface PageObjectReference {
+  file: string;
+  instance: string;
+  member: string;
+  page: PageObjectContract;
+}
+
+interface ModuleMethod {
+  minimumArguments: number;
+  maximumArguments: number;
+}
+
+interface ModuleContract {
+  className: string;
+  file: string;
+  methods: Map<string, ModuleMethod>;
+}
+
+interface ModuleCall {
+  file: string;
+  instance: string;
+  method: string;
+  arguments: number;
+  module: ModuleContract;
+}
+
+/** Normalise generated relative paths before resolving a TypeScript import. */
+function normaliseSourcePath(file: string): string {
+  return normalize(String(file || '')).replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function sourceMemberName(name: ts.PropertyName | ts.PrivateIdentifier | undefined): string | undefined {
+  if (!name || ts.isPrivateIdentifier(name)) return undefined;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+  return undefined;
+}
+
+function hasNonPublicModifier(member: ts.ClassElement): boolean {
+  return ts.canHaveModifiers(member) && !!ts.getModifiers(member)?.some((modifier) =>
+    modifier.kind === ts.SyntaxKind.PrivateKeyword || modifier.kind === ts.SyntaxKind.ProtectedKeyword,
+  );
+}
+
+function hasStaticModifier(member: ts.ClassElement): boolean {
+  return ts.canHaveModifiers(member) && !!ts.getModifiers(member)?.some((modifier) =>
+    modifier.kind === ts.SyntaxKind.StaticKeyword,
+  );
+}
+
+function pageMemberLocatorSource(member: ts.ClassElement, source: ts.SourceFile): string | undefined {
+  if (ts.isPropertyDeclaration(member)) return member.initializer?.getText(source);
+  if (ts.isMethodDeclaration(member) || ts.isGetAccessorDeclaration(member)) return member.body?.getText(source);
+  return undefined;
+}
+
+function typeReferenceName(type: ts.TypeNode | undefined): string | undefined {
+  if (!type || !ts.isTypeReferenceNode(type) || !ts.isIdentifier(type.typeName)) return undefined;
+  return type.typeName.text;
+}
+
+function normaliseLocatorExpression(expression: string): string {
+  return String(expression || '')
+    .replace(/\bthis\.page\./g, '')
+    .replace(/\bpage\./g, '')
+    .replace(/\s+/g, '');
+}
+
+/**
+ * Reject a generated Module or Spec that calls a Page Object member which the imported Page Object
+ * does not declare. The gate uses the TypeScript parser rather than text matching so aliases,
+ * `this.pageObject`, direct local Page instances, method-style getters, and property-style locators
+ * are resolved consistently.
+ *
+ * A newly generated Page locator that is used by a Module/Spec must also match a locator captured in
+ * the verified Automation Trace or live discovery inventory. Existing framework Page members are
+ * reusable baseline capabilities; only a newly emitted Page declaration needs fresh evidence here.
+ */
+export function assertPageObjectContracts(
+  fw: string,
+  artifacts: PageObjectArtifacts,
+  trace: AgentStep[],
+  discoveryEvidence?: DiscoveryEvidence,
+): void {
+  const generatedFiles = [
+    { file: normaliseSourcePath(artifacts.page.file), content: artifacts.page.content, kind: 'page' },
+    { file: normaliseSourcePath(artifacts.module.file), content: artifacts.module.content, kind: 'module' },
+    { file: normaliseSourcePath(artifacts.spec.file), content: artifacts.spec.content, kind: 'spec' },
+  ];
+  const generatedByFile = new Map(generatedFiles.map((entry) => [entry.file, entry]));
+  const contracts = new Map<string, PageObjectContract | null>();
+  const moduleContracts = new Map<string, ModuleContract | null>();
+
+  const sourceFor = (file: string): string => generatedByFile.get(file)?.content || safeRead(join(fw, file));
+  const importPath = (from: string, specifier: string): string | undefined => {
+    if (!specifier.startsWith('.')) return undefined;
+    return normaliseSourcePath(join(dirname(from), specifier.endsWith('.ts') ? specifier : `${specifier}.ts`));
+  };
+  const loadPageObject = (file: string, className: string): PageObjectContract | undefined => {
+    const key = `${file}::${className}`;
+    if (contracts.has(key)) return contracts.get(key) || undefined;
+    const content = sourceFor(file);
+    const source = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const declaration = source.statements.find((statement): statement is ts.ClassDeclaration =>
+      ts.isClassDeclaration(statement) && statement.name?.text === className,
+    );
+    if (!declaration) {
+      contracts.set(key, null);
+      return undefined;
+    }
+    const members = new Map<string, PageObjectMember>();
+    for (const member of declaration.members) {
+      if (hasNonPublicModifier(member)) continue;
+      const name = sourceMemberName(member.name);
+      const locatorSource = pageMemberLocatorSource(member, source);
+      if (name && locatorSource !== undefined) members.set(name, { locatorSource });
+    }
+    const contract: PageObjectContract = {
+      className,
+      file,
+      generated: generatedByFile.get(file)?.kind === 'page',
+      members,
+    };
+    contracts.set(key, contract);
+    return contract;
+  };
+
+  const pageImports = (file: string, content: string): Map<string, PageObjectContract> => {
+    const imports = new Map<string, PageObjectContract>();
+    const source = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    for (const statement of source.statements) {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+      if (!statement.importClause?.namedBindings || !ts.isNamedImports(statement.importClause.namedBindings)) continue;
+      const importedFile = importPath(file, statement.moduleSpecifier.text);
+      if (!importedFile || !importedFile.startsWith('src/pages/')) continue;
+      for (const element of statement.importClause.namedBindings.elements) {
+        const importedName = element.propertyName?.text || element.name.text;
+        const page = loadPageObject(importedFile, importedName);
+        if (page) imports.set(element.name.text, page);
+      }
+    }
+    return imports;
+  };
+
+  const loadModule = (file: string, className: string): ModuleContract | undefined => {
+    const key = `${file}::${className}`;
+    if (moduleContracts.has(key)) return moduleContracts.get(key) || undefined;
+    const source = ts.createSourceFile(file, sourceFor(file), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const declaration = source.statements.find((statement): statement is ts.ClassDeclaration =>
+      ts.isClassDeclaration(statement) && statement.name?.text === className,
+    );
+    if (!declaration) {
+      moduleContracts.set(key, null);
+      return undefined;
+    }
+    const methods = new Map<string, ModuleMethod>();
+    for (const member of declaration.members) {
+      if (!ts.isMethodDeclaration(member) || hasNonPublicModifier(member) || hasStaticModifier(member)) continue;
+      const name = sourceMemberName(member.name);
+      if (!name) continue;
+      const required = member.parameters.filter((parameter) =>
+        !parameter.dotDotDotToken && !parameter.questionToken && !parameter.initializer,
+      ).length;
+      const hasRest = member.parameters.some((parameter) => !!parameter.dotDotDotToken);
+      methods.set(name, { minimumArguments: required, maximumArguments: hasRest ? Number.POSITIVE_INFINITY : member.parameters.length });
+    }
+    const contract = { className, file, methods };
+    moduleContracts.set(key, contract);
+    return contract;
+  };
+
+  const moduleImports = (file: string, content: string): Map<string, ModuleContract> => {
+    const imports = new Map<string, ModuleContract>();
+    const source = ts.createSourceFile(file, content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    for (const statement of source.statements) {
+      if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
+      if (!statement.importClause?.namedBindings || !ts.isNamedImports(statement.importClause.namedBindings)) continue;
+      const importedFile = importPath(file, statement.moduleSpecifier.text);
+      if (!importedFile || !importedFile.startsWith('src/modules/')) continue;
+      for (const element of statement.importClause.namedBindings.elements) {
+        const importedName = element.propertyName?.text || element.name.text;
+        const module = loadModule(importedFile, importedName);
+        if (module) imports.set(element.name.text, module);
+      }
+    }
+    return imports;
+  };
+
+  const references: PageObjectReference[] = [];
+  for (const generated of generatedFiles.filter((entry) => entry.kind === 'module' || entry.kind === 'spec')) {
+    const source = ts.createSourceFile(generated.file, generated.content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const importedPages = pageImports(generated.file, generated.content);
+    const instances = new Map<string, PageObjectContract>();
+    const pageFromNew = (node: ts.Expression | undefined): PageObjectContract | undefined =>
+      node && ts.isNewExpression(node) && ts.isIdentifier(node.expression)
+        ? importedPages.get(node.expression.text)
+        : undefined;
+    const pageFromType = (type: ts.TypeNode | undefined): PageObjectContract | undefined => {
+      const name = typeReferenceName(type);
+      return name ? importedPages.get(name) : undefined;
+    };
+    const thisProperty = (node: ts.Expression): string | undefined =>
+      ts.isPropertyAccessExpression(node) && node.expression.kind === ts.SyntaxKind.ThisKeyword
+        ? `this.${node.name.text}`
+        : undefined;
+
+    const collectInstances = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+        const page = pageFromNew(node.initializer) || pageFromType(node.type);
+        if (page) instances.set(node.name.text, page);
+      }
+      if (ts.isPropertyDeclaration(node)) {
+        const name = sourceMemberName(node.name);
+        const page = pageFromNew(node.initializer) || pageFromType(node.type);
+        if (name && page) instances.set(`this.${name}`, page);
+      }
+      if (ts.isParameter(node) && ts.getModifiers(node)?.length) {
+        const name = ts.isIdentifier(node.name) ? node.name.text : undefined;
+        const page = pageFromType(node.type);
+        if (name && page) instances.set(`this.${name}`, page);
+      }
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        const name = thisProperty(node.left);
+        const page = pageFromNew(node.right);
+        if (name && page) instances.set(name, page);
+      }
+      ts.forEachChild(node, collectInstances);
+    };
+    collectInstances(source);
+
+    const collectReferences = (node: ts.Node): void => {
+      if (ts.isPropertyAccessExpression(node)) {
+        const owner = ts.isIdentifier(node.expression)
+          ? instances.get(node.expression.text)
+          : instances.get(thisProperty(node.expression) || '') || pageFromNew(node.expression);
+        if (owner) references.push({ file: generated.file, instance: node.expression.getText(source), member: node.name.text, page: owner });
+      }
+      ts.forEachChild(node, collectReferences);
+    };
+    collectReferences(source);
+  }
+
+  const missing = new Map<string, PageObjectReference>();
+  for (const reference of references) {
+    if (reference.page.members.has(reference.member)) continue;
+    missing.set(`${reference.file}::${reference.instance}.${reference.member}`, reference);
+  }
+  if (missing.size) {
+    const lines = [...missing.values()].map((reference) => {
+      const existing = [...reference.page.members.keys()].sort().join(', ') || '(none)';
+      return `  - ${reference.file}: ${reference.instance}.${reference.member} references ${reference.page.className}.${reference.member}, but it is not declared in ${reference.page.file}.\n`
+        + `    Existing ${reference.page.className} properties: ${existing}.`;
+    });
+    throw new Error(
+      'Codegen: undefined Page Object property reference(s):\n'
+      + `${lines.join('\n')}\n`
+      + 'Repair each reference by either adding the exact missing property to its Page Object ONLY with a locator copied from '
+      + 'verified Automation Trace/discovery evidence, or changing the Module/Spec to an existing verified Page Object property. '
+      + 'Do NOT invent a locator. Re-emit the COMPLETE corrected artifact.',
+    );
+  }
+
+  const evidence = new Set<string>();
+  for (const step of trace) {
+    for (const locator of [step.locator, step.scopeHint?.locator, step.interaction?.locatorEvidence]) {
+      const normalised = normaliseLocatorExpression(locator || '');
+      if (normalised) evidence.add(normalised);
+    }
+  }
+  for (const item of discoveryEvidence?.inventory || []) {
+    const normalised = normaliseLocatorExpression(item.locatorEvidence?.locator || '');
+    if (normalised) evidence.add(normalised);
+  }
+  for (const transition of discoveryEvidence?.transitions || []) {
+    const normalised = normaliseLocatorExpression(transition.triggerLocator || '');
+    if (normalised) evidence.add(normalised);
+  }
+
+  const unverified = new Map<string, PageObjectReference>();
+  for (const reference of references) {
+    if (!reference.page.generated) continue;
+    const declaration = reference.page.members.get(reference.member)!;
+    const locator = normaliseLocatorExpression(declaration.locatorSource);
+    const supported = [...evidence].some((proven) => locator.includes(proven) || proven.includes(locator));
+    if (!supported) unverified.set(`${reference.page.file}::${reference.member}`, reference);
+  }
+  if (unverified.size) {
+    const knownEvidence = [...evidence].join(', ') || '(no verified live locator evidence was supplied)';
+    const lines = [...unverified.values()].map((reference) => {
+      const declaration = reference.page.members.get(reference.member)!;
+      return `  - ${reference.page.file}: ${reference.page.className}.${reference.member} is used by ${reference.file}, but its locator declaration \`${declaration.locatorSource}\` is not present in verified live evidence.`;
+    });
+    throw new Error(
+      'Codegen: generated Page Object locator(s) lack verified live evidence:\n'
+      + `${lines.join('\n')}\n`
+      + `  Verified locator evidence: ${knownEvidence}\n`
+      + 'Do NOT invent a locator. Change the Module/Spec to an existing verified Page Object property, or declare the '
+      + 'missing property with an EXACT locator copied from the verified Automation Trace or discovery evidence.',
+    );
+  }
+
+  const moduleCalls: ModuleCall[] = [];
+  for (const generated of generatedFiles.filter((entry) => entry.kind === 'spec')) {
+    const source = ts.createSourceFile(generated.file, generated.content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    const importedModules = moduleImports(generated.file, generated.content);
+    const instances = new Map<string, ModuleContract>();
+    const moduleFromNew = (node: ts.Expression | undefined): ModuleContract | undefined =>
+      node && ts.isNewExpression(node) && ts.isIdentifier(node.expression)
+        ? importedModules.get(node.expression.text)
+        : undefined;
+    const moduleFromType = (type: ts.TypeNode | undefined): ModuleContract | undefined => {
+      const name = typeReferenceName(type);
+      return name ? importedModules.get(name) : undefined;
+    };
+    const thisProperty = (node: ts.Expression): string | undefined =>
+      ts.isPropertyAccessExpression(node) && node.expression.kind === ts.SyntaxKind.ThisKeyword
+        ? `this.${node.name.text}`
+        : undefined;
+    const collectInstances = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+        const module = moduleFromNew(node.initializer) || moduleFromType(node.type);
+        if (module) instances.set(node.name.text, module);
+      }
+      if (ts.isPropertyDeclaration(node)) {
+        const name = sourceMemberName(node.name);
+        const module = moduleFromNew(node.initializer) || moduleFromType(node.type);
+        if (name && module) instances.set(`this.${name}`, module);
+      }
+      if (ts.isParameter(node) && ts.canHaveModifiers(node) && ts.getModifiers(node)?.length) {
+        const name = ts.isIdentifier(node.name) ? node.name.text : undefined;
+        const module = moduleFromType(node.type);
+        if (name && module) instances.set(`this.${name}`, module);
+      }
+      if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        const name = thisProperty(node.left);
+        const module = moduleFromNew(node.right);
+        if (name && module) instances.set(name, module);
+      }
+      ts.forEachChild(node, collectInstances);
+    };
+    collectInstances(source);
+
+    const collectCalls = (node: ts.Node): void => {
+      if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+        const receiver = node.expression.expression;
+        const owner = ts.isIdentifier(receiver)
+          ? instances.get(receiver.text)
+          : instances.get(thisProperty(receiver) || '') || moduleFromNew(receiver);
+        if (owner) {
+          moduleCalls.push({
+            file: generated.file,
+            instance: receiver.getText(source),
+            method: node.expression.name.text,
+            arguments: node.arguments.length,
+            module: owner,
+          });
+        }
+      }
+      ts.forEachChild(node, collectCalls);
+    };
+    collectCalls(source);
+  }
+
+  const missingModuleMethods = new Map<string, ModuleCall>();
+  for (const call of moduleCalls) {
+    if (call.module.methods.has(call.method)) continue;
+    missingModuleMethods.set(`${call.file}::${call.instance}.${call.method}`, call);
+  }
+  if (missingModuleMethods.size) {
+    const lines = [...missingModuleMethods.values()].map((call) =>
+      `  - ${call.file}: ${call.instance}.${call.method}(...) references ${call.module.className}.${call.method}, but it is not declared in ${call.module.file}.\n`
+      + `    Existing ${call.module.className} methods: ${[...call.module.methods.keys()].sort().join(', ') || '(none)'}.`,
+    );
+    throw new Error(
+      'Codegen: undefined Module method reference(s):\n'
+      + `${lines.join('\n')}\n`
+      + 'Use an existing Module method, or add the missing method as a Module workflow built only from existing verified Page Object properties. '
+      + 'Do NOT invent a Page locator. Re-emit the COMPLETE corrected artifact.',
+    );
+  }
+
+  const wrongArity = moduleCalls.filter((call) => {
+    const method = call.module.methods.get(call.method);
+    return method && (call.arguments < method.minimumArguments || call.arguments > method.maximumArguments);
+  });
+  if (wrongArity.length) {
+    const lines = wrongArity.map((call) => {
+      const method = call.module.methods.get(call.method)!;
+      const expected = method.minimumArguments === method.maximumArguments
+        ? String(method.minimumArguments)
+        : method.maximumArguments === Number.POSITIVE_INFINITY
+          ? `${method.minimumArguments}+`
+          : `${method.minimumArguments}-${method.maximumArguments}`;
+      return `  - ${call.file}: ${call.instance}.${call.method}(...) passes ${call.arguments} argument(s), but ${call.module.className}.${call.method} accepts ${expected}.`;
+    });
+    throw new Error(
+      'Codegen: Module method argument contract violation(s):\n'
+      + `${lines.join('\n')}\n`
+      + 'Call the existing Module method with its declared arguments. Do NOT change a Module signature unless the verified feature workflow requires it. Re-emit the COMPLETE corrected artifact.',
+    );
+  }
+}
+
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -1116,6 +1536,11 @@ export async function generateFromTrace(
       { file: candidate.module.file || 'Module', content: candidate.module.content },
       { file: candidate.spec.file || 'Spec', content: candidate.spec.content },
     ]);
+    assertPageObjectContracts(fw, {
+      page: { file: candidate.page.file || 'Page', content: candidate.page.content },
+      module: { file: candidate.module.file || 'Module', content: candidate.module.content },
+      spec: { file: candidate.spec.file || 'Spec', content: candidate.spec.content },
+    }, trace, job.discoveryEvidence);
     assertProvenInteractionLocators([
       { file: candidate.page.file || 'Page', content: candidate.page.content },
       { file: candidate.module.file || 'Module', content: candidate.module.content },
