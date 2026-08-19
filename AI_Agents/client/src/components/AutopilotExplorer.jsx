@@ -11,7 +11,7 @@ function authHeaders() {
 const TEST_TYPES = ['Positive', 'Negative', 'Boundary', 'Security-lite', 'Accessibility'];
 // Default to Positive only; the user opts into Negative/Boundary/Security/Accessibility manually.
 const DEFAULT_TYPES = ['Positive'];
-const TERMINAL = new Set(['Passed', 'Partial', 'Failed', 'Completed', 'PushedToGate', 'Merged', 'Discarded']);
+const TERMINAL = new Set(['Passed', 'Partial', 'Failed', 'Cancelled', 'Skipped', 'Completed', 'PushedToGate', 'Merged', 'Discarded']);
 // States where polling should PAUSE: terminal outcomes plus states that need a user decision
 // (the plan is ready to Approve, info is needed, or exploration was blocked).
 const STOP_POLLING = new Set([...TERMINAL, 'WaitingForApproval', 'Pending', 'Blocked']);
@@ -63,6 +63,8 @@ export default function AutopilotExplorer({ apiBase, connections }) {
   const [selectedScenarios, setSelectedScenarios] = useState(() => new Set());
   const fileInputRef = useRef(null);
   const pollRef = useRef(null);
+  // Job ids we've already reconciled once so a stale 'Blocked' doesn't loop.
+  const reconciledRef = useRef(new Set());
 
   const stopPoll = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
   useEffect(() => () => stopPoll(), []);
@@ -144,6 +146,24 @@ export default function AutopilotExplorer({ apiBase, connections }) {
     if (job && job.jobId && !STOP_POLLING.has(job.status)) pollProgress(job.jobId);
     else stopPoll();
   }, [job?.jobId, job?.status, pollProgress]);
+
+  // Self-heal a stale 'Blocked': a cloud (github-actions) job may show a Blocked status persisted
+  // before the status-sync fix, even though the GitHub run finished green with a valid plan. Because
+  // Blocked pauses polling, do ONE reconciliation fetch per job load — the server reclassifies it to
+  // WaitingForApproval (plan ready) or leaves it Blocked (a real "nothing to automate" state).
+  useEffect(() => {
+    if (!job || !job.jobId) return;
+    if (job.status !== 'Blocked' || job.provider !== 'github-actions') return;
+    if (reconciledRef.current.has(job.jobId)) return;
+    reconciledRef.current.add(job.jobId);
+    (async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/automation/jobs/${job.jobId}/progress`, { headers: authHeaders() });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data && data.jobId) setJob(data);
+      } catch { /* transient — the next open will retry */ }
+    })();
+  }, [apiBase, job?.jobId, job?.status, job?.provider]);
 
   // When a V2 discovery plan arrives, pre-select every automation-ready scenario so the user can
   // Proceed immediately (they can still untick). Blocked scenarios are never auto-selected.

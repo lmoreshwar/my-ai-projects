@@ -645,12 +645,78 @@ async function getWorkflowRunProgress(job, git) {
 }
 
 /**
+ * Generic GitHub Actions run-state mapper. Normalizes a workflow run's status + conclusion into
+ * ONE lifecycle state, independent of which BLAST phase dispatched it. GitHub run status is
+ * queued | in_progress | completed; conclusion is success | failure | cancelled | skipped |
+ * timed_out | startup_failure | action_required | neutral | stale | null.
+ * @returns {'running'|'success'|'failed'|'cancelled'|'skipped'}
+ */
+function mapGithubRunState(status, conclusion) {
+  if (status !== 'completed') return 'running'; // queued | in_progress | waiting | requested | pending
+  switch (conclusion) {
+    case 'success': return 'success';
+    case 'cancelled': return 'cancelled';
+    case 'skipped': return 'skipped';
+    case 'failure':
+    case 'timed_out':
+    case 'startup_failure':
+    case 'action_required':
+    case 'neutral':
+    case 'stale':
+    default: return 'failed';
+  }
+}
+
+/**
+ * Decide the BLAST explore-phase job status from the normalized GitHub run state and the downloaded
+ * plan artifact. A green GitHub run NEVER stays 'Blocked' when the plan contains automatable content:
+ * 'Blocked' is reserved for a REAL BLAST state (the exploration verified nothing to automate), never a
+ * stale workflow status. This is the pure, testable core of the job-status synchronization layer.
+ *
+ * @param {'running'|'success'|'failed'|'cancelled'|'skipped'} runState
+ * @param {object|null} plan  parsed blast-plan.json ({ status, cases, scenarios, summary }) or null
+ * @returns {{ status: string, ready: boolean, reason: string }}
+ */
+function deriveExploreStatus(runState, plan) {
+  if (runState === 'running') return { status: 'Exploring', ready: false, reason: '' };
+  if (runState === 'cancelled') return { status: 'Cancelled', ready: false, reason: 'The explore run was cancelled.' };
+  if (runState === 'skipped') return { status: 'Skipped', ready: false, reason: 'The explore run was skipped.' };
+  if (runState === 'failed') return { status: 'Failed', ready: false, reason: 'The explore run failed — no plan was produced.' };
+
+  // runState === 'success' — the GitHub workflow is green. Classify by REAL plan content.
+  if (!plan) return { status: 'Exploring', ready: false, reason: 'Run finished — waiting for the plan artifact…' };
+
+  const cases = Array.isArray(plan.cases) ? plan.cases : [];
+  const scenarios = Array.isArray(plan.scenarios) ? plan.scenarios : [];
+  const readyScenarios = scenarios.filter((s) => s && s.ready && !s.blocked);
+  const automatable = cases.length > 0 || readyScenarios.length > 0;
+
+  // A green run with automatable content is ALWAYS ready to approve — never Blocked (the bug this fixes).
+  if (automatable) return { status: 'WaitingForApproval', ready: true, reason: '' };
+
+  // Genuinely nothing to automate — a legitimate BLAST 'Blocked' (no automation-ready scenarios /
+  // exploration could not verify a flow), NOT a stale GitHub status.
+  const reason = (plan.status && plan.status !== 'passed')
+    ? (plan.summary || 'Exploration could not verify a flow to automate.')
+    : 'Exploration found no automation-ready scenarios.';
+  return { status: 'Blocked', ready: false, reason };
+}
+
+/** Project a plan case OR a discovery scenario into the flat testCase shape the UI/table renders. */
+function projectPlanStepsToText(steps) {
+  if (!Array.isArray(steps)) return steps || '';
+  return steps
+    .map((st) => (typeof st === 'string' ? st : `${st.order}. ${st.action}${st.input ? ` — ${st.input}` : ''}`))
+    .join('\n');
+}
+
+/**
  * PHASE 1 progress — poll the EXPLORE run and, once it finishes, download the plan artifact and
  * surface the proposed test cases so the website can show them and wait for Approve.
  *   • run still going            → { status: 'Exploring', … }
- *   • run done + plan has cases  → { status: 'WaitingForApproval', testCases, plan, exploreRunId, … }
- *   • run done + no cases/plan   → { status: 'Blocked', plan, … }  (nothing verified to automate)
- *   • run failed                 → { status: 'Failed', … }
+ *   • run done + plan automatable → { status: 'WaitingForApproval', testCases, plan, exploreRunId, … }
+ *   • run done + nothing to automate → { status: 'Blocked', plan, … }  (real BLAST state)
+ *   • run failed / cancelled / skipped → { status: 'Failed' | 'Cancelled' | 'Skipped', … }
  * Returns a FULL log snapshot the caller replaces each poll (steps never duplicate).
  */
 async function getExploreRunProgress(job, git) {
@@ -701,31 +767,65 @@ async function getExploreRunProgress(job, git) {
     const substantive = allSteps.filter((s) => !isTeardown(s.name));
     const substantiveDone = substantive.length > 0 && substantive.every((s) => s.status === 'completed');
     const substantiveFailed = substantive.some((s) => ['failure', 'timed_out', 'cancelled'].includes(s.conclusion));
-    const done = runData.status === 'completed' || substantiveDone;
+    const substantiveCancelled = substantive.some((s) => s.conclusion === 'cancelled');
 
-    if (!done) {
-      return { status: 'Exploring', runId, runHtmlUrl, snapshotLogs: snap(lines) };
+    // The GitHub run id/job id are persisted so Approve/Proceed target the right artifact and so the
+    // UI can deep-link the run even after teardown (requirement: persist run_id + job_id on success).
+    const githubJobId = (runData_jobs(jobsRes.data)[0] || {}).id || job.githubJobId || null;
+
+    // Normalize the GitHub run into a generic lifecycle state, but don't hang on GitHub's teardown:
+    // once every substantive step has finished we treat the run as effectively done.
+    let runState = mapGithubRunState(runData.status, runData.conclusion);
+    if (runState === 'running' && substantiveDone) {
+      runState = substantiveCancelled ? 'cancelled' : substantiveFailed ? 'failed' : 'success';
     }
 
-    if (substantiveFailed && runData.conclusion !== 'success') {
+    if (runState === 'running') {
+      return { status: 'Exploring', runId, runHtmlUrl, githubJobId, snapshotLogs: snap(lines) };
+    }
+
+    if (runState === 'cancelled') {
+      lines.push('', '⊘ Exploration run was cancelled — no plan was produced.');
+      return { status: 'Cancelled', runId, runHtmlUrl, githubJobId, snapshotLogs: snap(lines) };
+    }
+    if (runState === 'skipped') {
+      lines.push('', '⊘ Exploration run was skipped — no plan was produced.');
+      return { status: 'Skipped', runId, runHtmlUrl, githubJobId, snapshotLogs: snap(lines) };
+    }
+    if (runState === 'failed') {
       lines.push('', '✗ Exploration run failed — no plan was produced. Review the run logs and retry.');
-      return { status: 'Failed', runId, runHtmlUrl, snapshotLogs: snap(lines) };
+      return { status: 'Failed', runId, runHtmlUrl, githubJobId, snapshotLogs: snap(lines) };
     }
 
-    // 3) Run finished — pull the plan artifact (proposed cases + verified trace).
+    // 3) Run is GREEN — pull the plan artifact and classify by its REAL content (never a stale status).
     const plan = await getPlanArtifact(job, runId, git);
-    if (!plan) {
+    const decision = deriveExploreStatus('success', plan);
+
+    if (decision.status === 'Exploring') {
+      // Artifact not indexed yet — keep polling (a green run must not freeze on the wrong status).
       lines.push('', '⟳ Run finished — waiting for the plan artifact…');
-      return { status: 'Exploring', runId, runHtmlUrl, snapshotLogs: snap(lines) };
-    }
-    const cases = Array.isArray(plan.cases) ? plan.cases : [];
-    if (!cases.length) {
-      lines.push('', 'ℹ Exploration did not find a flow it could verify — no test cases to propose.',
-        `   ${plan.summary || ''}`.trimEnd());
-      return { status: 'Blocked', runId, runHtmlUrl, plan: renderPlan(plan), snapshotLogs: snap(lines) };
+      return { status: 'Exploring', runId, runHtmlUrl, githubJobId, snapshotLogs: snap(lines) };
     }
 
-    const testCases = cases.map((c, i) => ({
+    if (decision.status === 'Blocked') {
+      lines.push('', `ℹ ${decision.reason}`);
+      return {
+        status: 'Blocked',
+        runId,
+        runHtmlUrl,
+        githubJobId,
+        exploreRunId: runId,
+        plan: plan ? renderPlan(plan) : undefined,
+        snapshotLogs: snap(lines),
+      };
+    }
+
+    // WaitingForApproval — project the proposed cases. Prefer the legacy `cases` array; when a V2 plan
+    // ships only ready scenarios, project THOSE so the run is never wrongly Blocked for missing cases.
+    const sourceCases = (Array.isArray(plan.cases) && plan.cases.length)
+      ? plan.cases
+      : (Array.isArray(plan.scenarios) ? plan.scenarios.filter((s) => s && s.ready && !s.blocked) : []);
+    const testCases = sourceCases.map((c, i) => ({
       id: c.id || `TC_${String(i + 1).padStart(3, '0')}`,
       title: c.title || `Case ${i + 1}`,
       tags: Array.isArray(c.type) ? c.type.join(', ') : (c.type || ''),
@@ -733,7 +833,7 @@ async function getExploreRunProgress(job, git) {
       description: c.expectedResults || '',
       preconditions: '',
       testData: '',
-      steps: Array.isArray(c.steps) ? c.steps.join('\n') : (c.steps || ''),
+      steps: projectPlanStepsToText(c.steps),
       expectedResults: c.expectedResults || '',
       comments: '',
     }));
@@ -742,6 +842,7 @@ async function getExploreRunProgress(job, git) {
       status: 'WaitingForApproval',
       runId,
       runHtmlUrl,
+      githubJobId,
       exploreRunId: runId,
       testCases,
       plan: renderPlan(plan),
@@ -1011,4 +1112,6 @@ module.exports = {
   mergePr,
   getFileContent,
   listDir,
+  mapGithubRunState,
+  deriveExploreStatus,
 };

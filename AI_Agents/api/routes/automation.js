@@ -645,6 +645,7 @@ router.get('/jobs/:jobId/progress', auth, async (req, res) => {
       if (progress.gateFailed !== undefined) job.gateFailed = progress.gateFailed;
       if (Array.isArray(progress.missingCases)) { job.missingCases = progress.missingCases; }
       if (progress.runId) job.runId = progress.runId;
+      if (progress.githubJobId) job.githubJobId = progress.githubJobId;
       if (progress.runHtmlUrl) job.reportUrl = progress.runHtmlUrl;
       if (progress.reportSummary) { job.reportSummary = progress.reportSummary; }
       // Explore (plan) phase: surface the proposed cases + plan and remember the explore run id so

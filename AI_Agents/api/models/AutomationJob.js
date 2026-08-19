@@ -12,6 +12,9 @@ const JOB_STATUSES = [
   'Passed',
   'Partial',
   'Failed',
+  'Cancelled',
+  'Skipped',
+  'Blocked',
   'PushedToGate',
   'Merged',
   'Completed',
@@ -103,6 +106,7 @@ const AutomationJobSchema = new mongoose.Schema({
   phase: { type: String, enum: ['', 'explore', 'approve'], default: '' },  // '' = legacy single dispatch
   workflow: { type: String, default: '' },          // the workflow file this job was dispatched to
   runId: { type: Number, default: null },            // the active GitHub Actions run being polled
+  githubJobId: { type: Number, default: null },      // the GitHub Actions job id inside the active run
   exploreRunId: { type: Number, default: null },     // the phase-1 run that holds the plan artifact
   dispatchedAt: { type: Date, default: null },       // when the current run was dispatched (poll floor)
   dispatchLogs: [{ type: String }],                  // preserved dispatch header; live steps appended each poll

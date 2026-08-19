@@ -26,6 +26,8 @@ const STATUS = {
   Partial: { tone: 'amber', icon: 'check_circle', label: 'Partial' },
   Failed: { tone: 'red', icon: 'cancel', label: 'Failed' },
   Blocked: { tone: 'amber', icon: 'block', label: 'Blocked' },
+  Cancelled: { tone: 'slate', icon: 'do_not_disturb_on', label: 'Cancelled' },
+  Skipped: { tone: 'slate', icon: 'skip_next', label: 'Skipped' },
   PushedToGate: { tone: 'purple', icon: 'call_merge', label: 'Pull Request raised' },
   Merged: { tone: 'green', icon: 'merge', label: 'Merged to main' },
   Completed: { tone: 'green', icon: 'check_circle', label: 'Completed' },

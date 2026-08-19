@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node api/index.js",
+    "test": "node --test api/_tools/github_agent.status.test.js",
     "runner": "node scripts/blast-runner.js",
     "blast:reset": "node scripts/blast-reset.js",
     "render-build": "npm install && cd client && npm install && npm run build"
