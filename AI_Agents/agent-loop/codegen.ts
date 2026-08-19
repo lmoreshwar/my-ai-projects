@@ -910,11 +910,91 @@ function typeReferenceName(type: ts.TypeNode | undefined): string | undefined {
   return type.typeName.text;
 }
 
-function normaliseLocatorExpression(expression: string): string {
-  return String(expression || '')
-    .replace(/\bthis\.page\./g, '')
-    .replace(/\bpage\./g, '')
-    .replace(/\s+/g, '');
+/** Playwright chain methods that RETURN a locator (safe to keep in a canonical locator identity). */
+const LOCATOR_CHAIN_METHODS = new Set([
+  'locator', 'getByRole', 'getByText', 'getByLabel', 'getByPlaceholder', 'getByTestId',
+  'getByTitle', 'getByAltText', 'filter', 'first', 'last', 'nth', 'and', 'or', 'frameLocator',
+]);
+
+/** Split a locator chain into ordered `name(args)` segments, respecting nested parens and strings. */
+function splitLocatorChain(input: string): Array<{ name: string; args: string }> {
+  const segments: Array<{ name: string; args: string }> = [];
+  let i = 0;
+  const n = input.length;
+  while (i < n) {
+    if (segments.length > 0) {
+      if (input[i] !== '.') break;
+      i += 1;
+    }
+    const nameMatch = /^[A-Za-z_$][\w$]*/.exec(input.slice(i));
+    if (!nameMatch) break;
+    const name = nameMatch[0];
+    i += name.length;
+    if (input[i] !== '(') { segments.push({ name, args: '' }); continue; } // property access (no call)
+    let depth = 0, inStr = false, quote = '';
+    const start = i;
+    for (; i < n; i += 1) {
+      const c = input[i];
+      if (inStr) {
+        if (c === '\\') { i += 1; continue; }
+        if (c === quote) inStr = false;
+      } else if (c === '"' || c === "'" || c === '`') { inStr = true; quote = c; }
+      else if (c === '(') depth += 1;
+      else if (c === ')') { depth -= 1; if (depth === 0) { i += 1; break; } }
+    }
+    segments.push({ name, args: input.slice(start + 1, i - 1) });
+  }
+  return segments;
+}
+
+/** Drop whitespace OUTSIDE string literals, preserving the exact contents of each string. */
+function stripStructuralWhitespace(input: string): string {
+  let out = '', inStr = false, quote = '';
+  for (let i = 0; i < input.length; i += 1) {
+    const c = input[i];
+    if (inStr) {
+      out += c;
+      if (c === '\\' && i + 1 < input.length) { out += input[i + 1]; i += 1; continue; }
+      if (c === quote) inStr = false;
+    } else if (c === '"' || c === "'" || c === '`') { inStr = true; quote = c; out += c; }
+    else if (!/\s/.test(c)) out += c;
+  }
+  return out;
+}
+
+/**
+ * Canonical identity of a Playwright locator expression. Semantically-identical locators written
+ * differently — with or without a `page.`/`this.page.` root, wrapped in an arrow function/getter body,
+ * or carrying an `await` prefix and an action suffix (`.fill(...)`, `.click()`, `.selectOption(...)`, …)
+ * — collapse to the SAME string, while the locator CHAIN and the exact contents of string arguments are
+ * preserved. Returns '' when the expression contains no locator chain. Generic; never app-specific.
+ */
+export function normalizeLocatorExpression(expression: string): string {
+  let s = String(expression || '').trim();
+  if (!s) return '';
+  s = s.replace(/^(?:async\s+)?\([^)]*\)\s*(?::\s*[^=]+?)?=>\s*/, ''); // unwrap arrow header
+  s = s.replace(/^\{\s*return\s+([\s\S]*?);?\s*\}$/, '$1').trim();      // unwrap `{ return EXPR; }`
+  s = s.replace(/^(?:await\s+|return\s+)+/, '');
+  s = s.replace(/^(?:this\.)?page\./, '');
+  const kept: Array<{ name: string; args: string }> = [];
+  for (const seg of splitLocatorChain(s)) {
+    if (kept.length === 0) {
+      if (!LOCATOR_CHAIN_METHODS.has(seg.name)) return ''; // not a locator root — nothing to verify
+      kept.push(seg);
+    } else if (LOCATOR_CHAIN_METHODS.has(seg.name)) {
+      kept.push(seg);
+    } else {
+      break; // first non-locator method = the action/query tail; end of the locator chain
+    }
+  }
+  if (!kept.length) return '';
+  return stripStructuralWhitespace(kept.map((seg) => `${seg.name}(${seg.args})`).join('.'));
+}
+
+/** True when two locator expressions denote the SAME canonical locator identity. */
+export function locatorsEquivalent(a: string, b: string): boolean {
+  const ca = normalizeLocatorExpression(a);
+  return ca !== '' && ca === normalizeLocatorExpression(b);
 }
 
 /**
@@ -1114,16 +1194,16 @@ export function assertPageObjectContracts(
   const evidence = new Set<string>();
   for (const step of trace) {
     for (const locator of [step.locator, step.scopeHint?.locator, step.interaction?.locatorEvidence]) {
-      const normalised = normaliseLocatorExpression(locator || '');
+      const normalised = normalizeLocatorExpression(locator || '');
       if (normalised) evidence.add(normalised);
     }
   }
   for (const item of discoveryEvidence?.inventory || []) {
-    const normalised = normaliseLocatorExpression(item.locatorEvidence?.locator || '');
+    const normalised = normalizeLocatorExpression(item.locatorEvidence?.locator || '');
     if (normalised) evidence.add(normalised);
   }
   for (const transition of discoveryEvidence?.transitions || []) {
-    const normalised = normaliseLocatorExpression(transition.triggerLocator || '');
+    const normalised = normalizeLocatorExpression(transition.triggerLocator || '');
     if (normalised) evidence.add(normalised);
   }
 
@@ -1131,9 +1211,9 @@ export function assertPageObjectContracts(
   for (const reference of references) {
     if (!reference.page.generated) continue;
     const declaration = reference.page.members.get(reference.member)!;
-    const locator = normaliseLocatorExpression(declaration.locatorSource);
-    const supported = [...evidence].some((proven) => locator.includes(proven) || proven.includes(locator));
-    if (!supported) unverified.set(`${reference.page.file}::${reference.member}`, reference);
+    const canonical = normalizeLocatorExpression(declaration.locatorSource);
+    if (!canonical) continue; // not a locator expression — covered by other gates, never held to locator evidence
+    if (!evidence.has(canonical)) unverified.set(`${reference.page.file}::${reference.member}`, reference);
   }
   if (unverified.size) {
     const knownEvidence = [...evidence].join(', ') || '(no verified live locator evidence was supplied)';

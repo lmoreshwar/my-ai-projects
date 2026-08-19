@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertPageObjectContracts, type PageObjectArtifacts } from '../codegen';
+import { assertPageObjectContracts, locatorsEquivalent, normalizeLocatorExpression, type PageObjectArtifacts } from '../codegen';
 import type { AgentStep } from '../agent-loop';
 
 let FW = '';
@@ -134,5 +134,85 @@ test('sample', async ({ page }) => {
   assert.throws(
     () => assertPageObjectContracts(FW, generated, trace("getByRole('heading', { name: 'Sample' })")),
     /sampleModule\.run\(\.\.\.\) passes 0 argument\(s\), but SampleModule\.run accepts 1/,
+  );
+});
+
+/* ── Canonical locator equivalence: root prefix / await / action tail ignored, chain + args kept ── */
+
+test('locator() equals page.locator() (root prefix is ignored)', () => {
+  assert.ok(locatorsEquivalent(`locator('[data-test="checkout"]')`, `page.locator('[data-test="checkout"]')`));
+});
+
+test('getByRole() equals page.getByRole() (root prefix is ignored)', () => {
+  assert.ok(locatorsEquivalent(`getByRole('button', { name: 'Continue' })`, `page.getByRole('button', { name: 'Continue' })`));
+});
+
+test('getByText() equals page.getByText()', () => {
+  assert.ok(locatorsEquivalent(`getByText('Example', { exact: true })`, `page.getByText('Example', { exact: true })`));
+});
+
+test('getByLabel() equals page.getByLabel()', () => {
+  assert.ok(locatorsEquivalent(`getByLabel('First Name')`, `page.getByLabel('First Name')`));
+});
+
+test('getByPlaceholder() equals page.getByPlaceholder()', () => {
+  assert.ok(locatorsEquivalent(`getByPlaceholder('Email')`, `page.getByPlaceholder('Email')`));
+});
+
+test('an await prefix + action suffix + arrow wrapper are stripped before comparison', () => {
+  assert.ok(locatorsEquivalent(
+    `await page.locator('[data-test="firstName"]').fill('Avery');`,
+    `(): Locator => this.page.locator('[data-test="firstName"]')`,
+  ));
+});
+
+test('equivalent locator chains compare equal regardless of root/whitespace', () => {
+  assert.ok(locatorsEquivalent(
+    `getByText('$29.99', { exact: true }).locator('xpath=ancestor::div[1]').getByRole('button', { name: 'Add to cart' })`,
+    `page.getByText('$29.99',{ exact: true }).locator('xpath=ancestor::div[1]').getByRole('button',{ name: 'Add to cart' })`,
+  ));
+});
+
+test('rejects an invented broader selector (named getByRole vs bare locator)', () => {
+  assert.ok(!locatorsEquivalent(`page.getByRole('button', { name: 'Continue' })`, `page.locator('button')`));
+});
+
+test('rejects a broadened/wildcarded selector', () => {
+  assert.ok(!locatorsEquivalent(`page.locator('[data-test="checkout"]')`, `page.locator('[data-test="*"]')`));
+});
+
+test('rejects a changed selector value', () => {
+  assert.ok(!locatorsEquivalent(`locator('[data-test="firstName"]')`, `locator('[data-test="lastName"]')`));
+});
+
+test('normalizeLocatorExpression yields empty for a non-locator expression', () => {
+  assert.equal(normalizeLocatorExpression(`'/checkout'`), '');
+  assert.equal(normalizeLocatorExpression(`credentials('app')`), '');
+});
+
+/* ── Gate-level regression: equivalent locator syntax must NOT be rejected as unverified ── */
+
+test('gate accepts page.locator([data-test]) when evidence is an await+action locator (checkout regression)', () => {
+  const member = `  checkoutButton = (): Locator => this.page.locator('[data-test="checkout"]');`;
+  const generated = artifacts(member, 'checkoutButton', 'checkoutButton');
+  assert.doesNotThrow(() => assertPageObjectContracts(
+    FW, generated, trace(`await page.locator('[data-test="checkout"]').click();`),
+  ));
+});
+
+test('gate accepts page.getByRole() when the verified evidence is a bare getByRole()', () => {
+  const member = `  firstName = (): Locator => this.page.getByRole('textbox', { name: 'First Name' });`;
+  const generated = artifacts(member, 'firstName', 'firstName');
+  assert.doesNotThrow(() => assertPageObjectContracts(
+    FW, generated, trace(`getByRole('textbox', { name: 'First Name' })`),
+  ));
+});
+
+test('gate still rejects a broadened generated locator that is not in verified evidence', () => {
+  const member = `  checkoutButton = (): Locator => this.page.locator('button');`;
+  const generated = artifacts(member, 'checkoutButton', 'checkoutButton');
+  assert.throws(
+    () => assertPageObjectContracts(FW, generated, trace(`await page.locator('[data-test="checkout"]').click();`)),
+    /not present in verified live evidence/,
   );
 });
