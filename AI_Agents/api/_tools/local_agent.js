@@ -566,6 +566,31 @@ function caseCoveredAnywhere(fw, tc) {
 }
 
 /**
+ * FEATURE-level coverage check for the Autopilot entry — is the requested FEATURE (a name like
+ * "Logout" or "View Cart") already automated in the connected repo's gate, BEFORE any explore is
+ * dispatched? Reuses coveredSpecInIndex (the SAME title/distinctive-token matcher the generator and
+ * the /coverage badge use) by treating the feature name as a case title, then recovers the matching
+ * test id + title for the UI. Returns { specPath, testId, title, domain } or null. Generic — no app rules.
+ */
+function featureCoverageInIndex(testIndex, feature) {
+  const name = String(feature || '').trim();
+  if (!testIndex || !name) return null;
+  const specPath = coveredSpecInIndex(testIndex, { title: name });
+  if (!specPath) return null;
+  // Recover the id + title of the matching entry (best title overlap with the feature) for display.
+  let match = null;
+  let bestScore = -1;
+  for (const [id, arr] of Object.entries(testIndex)) {
+    for (const e of (Array.isArray(arr) ? arr : [arr])) {
+      if (!e || e.spec !== specPath) continue;
+      const sc = distinctiveOverlap(titleCore(name), titleCore(e.title));
+      if (sc > bestScore) { bestScore = sc; match = { specPath, testId: id, title: e.title || '', domain: e.domain || '' }; }
+    }
+  }
+  return match || { specPath, testId: '', title: '', domain: '' };
+}
+
+/**
  * Resolve the real domain by SCANNING existing specs for the requested test-case
  * ids. This maps re-submitted cases (already automated in login.spec.ts) back to
  * the Login domain instead of a bogus new domain derived from a tag (e.g.
@@ -4923,6 +4948,7 @@ module.exports = {
   buildPlan,
   generateAndRun,
   coveredSpecInIndex,
+  featureCoverageInIndex,
   exploreAndAuthor,
   explore,
   exploreViaWorker,

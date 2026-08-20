@@ -271,6 +271,30 @@ router.post('/explore', auth, async (req, res) => {
     if (!url || !String(url).trim()) return res.status(400).json({ msg: 'Application URL is required.' });
     if (!feature || !String(feature).trim()) return res.status(400).json({ msg: 'Feature / widget name is required.' });
 
+    const git = await resolveGitConnection(req.user.id);
+
+    // DUPLICATE GUARD (runs BEFORE any side-effect — no job created, no repo secrets overwritten, no
+    // pending job superseded). If the requested feature already has a passing spec in the connected
+    // repo's gate (.ai-memory capabilities index), surface it and let the user choose instead of
+    // silently re-exploring. `force:true` ("Automate anyway") skips this. Best-effort: a gate/read
+    // error never blocks exploration. Generic — reuses the same matcher as the /coverage badge.
+    if (!req.body.force && git && git.token && git.owner && git.repo) {
+      try {
+        const gate = await loadGate(git);
+        if (gate.ok) {
+          const cov = localAgent.featureCoverageInIndex(gate.testIndex, String(feature).trim());
+          if (cov && cov.specPath) {
+            let mergedAt = null;
+            try { mergedAt = await githubAgent.getFileLastCommitDate(cov.specPath, git.branch, git); } catch { /* best-effort */ }
+            const specUrl = `https://github.com/${git.owner}/${git.repo}/blob/${git.branch || 'main'}/${cov.specPath}`;
+            return res.json({ alreadyAutomated: { ...cov, mergedAt, specUrl, feature: String(feature).trim() } });
+          }
+        }
+      } catch (covErr) {
+        console.error('[explore] duplicate check failed (continuing):', covErr.message);
+      }
+    }
+
     // One active credentialed Autopilot job per user: a second explore that carries creds
     // OVERWRITES the repo secrets (APP_USERNAME/APP_PASSWORD) the old pending job needed, so that job
     // is already dead. Auto-supersede it (mark Discarded) and continue — never block the user with a
@@ -289,7 +313,6 @@ router.post('/explore', auth, async (req, res) => {
     const existing = isDev() ? loadDevJobs() : [];
     const jobId = isDev() ? nextJobId(existing) : `AUTO-${Date.now()}`;
     const now = new Date().toISOString();
-    const git = await resolveGitConnection(req.user.id);
 
     // SECURITY: push the fresh form credentials to the user's repo as encrypted Actions secrets
     // (APP_USERNAME/APP_PASSWORD) so the later cloud GENERATE reads them from secrets — never from

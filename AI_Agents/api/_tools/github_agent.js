@@ -980,6 +980,27 @@ async function getFileContent(filePath, ref, git) {
   }
 }
 
+/**
+ * ISO date of the most recent commit that touched `filePath` on `ref`. Best-effort: returns null on
+ * any error (used only to show "merged <date>" in the already-automated feature prompt).
+ */
+async function getFileLastCommitDate(filePath, ref, git) {
+  const { owner, repo, branch } = repoConfig(git);
+  const r = ref || branch || 'main';
+  try {
+    const { data } = await axios.get(
+      `${API}/repos/${owner}/${repo}/commits?path=${encodeURIComponent(filePath)}&sha=${encodeURIComponent(r)}&per_page=1`,
+      { headers: headers(git) },
+    );
+    const c = Array.isArray(data) && data[0];
+    const commit = c && c.commit;
+    const when = commit && ((commit.committer && commit.committer.date) || (commit.author && commit.author.date));
+    return when || null;
+  } catch {
+    return null;
+  }
+}
+
 /** List a directory in the framework repo. Returns [{ name, path, type }]; [] if missing. */
 async function listDir(dirPath, ref) {  const { owner, repo, branch } = repoConfig();
   const r = ref || branch || 'main';
@@ -1111,6 +1132,7 @@ module.exports = {
   findBlastPr,
   mergePr,
   getFileContent,
+  getFileLastCommitDate,
   listDir,
   mapGithubRunState,
   deriveExploreStatus,

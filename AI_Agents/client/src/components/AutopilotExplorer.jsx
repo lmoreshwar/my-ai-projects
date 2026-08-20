@@ -55,6 +55,9 @@ export default function AutopilotExplorer({ apiBase, connections }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [job, setJob] = useState(null);
+  // Set when the requested feature already has a passing spec in the connected repo gate — the user
+  // chooses [View existing test] / [Automate anyway] instead of silently re-exploring.
+  const [duplicate, setDuplicate] = useState(null);
   const [proceeding, setProceeding] = useState(false);
   const [discarding, setDiscarding] = useState(false);
   const [merging, setMerging] = useState(false);
@@ -87,12 +90,13 @@ export default function AutopilotExplorer({ apiBase, connections }) {
 
   const canSubmit = form.url.trim() && form.feature.trim() && !busy;
 
-  const submit = useCallback(async () => {
+  const submit = useCallback(async (force = false) => {
     setError('');
     if (!form.url.trim()) return setError('Application URL is required.');
     if (!form.feature.trim()) return setError('Feature / widget name is required.');
     setBusy(true);
     setJob(null);
+    if (force) setDuplicate(null);
     try {
       const res = await fetch(`${apiBase}/api/automation/explore`, {
         method: 'POST',
@@ -100,6 +104,8 @@ export default function AutopilotExplorer({ apiBase, connections }) {
         body: JSON.stringify({
           url: form.url.trim(),
           feature: form.feature.trim(),
+          // "Automate anyway" — skip the already-automated guard and explore regardless.
+          force: force || undefined,
           // Creds are sent for the transient explore session only — the API never persists them.
           username: form.username || undefined,
           password: form.password || undefined,
@@ -115,6 +121,9 @@ export default function AutopilotExplorer({ apiBase, connections }) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.msg || `Request failed (${res.status})`);
+      // The feature is already automated — surface the choice instead of running a full explore.
+      if (data && data.alreadyAutomated) { setDuplicate(data.alreadyAutomated); return; }
+      setDuplicate(null);
       setJob(data);
     } catch (e) {
       setError(e.message || 'Something went wrong.');
@@ -433,6 +442,39 @@ export default function AutopilotExplorer({ apiBase, connections }) {
             )}
           </div>
 
+          {duplicate && (
+            <div className="text-sm rounded-lg border border-amber-400/40 bg-amber-50 dark:bg-amber-500/10 px-3 py-3 space-y-2">
+              <div className="flex items-center gap-2 font-semibold text-amber-700 dark:text-amber-300">
+                <span className="material-symbols-outlined text-[18px]">info</span>
+                This feature is already automated
+              </div>
+              <div className="text-on-surface-variant dark:text-slate-300">
+                <span className="font-medium">{duplicate.feature}</span> already has a passing test
+                {duplicate.testId ? <> (<span className="font-mono">{duplicate.testId}</span>)</> : null}
+                {duplicate.mergedAt ? <> · updated {new Date(duplicate.mergedAt).toLocaleDateString()}</> : null}.
+                {duplicate.specPath && <div className="font-mono text-xs mt-1 break-all">{duplicate.specPath}</div>}
+              </div>
+              <div className="flex flex-wrap gap-2 pt-1">
+                {duplicate.specUrl && (
+                  <a href={duplicate.specUrl} target="_blank" rel="noreferrer"
+                    className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold border border-outline-variant/40 hover:bg-slate-100 dark:hover:bg-slate-800">
+                    <span className="material-symbols-outlined text-[16px]">open_in_new</span>
+                    View existing test
+                  </a>
+                )}
+                <button onClick={() => submit(true)} disabled={busy}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-app-red hover:bg-app-dark-red disabled:opacity-60">
+                  <span className="material-symbols-outlined text-[16px]">bolt</span>
+                  Automate anyway
+                </button>
+                <button onClick={() => setDuplicate(null)} disabled={busy}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold border border-outline-variant/40 hover:bg-slate-100 dark:hover:bg-slate-800">
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
+
           {error && (
             <div className="text-sm text-error bg-error/10 rounded-lg px-3 py-2 flex items-center gap-2">
               <span className="material-symbols-outlined text-[18px]">error</span>{error}
@@ -442,7 +484,7 @@ export default function AutopilotExplorer({ apiBase, connections }) {
           <PrTargetBadge connections={connections} />
 
           <div className="flex gap-3 pt-1">
-            <button onClick={submit} disabled={!canSubmit}
+            <button onClick={() => submit(false)} disabled={!canSubmit}
               className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-white transition ${
                 canSubmit ? 'bg-app-red hover:bg-app-dark-red' : 'bg-slate-300 dark:bg-slate-700 cursor-not-allowed'
               }`}>              {busy ? (
