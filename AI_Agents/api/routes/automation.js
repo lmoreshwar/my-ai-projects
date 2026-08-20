@@ -10,6 +10,7 @@ const githubAgent = require('../_tools/github_agent');
 const { resolveGitConnection } = require('../_tools/git_connection');
 const { setAppCredentialSecrets } = require('../_tools/github_secrets');
 const runnerAuth = require('../middleware/runnerAuth');
+const { ownedJobQuery, findOwnedInList, ownsJob } = require('../_tools/job_ownership');
 // Dev-mode local store (used when MongoDB is unreachable / DEV_MODE=true).
 const DEV_JOBS_FILE = path.join(__dirname, '..', '..', 'dev-automation-jobs.json');
 const isDev = () => process.env.DEV_MODE === 'true';
@@ -56,9 +57,9 @@ async function persist(job) {
   return doc.toObject();
 }
 
-async function findJob(jobId) {
-  if (isDev()) return loadDevJobs().find((j) => j.jobId === jobId) || null;
-  const doc = await AutomationJob.findOne({ jobId });
+async function findJob(jobId, userId) {
+  if (isDev()) return findOwnedInList(loadDevJobs(), jobId, userId);
+  const doc = await AutomationJob.findOne(ownedJobQuery(jobId, userId));
   return doc ? doc.toObject() : null;
 }
 
@@ -106,7 +107,7 @@ router.get('/jobs', auth, async (req, res) => {
 // @desc    Get one automation job (poll for status)
 router.get('/jobs/:jobId', auth, async (req, res) => {
   try {
-    const job = await findJob(req.params.jobId);
+    const job = await findJob(req.params.jobId, req.user.id);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
     res.json(job);
   } catch (err) {
@@ -471,7 +472,7 @@ router.post('/explore', auth, async (req, res) => {
 // @desc    Provide missing information, then re-plan
 router.post('/jobs/:jobId/answer', auth, async (req, res) => {
   try {
-    const job = await findJob(req.params.jobId);
+    const job = await findJob(req.params.jobId, req.user.id);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
 
     const { url, comments } = req.body;
@@ -495,7 +496,7 @@ router.post('/jobs/:jobId/answer', auth, async (req, res) => {
 // @desc    Approve the plan → generate (+ execute per executionMode)
 router.post('/jobs/:jobId/approve', auth, async (req, res) => {
   try {
-    const job = await findJob(req.params.jobId);
+    const job = await findJob(req.params.jobId, req.user.id);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
     if (job.missingInfo && job.missingInfo.length) {
       return res.status(400).json({ msg: 'Cannot proceed — missing information must be provided first.', missingInfo: job.missingInfo });
@@ -652,7 +653,7 @@ async function runGenerationInBackground(job) {
 // @desc    Poll the active provider (GitHub coding agent) and advance job status
 router.get('/jobs/:jobId/progress', auth, async (req, res) => {
   try {
-    const job = await findJob(req.params.jobId);
+    const job = await findJob(req.params.jobId, req.user.id);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
 
     // Cloud (GitHub Actions) path: stream live run steps into the job's logs.
@@ -708,7 +709,7 @@ router.get('/jobs/:jobId/progress', auth, async (req, res) => {
 // @desc    Push the generated tests on a new branch and return the PR-compare URL
 router.post('/jobs/:jobId/push-gate', auth, async (req, res) => {
   try {
-    const job = await findJob(req.params.jobId);
+    const job = await findJob(req.params.jobId, req.user.id);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
     if (job.status !== 'Passed' && job.status !== 'Partial') {
       return res.status(400).json({ msg: 'Push to Gate is only allowed after a passing (or partial) run.' });
@@ -733,7 +734,7 @@ router.post('/jobs/:jobId/push-gate', auth, async (req, res) => {
 //          when the client explicitly confirms) so a fresh generation starts from scratch.
 router.post('/jobs/:jobId/discard', auth, async (req, res) => {
   try {
-    const job = await findJob(req.params.jobId);
+    const job = await findJob(req.params.jobId, req.user.id);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
     const deleteRemote = req.body && req.body.deleteRemote === true;
     const onLog = (line) => { job.logs = [...(job.logs || []), line]; };
@@ -756,7 +757,7 @@ router.post('/jobs/:jobId/discard', auth, async (req, res) => {
 // @desc    Merge the BLAST pull request for a cloud (GitHub Actions) job
 router.post('/jobs/:jobId/merge-pr', auth, async (req, res) => {
   try {
-    const job = await findJob(req.params.jobId);
+    const job = await findJob(req.params.jobId, req.user.id);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
     if (job.provider !== 'github-actions') {
       return res.status(400).json({ msg: 'Merge is only available for cloud (GitHub Actions) jobs.' });
@@ -786,7 +787,7 @@ router.post('/jobs/:jobId/merge-pr', auth, async (req, res) => {
 // @desc    After a merge, trigger a SCOPED @Smoke run of the framework CI (not the full suite)
 router.post('/jobs/:jobId/run-smoke', auth, async (req, res) => {
   try {
-    const job = await findJob(req.params.jobId);
+    const job = await findJob(req.params.jobId, req.user.id);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
     if (job.provider !== 'github-actions') {
       return res.status(400).json({ msg: 'Smoke run is only available for cloud (GitHub Actions) jobs.' });
@@ -804,7 +805,7 @@ router.post('/jobs/:jobId/run-smoke', auth, async (req, res) => {
 
 // @desc    Hand the job to the LOCAL VS Code Copilot agent via a generated .bat
 router.post('/jobs/:jobId/run-copilot', auth, async (req, res) => {  try {
-    const job = await findJob(req.params.jobId);
+    const job = await findJob(req.params.jobId, req.user.id);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
 
     const fw = localAgent.config().frameworkPath;
@@ -839,7 +840,7 @@ router.post('/jobs/:jobId/run-copilot', auth, async (req, res) => {  try {
 // @desc    Tail the Copilot handoff log so the UI can stream the live console
 router.get('/jobs/:jobId/copilot-log', auth, async (req, res) => {
   try {
-    const job = await findJob(req.params.jobId);
+    const job = await findJob(req.params.jobId, req.user.id);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
     const fw = localAgent.config().frameworkPath;
     const log = fw ? localAgent.readCopilotLog(fw, job.jobId) : '';
@@ -854,7 +855,7 @@ router.get('/jobs/:jobId/copilot-log', auth, async (req, res) => {
 // @desc    Server-Sent Events stream of the Copilot handoff log for a truly live console.
 //          Pushes the full sanitized log whenever the file changes (no client polling gap).
 router.get('/jobs/:jobId/copilot-stream', auth, async (req, res) => {
-  const job = await findJob(req.params.jobId);
+  const job = await findJob(req.params.jobId, req.user.id);
   if (!job) return res.status(404).json({ msg: 'Job not found' });
   const fw = localAgent.config().frameworkPath;
 
@@ -888,7 +889,7 @@ router.get('/jobs/:jobId/copilot-stream', auth, async (req, res) => {
 // @desc    Cooperatively stop a running Copilot handoff (stop sentinel + inbox instruction).
 router.post('/jobs/:jobId/copilot-stop', auth, async (req, res) => {
   try {
-    const job = await findJob(req.params.jobId);
+    const job = await findJob(req.params.jobId, req.user.id);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
     const fw = localAgent.config().frameworkPath;
     if (!fw) return res.status(400).json({ msg: 'FRAMEWORK_PATH is not configured.' });
@@ -905,7 +906,7 @@ router.post('/jobs/:jobId/copilot-stop', auth, async (req, res) => {
 // @desc    Save an edited implementation plan (used by BOTH the LLM and Copilot paths)
 router.patch('/jobs/:jobId/plan', auth, async (req, res) => {
   try {
-    const job = await findJob(req.params.jobId);
+    const job = await findJob(req.params.jobId, req.user.id);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
     const { plan } = req.body || {};
     if (typeof plan !== 'string') return res.status(400).json({ msg: 'plan (string) is required.' });
@@ -923,7 +924,7 @@ router.patch('/jobs/:jobId/plan', auth, async (req, res) => {
 // @desc    Send additional info to the running Copilot agent (file-based inbox loop)
 router.post('/jobs/:jobId/copilot-input', auth, async (req, res) => {
   try {
-    const job = await findJob(req.params.jobId);
+    const job = await findJob(req.params.jobId, req.user.id);
     if (!job) return res.status(404).json({ msg: 'Job not found' });
     const { message } = req.body || {};
     if (!message || !String(message).trim()) return res.status(400).json({ msg: 'message is required.' });
@@ -941,12 +942,14 @@ router.post('/jobs/:jobId/copilot-input', auth, async (req, res) => {
 // @route   DELETE /api/automation/jobs/:jobId
 router.delete('/jobs/:jobId', auth, async (req, res) => {
   try {
+    const job = await findJob(req.params.jobId, req.user.id);
+    if (!job) return res.status(404).json({ msg: 'Job not found' });
     if (isDev()) {
-      const jobs = loadDevJobs().filter((j) => j.jobId !== req.params.jobId);
+      const jobs = loadDevJobs().filter((j) => !(j.jobId === req.params.jobId && ownsJob(j, req.user.id)));
       saveDevJobs(jobs);
       return res.json({ msg: 'Job removed' });
     }
-    await AutomationJob.findOneAndDelete({ jobId: req.params.jobId });
+    await AutomationJob.findOneAndDelete(ownedJobQuery(req.params.jobId, req.user.id));
     res.json({ msg: 'Job removed' });
   } catch (err) {
     console.error(err.message);
