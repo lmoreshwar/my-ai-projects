@@ -19,7 +19,16 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { readRoutesBlock, mergeRoutes, assertRoutesDefined, stripCommentsAndStrings } from '../codegen';
+import {
+  readRoutesBlock,
+  mergeRoutes,
+  assertRoutesDefined,
+  stripCommentsAndStrings,
+  assertRoutesResolvable,
+  recoverMissingRoutes,
+  deriveRouteFromTrace,
+} from '../codegen';
+import type { AgentStep } from '../agent-loop';
 
 /* ── Temp-framework helpers ──────────────────────────────────────────────────── */
 
@@ -175,3 +184,102 @@ test('stripCommentsAndStrings removes comment/string routes.X but keeps real cod
   const found = new Set([...stripCommentsAndStrings(src).matchAll(/\broutes\.([A-Za-z_]\w*)/g)].map((m) => m[1]));
   assert.deepEqual([...found].sort(), ['inTemplate', 'realCode'], 'only real code + template interpolations survive');
 });
+
+/* ── #10–#14 — repairable in-loop route gate + trace-derived auto-recovery ─────────────
+ *
+ * Reproduces the recurring CI approve-phase break:
+ *   "Codegen: undefined route reference(s): route 'checkoutStepOne' is referenced in
+ *    src/modules/CheckoutYourInformationModule.ts but not defined in src/config/index.ts routes"
+ *
+ * Old cause: the route check ran AFTER the self-repair loop, so the model was never asked to add the
+ * missing key. Fix = an in-memory, REPAIRABLE gate (assertRoutesResolvable) inside the loop that accepts
+ * a key returned in the model's "routes" field, PLUS a trace-derived safety net (recoverMissingRoutes).
+ */
+
+// A minimal LlmArtifacts-shaped candidate (only the fields the gate reads).
+function candidate(moduleContent: string, routes?: Record<string, string>) {
+  return {
+    domain: 'checkout',
+    page: { file: 'src/pages/CheckoutPage.ts', content: '// page' },
+    module: { file: 'src/modules/CheckoutYourInformationModule.ts', content: moduleContent },
+    spec: { file: 'src/tests/checkout.spec.ts', content: '// spec' },
+    routes,
+  };
+}
+// A minimal AgentStep carrying only the verified url the derivation reads.
+const step = (url: string): AgentStep => ({ tool: 'browser_navigate', args: {}, url, result: 'ok' });
+const CHECKOUT_TRACE: AgentStep[] = [
+  step('https://www.saucedemo.com/checkout-step-one.html'),
+  step('https://www.saucedemo.com/checkout-step-two.html'),
+];
+
+test('#10 in-loop gate REJECTS a routes.X missing from config AND the model "routes" field — with the verified path', () => {
+  const fw = makeFramework(CONFIG_DASHBOARD_IN_COMMENT);
+  try {
+    const mod = 'await this.actions.click(this.page.continueBtn);\nawait this.waitHelper.forUrl(urlRegex(routes.checkoutStepOne));';
+    assert.throws(
+      () => assertRoutesResolvable(fw, candidate(mod), CHECKOUT_TRACE),
+      (e: Error) =>
+        /route 'checkoutStepOne' is referenced/.test(e.message) &&
+        /VERIFIED path is "\/checkout-step-one\.html"/.test(e.message),
+      'a missing route must be a repairable error that names its verified path from the trace',
+    );
+  } finally { cleanup(fw); }
+});
+
+test('#11 in-loop gate ACCEPTS the reference when the model returns the key in its "routes" field', () => {
+  const fw = makeFramework(CONFIG_DASHBOARD_IN_COMMENT);
+  try {
+    const mod = 'await this.waitHelper.forUrl(urlRegex(routes.checkoutStepOne));';
+    assert.doesNotThrow(
+      () => assertRoutesResolvable(fw, candidate(mod, { checkoutStepOne: '/checkout-step-one.html' }), CHECKOUT_TRACE),
+      'the model self-repaired by returning the new route — the loop must let it through',
+    );
+  } finally { cleanup(fw); }
+});
+
+test('#11b in-loop gate ACCEPTS a reference to an already-defined config route', () => {
+  const fw = makeFramework(CONFIG_DASHBOARD_IN_COMMENT);
+  try {
+    const mod = 'await this.waitHelper.forUrl(urlRegex(routes.inventory));';
+    assert.doesNotThrow(() => assertRoutesResolvable(fw, candidate(mod), CHECKOUT_TRACE));
+  } finally { cleanup(fw); }
+});
+
+test('#12 deriveRouteFromTrace maps a key to its path only when EXACTLY one trace url resolves to it', () => {
+  assert.equal(deriveRouteFromTrace('checkoutStepOne', CHECKOUT_TRACE), '/checkout-step-one.html', 'unique match');
+  assert.equal(deriveRouteFromTrace('checkoutStepTwo', CHECKOUT_TRACE), '/checkout-step-two.html', 'unique match');
+  assert.equal(deriveRouteFromTrace('unseenRoute', CHECKOUT_TRACE), null, 'no trace url resolves to it → null');
+  // Ambiguous: two different urls camelCase to the same key → refuse to guess.
+  const ambiguous = [step('https://a.test/checkout-step-one.html'), step('https://b.test/checkout/step/one')];
+  assert.equal(deriveRouteFromTrace('checkoutStepOne', ambiguous), null, 'ambiguous evidence → null (never guess)');
+});
+
+test('#13 safety net: recoverMissingRoutes auto-merges an omitted route from the trace so the build survives', () => {
+  const fw = makeFramework(CONFIG_DASHBOARD_IN_COMMENT);
+  try {
+    // Simulate a generated module the model wrote WITHOUT returning the new route in "routes".
+    writeGen(fw, 'src/modules/CheckoutYourInformationModule.ts',
+      'await this.waitHelper.forUrl(urlRegex(routes.checkoutStepOne));');
+    const files = ['src/config/index.ts', 'src/modules/CheckoutYourInformationModule.ts'];
+    // Before recovery the route is undefined → the final gate would reject.
+    assert.throws(() => assertRoutesDefined(fw, files), /route 'checkoutStepOne' .* not defined/);
+    // Recover from the verified trace, then the final gate passes.
+    const changed = recoverMissingRoutes(fw, files, CHECKOUT_TRACE);
+    assert.equal(changed, 'src/config/index.ts', 'the derived route was merged into config');
+    assert.ok(readRoutesBlock(fw)!.keys.has('checkoutStepOne'), 'checkoutStepOne is now defined');
+    assert.deepEqual(keys(fw), ['checkoutStepOne', 'inventory', 'login'], 'existing routes preserved + derived one added');
+    assert.doesNotThrow(() => assertRoutesDefined(fw, files), 'the build no longer breaks on the omitted route');
+  } finally { cleanup(fw); }
+});
+
+test('#14 safety net stays silent when it cannot derive a path (never invents a route)', () => {
+  const fw = makeFramework(CONFIG_DASHBOARD_IN_COMMENT);
+  try {
+    writeGen(fw, 'src/tests/bad.spec.ts', 'await page.goto(urlFor(routes.somethingWithNoTraceEvidence));');
+    const changed = recoverMissingRoutes(fw, ['src/tests/bad.spec.ts'], CHECKOUT_TRACE);
+    assert.equal(changed, null, 'no confident trace evidence → no merge (the real gate still rejects it)');
+    assert.deepEqual(keys(fw), ['inventory', 'login'], 'config untouched');
+  } finally { cleanup(fw); }
+});
+

@@ -656,6 +656,89 @@ export function assertRoutesDefined(fw: string, files: string[]): void {
   }
 }
 
+/** The relative path (no scheme/host/query/hash) of a trace step url. */
+function relPathFromTraceUrl(u: string): string {
+  let s = String(u || '').trim();
+  if (!s) return '';
+  s = s.replace(/^[a-z]+:\/\/[^/]+/i, ''); // strip scheme + host
+  s = s.replace(/[?#].*$/, '');            // strip query + hash
+  if (!s) return '';
+  return s.startsWith('/') ? s : `/${s}`;
+}
+
+/** The camelCase key a path resolves to: "/checkout-step-one.html" → "checkoutStepOne". */
+function camelKeyFromPath(path: string): string {
+  const base = String(path || '').replace(/\.[a-z0-9]+$/i, '').replace(/^\/+|\/+$/g, '');
+  const parts = base.split(/[/\-_.]+/).filter(Boolean);
+  if (!parts.length) return '';
+  return parts.map((w, i) => (i === 0 ? w.toLowerCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())).join('');
+}
+
+/** The verified relative path a missing routes.X key maps to — IFF exactly one trace url resolves to it. */
+export function deriveRouteFromTrace(missingKey: string, trace: AgentStep[]): string | null {
+  const matches = new Set<string>();
+  for (const s of trace || []) {
+    const rel = relPathFromTraceUrl(s.url || '');
+    if (rel && camelKeyFromPath(rel) === missingKey) matches.add(rel);
+  }
+  return matches.size === 1 ? [...matches][0] : null;
+}
+
+/**
+ * IN-MEMORY, REPAIRABLE routes gate (runs inside the codegen self-repair loop). A routes.X referenced by
+ * the generated page/module/spec must be EITHER already in the config map OR returned in the model's
+ * top-level "routes" field. When missing, throw a repair message carrying the exact verified path from the
+ * trace so the model can add it — instead of failing hard AFTER the loop (the old cause of the recurring
+ * "undefined route reference" build break).
+ */
+export function assertRoutesResolvable(fw: string, candidate: LlmArtifacts, trace: AgentStep[]): void {
+  const rb = readRoutesBlock(fw);
+  if (!rb) return; // no routes map — nothing to validate
+  const defined = new Set<string>(rb.keys);
+  for (const k of Object.keys(candidate.routes || {})) if (k) defined.add(k); // the model's freshly-returned routes
+  const files = [
+    { file: candidate.page.file || 'Page', content: candidate.page.content },
+    { file: candidate.module.file || 'Module', content: candidate.module.content },
+    { file: candidate.spec.file || 'Spec', content: candidate.spec.content },
+  ];
+  const missing = new Map<string, string>();
+  for (const f of files) {
+    const src = stripCommentsAndStrings(f.content);
+    for (const m of src.matchAll(/\broutes\.([A-Za-z_]\w*)/g)) {
+      if (!defined.has(m[1]) && !missing.has(m[1])) missing.set(m[1], f.file);
+    }
+  }
+  if (!missing.size) return;
+  const lines = [...missing].map(([key, file]) => {
+    const rel = deriveRouteFromTrace(key, trace);
+    return `route '${key}' is referenced in ${file} but is neither defined in ${rb.file} nor returned in your "routes" field${rel ? ` — its VERIFIED path is "${rel}"` : ''}`;
+  });
+  throw new Error(`Codegen: undefined route reference(s):\n  - ${lines.join('\n  - ')}\nReturn EVERY new route key in the top-level "routes" field mapped to its VERIFIED relative path from the trace url (e.g. "checkoutStepOne": "/checkout-step-one.html"). Do NOT remove the reference.`);
+}
+
+/**
+ * SAFETY NET (runs after generation, before the final assertRoutesDefined): if a referenced routes.X still
+ * isn't defined — the model omitted it from "routes" despite the repair prompt — auto-derive its path from
+ * the verified trace url (only when exactly one trace url resolves to that key) and merge it, so a stubborn
+ * omission can never break the build. Evidence-based: the path always comes from the real trace.
+ */
+export function recoverMissingRoutes(fw: string, files: string[], trace: AgentStep[]): string | null {
+  const rb = readRoutesBlock(fw);
+  if (!rb) return null;
+  const additions: Record<string, string> = {};
+  for (const rel of files) {
+    if (!rel.endsWith('.ts')) continue;
+    const src = stripCommentsAndStrings(safeRead(join(fw, rel)));
+    for (const m of src.matchAll(/\broutes\.([A-Za-z_]\w*)/g)) {
+      const key = m[1];
+      if (rb.keys.has(key) || additions[key]) continue;
+      const derived = deriveRouteFromTrace(key, trace);
+      if (derived) additions[key] = derived;
+    }
+  }
+  return Object.keys(additions).length ? mergeRoutes(fw, additions) : null;
+}
+
 /** Positional Page locators are not stable evidence for a single form control. */
 function assertNoPositionalPageLocators(file: string, content: string): void {
   if (!/\.(?:nth|first|last)\s*\(/.test(content)) return;
@@ -1708,6 +1791,9 @@ export async function generateFromTrace(
       { file: candidate.module.file || 'Module', content: candidate.module.content },
       { file: candidate.spec.file || 'Spec', content: candidate.spec.content },
     ], trace);
+    // In-memory + repairable: a routes.X reference must be defined in config OR returned in "routes".
+    // Runs inside the loop so the model self-corrects (with the verified path) instead of failing hard after it.
+    assertRoutesResolvable(fw, candidate, trace);
     return candidate;
   };
 
@@ -1769,6 +1855,10 @@ export async function generateFromTrace(
 
   const rt = mergeRoutes(fw, art.routes);
   if (rt && !files.includes(rt)) files.push(rt);
+  // Safety net: if a referenced route still isn't defined (model omitted it from "routes"), auto-derive it
+  // from the verified trace url and merge — a stubborn omission can never break the build.
+  const recovered = recoverMissingRoutes(fw, files, trace);
+  if (recovered && !files.includes(recovered)) files.push(recovered);
   // Fail fast BEFORE verifySpec: every routes.X in a generated file must now be defined in config.
   assertRoutesDefined(fw, files);
 
