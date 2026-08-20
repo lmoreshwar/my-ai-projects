@@ -1081,6 +1081,32 @@ export function locatorsEquivalent(a: string, b: string): boolean {
 }
 
 /**
+ * Elements OBSERVED in a live a11y snapshot (role + accessible name) are verified evidence too. A feature
+ * that ASSERTS a heading, or targets a control that only appears AFTER an action (e.g. "Back Home" on the
+ * order-complete page), references elements captured in the RESULTING snapshot rather than in an interaction
+ * step — so they are absent from interaction/discovery locator evidence and were being rejected as invented.
+ * Surface each named snapshot node as getByRole('<role>', { name: '<name>' }) so the locator-evidence gate
+ * accepts a grounded assertion/navigation locator. Parses only the snapshot text the agent actually
+ * captured (nameless structural `generic` nodes are skipped) — generic, never app-specific.
+ */
+export function snapshotRoleNameLocators(trace: AgentStep[]): string[] {
+  const out: string[] = [];
+  const LINE = /^\s*-\s+([a-z][a-z-]*)\s+"((?:[^"\\]|\\.)*)"/;
+  for (const step of trace) {
+    const result = String(step.result || '');
+    if (step.tool !== 'snapshot' && !/###\s*Snapshot|```yaml/.test(result)) continue;
+    for (const raw of result.split('\n')) {
+      const m = raw.match(LINE);
+      if (!m) continue;
+      const [, role, name] = m;
+      if (role === 'generic' || !name) continue;
+      out.push(`getByRole('${role}', { name: '${name.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}' })`);
+    }
+  }
+  return out;
+}
+
+/**
  * Reject a generated Module or Spec that calls a Page Object member which the imported Page Object
  * does not declare. The gate uses the TypeScript parser rather than text matching so aliases,
  * `this.pageObject`, direct local Page instances, method-style getters, and property-style locators
@@ -1287,6 +1313,13 @@ export function assertPageObjectContracts(
   }
   for (const transition of discoveryEvidence?.transitions || []) {
     const normalised = normalizeLocatorExpression(transition.triggerLocator || '');
+    if (normalised) evidence.add(normalised);
+  }
+  // Assertion targets + post-action controls (headings, "Back Home", etc.) live in the RESULTING a11y
+  // snapshot, not in an interaction step — surface them as verified getByRole evidence so a grounded
+  // assertion/navigation locator is accepted instead of rejected as invented.
+  for (const locator of snapshotRoleNameLocators(trace)) {
+    const normalised = normalizeLocatorExpression(locator);
     if (normalised) evidence.add(normalised);
   }
 
@@ -1799,23 +1832,46 @@ export async function generateFromTrace(
 
   // Self-repair loop: when a quality gate rejects the reply, feed the exact rejection back and let the
   // model correct its own output. Generic — this covers positional locators, prepopulated fields,
-  // unique fields, and any future in-memory gate, instead of hand-patching one case.
+  // unique fields, and any future in-memory gate, instead of hand-patching one case. A malformed reply
+  // (invalid JSON / not JSON / missing content) is a FORMAT problem, not a quality one, so it gets its
+  // own bounded retries and never burns the quality-gate budget — a single fluke can't kill the build.
   const MAX_CODEGEN_ATTEMPTS = 3;
+  const MAX_FORMAT_RETRIES = 2;
+  const isFormatError = (msg: string): boolean =>
+    /Codegen: (model did not return JSON|invalid JSON|reply missing page\/module\/spec content)/.test(msg);
   let art: LlmArtifacts | undefined;
   let lastError = '';
-  for (let attempt = 1; attempt <= MAX_CODEGEN_ATTEMPTS; attempt++) {
+  let qualityAttempts = 0;
+  let formatRetries = 0;
+  for (;;) {
     const params: OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming = { model, messages, temperature: 0 };
     applyReasoning(params);
     const completion = await client.chat.completions.create(params);
     const raw = completion.choices[0]?.message?.content || '';
     try {
       art = parseAndValidate(raw);
-      if (attempt > 1) log(`[codegen] repair succeeded on attempt ${attempt}/${MAX_CODEGEN_ATTEMPTS}.`);
+      if (qualityAttempts + formatRetries > 0) log(`[codegen] repair succeeded (${qualityAttempts} gate repair(s), ${formatRetries} format retr(ies)).`);
       break;
     } catch (e) {
       lastError = (e as Error).message;
-      if (attempt === MAX_CODEGEN_ATTEMPTS) throw new Error(`${lastError} (unresolved after ${MAX_CODEGEN_ATTEMPTS} codegen attempts)`);
-      log(`[codegen] quality gate rejected attempt ${attempt}/${MAX_CODEGEN_ATTEMPTS}: ${lastError} — asking the model to repair…`);
+      if (isFormatError(lastError)) {
+        formatRetries += 1;
+        if (formatRetries > MAX_FORMAT_RETRIES) throw new Error(`${lastError} (unresolved after ${formatRetries} format retries)`);
+        log(`[codegen] reply was not valid JSON (format retry ${formatRetries}/${MAX_FORMAT_RETRIES}): ${lastError} — re-requesting STRICT JSON…`);
+        messages.push({ role: 'assistant', content: raw });
+        messages.push({ role: 'user', content: [
+          'Your previous reply could NOT be parsed as JSON:',
+          '',
+          lastError,
+          '',
+          'Re-emit the SAME artifact as ONE strict JSON object only — no prose, no markdown fences, no',
+          'trailing commas, every string properly quoted and escaped. Keep every file and locator identical.',
+        ].join('\n') });
+        continue;
+      }
+      qualityAttempts += 1;
+      if (qualityAttempts >= MAX_CODEGEN_ATTEMPTS) throw new Error(`${lastError} (unresolved after ${MAX_CODEGEN_ATTEMPTS} codegen attempts)`);
+      log(`[codegen] quality gate rejected attempt ${qualityAttempts}/${MAX_CODEGEN_ATTEMPTS}: ${lastError} — asking the model to repair…`);
       messages.push({ role: 'assistant', content: raw });
       messages.push({ role: 'user', content: [
         'Your previous reply was REJECTED by an automated quality gate:',

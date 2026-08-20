@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { assertPageObjectContracts, locatorsEquivalent, normalizeLocatorExpression, type PageObjectArtifacts } from '../codegen';
+import { assertPageObjectContracts, locatorsEquivalent, normalizeLocatorExpression, snapshotRoleNameLocators, type PageObjectArtifacts } from '../codegen';
 import type { AgentStep } from '../agent-loop';
 
 let FW = '';
@@ -214,5 +214,49 @@ test('gate still rejects a broadened generated locator that is not in verified e
   assert.throws(
     () => assertPageObjectContracts(FW, generated, trace(`await page.locator('[data-test="checkout"]').click();`)),
     /not present in verified live evidence/,
+  );
+});
+
+/* ── Snapshot-observed evidence: assertion targets + post-action controls (the order-complete regression) ── */
+
+// The order-complete page as the agent captured it: the heading + "Back Home" exist ONLY in this snapshot
+// (never interacted with — the explore stopped after clicking Finish), so they were rejected as invented.
+const COMPLETE_SNAPSHOT = [
+  '### Page',
+  '- Page URL: https://www.saucedemo.com/checkout-complete.html',
+  '### Snapshot',
+  '```yaml',
+  '- generic [ref=f7e106]:',
+  '  - button "Open Menu" [ref=f7e107] [cursor=pointer]',
+  '- heading "Thank you for your order!" [level=2] [ref=f7e117]',
+  '- generic [ref=f7e119]:',
+  '  - button "Back Home" [ref=f7e120] [cursor=pointer]',
+  '```',
+].join('\n');
+const snapshotTrace: AgentStep[] = [{ tool: 'snapshot', args: {}, result: COMPLETE_SNAPSHOT }];
+
+test('snapshotRoleNameLocators surfaces named snapshot nodes as getByRole evidence (skips nameless generics)', () => {
+  const locs = snapshotRoleNameLocators(snapshotTrace);
+  assert.ok(locs.some((l) => locatorsEquivalent(l, "getByRole('heading', { name: 'Thank you for your order!' })")));
+  assert.ok(locs.some((l) => locatorsEquivalent(l, "getByRole('button', { name: 'Back Home' })")));
+  assert.ok(locs.some((l) => locatorsEquivalent(l, "getByRole('button', { name: 'Open Menu' })")));
+  assert.ok(!locs.some((l) => /generic/.test(l)), 'structural generic nodes are never evidence');
+});
+
+test('gate ACCEPTS an assertion + post-action locator present only in the resulting a11y snapshot', () => {
+  const members = [
+    "  thankYouHeading = (): Locator => this.page.getByRole('heading', { name: 'Thank you for your order!' });",
+    "  backHomeButton = (): Locator => this.page.getByRole('button', { name: 'Back Home' });",
+  ].join('\n');
+  const generated = artifacts(members, 'backHomeButton', 'thankYouHeading');
+  assert.doesNotThrow(() => assertPageObjectContracts(FW, generated, snapshotTrace));
+});
+
+test('gate STILL rejects a locator absent from BOTH interaction and snapshot evidence', () => {
+  const invented = "  invented = (): Locator => this.page.getByRole('button', { name: 'Nonexistent' });";
+  const generated = artifacts(invented, 'invented', 'invented');
+  assert.throws(
+    () => assertPageObjectContracts(FW, generated, snapshotTrace),
+    /SamplePage\.invented[\s\S]*not present in verified live evidence/,
   );
 });
