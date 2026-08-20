@@ -18,7 +18,9 @@ export default function Login({ onLogin }) {
   const removeRocket = (id) => setRockets((rs) => rs.filter((r) => r.id !== id));
 
   // Use relative URL in production, localhost in dev
-  const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '';
+  const API_BASE = import.meta.env.DEV
+    ? 'http://localhost:8000'
+    : (import.meta.env.VITE_API_BASE || '');
 
   const handleLogin = async (e) => {
     e.preventDefault();

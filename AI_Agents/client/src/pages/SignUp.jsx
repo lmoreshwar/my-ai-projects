@@ -18,7 +18,9 @@ export default function SignUp() {
     setLoading(true);
 
     try {
-      const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '';
+      const API_BASE = import.meta.env.DEV
+        ? 'http://localhost:8000'
+        : (import.meta.env.VITE_API_BASE || '');
       const response = await fetch(`${API_BASE}/api/auth/signup`, {
         method: 'POST',
         headers: {

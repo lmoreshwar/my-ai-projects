@@ -127,7 +127,9 @@ function App() {
     github: { token: '', apiUrl: 'https://api.github.com', repos: [], branches: [], selectedRepo: '', selectedBranch: '', repoVisibility: '', status: 'disconnected', message: '' },
   });
 
-  const API_BASE = import.meta.env.DEV ? 'http://localhost:8000' : '';
+  const API_BASE = import.meta.env.DEV
+    ? 'http://localhost:8000'
+    : (import.meta.env.VITE_API_BASE || '');
   const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
   // Track whether user is logged in so we can re-fetch connections after login
