@@ -344,6 +344,41 @@ function extractPublicMethods(src: string): Array<{ name: string; params: string
   return out;
 }
 
+/**
+ * Split a raw TS parameter list on TOP-LEVEL commas only, so commas nested inside generics/objects/tuples
+ * (`Record<string, string>`, `{ a: 1, b: 2 }`, `[a, b]`) are not treated as separators. `extractPublicMethods`
+ * already captures only up to the first `)`, so parameter-level parentheses never reach here.
+ */
+function splitTopLevelParams(raw: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let cur = '';
+  for (const ch of raw) {
+    if (ch === '<' || ch === '{' || ch === '[' || ch === '(') depth++;
+    else if (ch === '>' || ch === '}' || ch === ']' || ch === ')') depth = Math.max(0, depth - 1);
+    if (ch === ',' && depth === 0) { parts.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  if (cur.trim()) parts.push(cur);
+  return parts;
+}
+
+/** A parameter is OPTIONAL when it is `name?`, has a default value (`= …`), or is a rest param (`...rest`). */
+function isOptionalParam(param: string): boolean {
+  const p = param.trim();
+  if (!p) return true;
+  if (p.startsWith('...')) return true;             // rest param — callable with zero of these
+  const head = p.split(':')[0];                     // the portion before the type annotation
+  if (/\?\s*$/.test(head)) return true;             // `name?: T`
+  if (/(^|[^=!<>])=(?!=|>)/.test(p)) return true;   // default value `name: T = …` (ignores ==, =>, <=, >=)
+  return false;
+}
+
+/** Minimum number of arguments an existing caller must pass = the count of leading REQUIRED parameters. */
+function requiredParamCount(paramsRaw: string): number {
+  return splitTopLevelParams(paramsRaw).filter((p) => p.trim() && !isOptionalParam(p)).length;
+}
+
 /** The set of public method NAMES a wrapper util exposes (empty when the util file is absent). */
 function wrapperMethodNames(fw: string, rel: string): Set<string> {
   const src = safeRead(join(fw, rel));
@@ -1960,16 +1995,42 @@ export function assertExistingModuleApiPreserved(fw: string, candidate: LlmArtif
   if (!rel) return;
   const existing = safeRead(join(fw, rel));
   if (!existing.trim()) return; // brand-new module — no prior API to preserve
-  const before = new Set(extractPublicMethods(existing).map((mm) => mm.name));
-  const after = new Set(extractPublicMethods(candidate.module.content).map((mm) => mm.name));
+  const beforeMethods = extractPublicMethods(existing);
+  const afterMethods = extractPublicMethods(candidate.module.content);
+  const before = new Set(beforeMethods.map((mm) => mm.name));
+  const after = new Set(afterMethods.map((mm) => mm.name));
+
+  // 1) REMOVED / RENAMED — a public method other specs already call would no longer resolve.
   const dropped = [...before].filter((name) => !after.has(name));
-  if (!dropped.length) return;
-  throw new Error(
-    `Codegen: the regenerated ${rel} removes existing public method(s) [${dropped.join(', ')}] that other specs may `
-    + `already call. Preserve the existing module API — keep ${dropped.length > 1 ? 'these methods' : 'this method'} and ADD a `
-    + 'new method for any new behaviour instead of renaming or removing one. Re-emit the module with every existing '
-    + 'public method still present.',
-  );
+  if (dropped.length) {
+    throw new Error(
+      `Codegen: the regenerated ${rel} removes existing public method(s) [${dropped.join(', ')}] that other specs may `
+      + `already call. Preserve the existing module API — keep ${dropped.length > 1 ? 'these methods' : 'this method'} and ADD a `
+      + 'new method for any new behaviour instead of renaming or removing one. Re-emit the module with every existing '
+      + 'public method still present.',
+    );
+  }
+
+  // 2) SIGNATURE-INCOMPATIBLE — a still-present method now demands MORE required arguments than before, so existing
+  //    callers passing the previous (smaller) argument count stop compiling (TS2554). New parameters must be OPTIONAL.
+  const minRequired = (methods: Array<{ name: string; params: string }>, name: string): number =>
+    Math.min(...methods.filter((mm) => mm.name === name).map((mm) => requiredParamCount(mm.params)));
+  const broken: string[] = [];
+  for (const name of [...before].filter((n) => after.has(n))) {
+    const reqBefore = minRequired(beforeMethods, name);
+    const reqAfter = minRequired(afterMethods, name);
+    if (reqAfter > reqBefore) broken.push(`${name}(): was callable with ${reqBefore} argument(s), now requires ${reqAfter}`);
+  }
+  if (broken.length) {
+    throw new Error(
+      `Codegen: the regenerated ${rel} changes the call signature of existing public method(s) so existing callers no `
+      + `longer compile (TS2554 "Expected N arguments, but got M"): ${broken.join('; ')}. Existing specs already call `
+      + `${broken.length > 1 ? 'these methods' : 'this method'} with the previous argument count, so a newly-REQUIRED `
+      + 'parameter is a breaking change. Keep the existing signature backward-compatible — make any new parameters '
+      + 'OPTIONAL (e.g. completePurchase(first?: string, last?: string, zip?: string)) or add a SEPARATE new method for '
+      + 'the new behaviour. Re-emit the module preserving every existing method call signature.',
+    );
+  }
 }
 
 /** Run EVERY in-memory quality gate against a parsed candidate. Throws ONE clear, repairable message. */

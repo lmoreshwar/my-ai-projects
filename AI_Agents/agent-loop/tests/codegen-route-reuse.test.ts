@@ -228,6 +228,129 @@ test('D: a brand-new module (no file on disk) has no prior API to preserve', () 
   }
 });
 
+// ── D (signature compatibility) ───────────────────────────────────────────────
+// The EXACT latest SauceDemo failure: completePurchase() → completePurchase(first,last,zip) turned three
+// previously-absent arguments into newly-REQUIRED ones, breaking every existing caller with TS2554. The
+// name-only gate missed it; these pin the parameter-compatibility dimension.
+test('D-sig: existing no-arg method → generated REQUIRED-arg method is REJECTED (the TS2554 defect)', () => {
+  const fw = makeFw();
+  try {
+    const rel = 'src/modules/CompletePurchaseModule.ts';
+    writeFile(fw, rel, [
+      'export class CompletePurchaseModule {',
+      '  async goto(): Promise<void> {}',
+      '  async completePurchase(): Promise<void> {}',
+      '}',
+    ].join('\n'));
+    const breaking = buildCandidate({
+      moduleFile: rel,
+      moduleContent: [
+        'export class CompletePurchaseModule {',
+        '  async goto(): Promise<void> {}',
+        '  async completePurchase(first: string, last: string, zip: string): Promise<void> {}',
+        '}',
+      ].join('\n'),
+    });
+    assert.throws(
+      () => assertExistingModuleApiPreserved(fw, breaking),
+      /changes the call signature[\s\S]*completePurchase[\s\S]*now requires 3/,
+    );
+  } finally {
+    cleanup(fw);
+  }
+});
+
+test('D-sig: existing OPTIONAL parameter → generated REQUIRED parameter is REJECTED', () => {
+  const fw = makeFw();
+  try {
+    const rel = 'src/modules/SearchModule.ts';
+    writeFile(fw, rel, [
+      'export class SearchModule {',
+      '  async search(term?: string): Promise<void> {}',
+      '}',
+    ].join('\n'));
+    const breaking = buildCandidate({
+      moduleFile: rel,
+      moduleContent: [
+        'export class SearchModule {',
+        '  async search(term: string): Promise<void> {}',
+        '}',
+      ].join('\n'),
+    });
+    assert.throws(
+      () => assertExistingModuleApiPreserved(fw, breaking),
+      /changes the call signature[\s\S]*search[\s\S]*now requires 1/,
+    );
+  } finally {
+    cleanup(fw);
+  }
+});
+
+test('D-sig: preserving the existing REQUIRED parameter count is ALLOWED', () => {
+  const fw = makeFw();
+  try {
+    const rel = 'src/modules/CheckoutModule.ts';
+    const body = [
+      'export class CheckoutModule {',
+      '  async enter(first: string, last: string): Promise<void> {}',
+      '}',
+    ].join('\n');
+    writeFile(fw, rel, body);
+    const same = buildCandidate({ moduleFile: rel, moduleContent: body });
+    assert.doesNotThrow(() => assertExistingModuleApiPreserved(fw, same));
+  } finally {
+    cleanup(fw);
+  }
+});
+
+test('D-sig: adding NEW parameters as OPTIONAL keeps existing callers compiling (ALLOWED)', () => {
+  const fw = makeFw();
+  try {
+    const rel = 'src/modules/CompletePurchaseModule.ts';
+    writeFile(fw, rel, [
+      'export class CompletePurchaseModule {',
+      '  async completePurchase(): Promise<void> {}',
+      '}',
+    ].join('\n'));
+    const backwardCompatible = buildCandidate({
+      moduleFile: rel,
+      // the CORRECT backward-compatible design the gate steers the model toward.
+      moduleContent: [
+        'export class CompletePurchaseModule {',
+        '  async completePurchase(first?: string, last?: string, zip?: string): Promise<void> {}',
+        '}',
+      ].join('\n'),
+    });
+    assert.doesNotThrow(() => assertExistingModuleApiPreserved(fw, backwardCompatible));
+  } finally {
+    cleanup(fw);
+  }
+});
+
+test('D-sig: adding a NEW method for the new behaviour while preserving the existing one is ALLOWED', () => {
+  const fw = makeFw();
+  try {
+    const rel = 'src/modules/CompletePurchaseModule.ts';
+    writeFile(fw, rel, [
+      'export class CompletePurchaseModule {',
+      '  async completePurchase(): Promise<void> {}',
+      '}',
+    ].join('\n'));
+    const added = buildCandidate({
+      moduleFile: rel,
+      moduleContent: [
+        'export class CompletePurchaseModule {',
+        '  async completePurchase(): Promise<void> {}',
+        '  async completePurchaseWithDetails(first: string, last: string, zip: string): Promise<void> {}',
+        '}',
+      ].join('\n'),
+    });
+    assert.doesNotThrow(() => assertExistingModuleApiPreserved(fw, added));
+  } finally {
+    cleanup(fw);
+  }
+});
+
 // ── E ────────────────────────────────────────────────────────────────────────
 test('E: the tsc gate flags only NEWLY-introduced type errors, ignoring pre-existing repo debt', () => {
   // A pre-existing error (the rolled-back repo's establishPurchase break) present BEFORE generation.
