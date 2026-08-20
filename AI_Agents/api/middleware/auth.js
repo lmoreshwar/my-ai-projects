@@ -1,9 +1,9 @@
 const jwt = require('jsonwebtoken');
-const JWT_SECRET = process.env.JWT_SECRET || 'super_secret_blast_key_2026';
+const { getJwtSecret, isDevBypassAllowed } = require('../_tools/jwt_secret');
 
 module.exports = function (req, res, next) {
-  // Dev mode bypass
-  if (process.env.DEV_MODE === 'true') {
+  // Dev mode bypass — local development only, never when NODE_ENV === 'production'.
+  if (isDevBypassAllowed()) {
     req.user = { id: 'dev-user-id', email: 'dev@localhost' };
     return next();
   }
@@ -18,7 +18,7 @@ module.exports = function (req, res, next) {
 
   // Verify token
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, getJwtSecret());
     req.user = decoded.user;
     next();
   } catch (err) {
