@@ -14,6 +14,7 @@ import {
   featureTokens, featureIntentIsView, pathMatchesFeature, snapshotHasContent,
   detectFeatureBoundary, detectSubmitCompletion, splitTrace, resolveFeatureStatus,
   featureIntentIsExit, detectExitCompletion, looksLikeLoginLanding,
+  featureActionVerbs, featureIsActionIntent, detectActionCompletion, snapshotHasValidationError,
 } from '../feature-boundary';
 import { authorFeatureVerificationScenarios } from '../codegen';
 import type { AgentStep } from '../agent-loop';
@@ -312,5 +313,130 @@ test('19. a logout click with no navigation is not an exit completion', () => {
   ];
   assert.equal(detectExitCompletion(walk, INVENTORY), null);
   const b = detectFeatureBoundary('Logout', INVENTORY, walk);
+  assert.equal(b.acceptanceVerified, false);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// UNIFIED ACTION-VERIFICATION — verify the ACTION, not the DESTINATION.
+// The following pin the ONE generic rule that replaces destination-content matching for action features:
+// acceptance = "the control the model actually interacted with WAS the feature". No per-shape special cases.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 20. featureActionVerbs extracts the feature's ACTION VERB (stemmed), and featureIsActionIntent routes.
+test('20. featureActionVerbs / featureIsActionIntent classify by the action verb, not the noun', () => {
+  assert.deepEqual(featureActionVerbs('Logout'), ['logout']);
+  assert.deepEqual(featureActionVerbs('Remove Product from Cart'), ['remove']);
+  assert.deepEqual(featureActionVerbs('Product Sorting'), ['sort']);         // gerund stemmed to base
+  assert.deepEqual(featureActionVerbs('Checkout - Your Information'), ['checkout']);
+  assert.deepEqual(featureActionVerbs('View Cart'), []);                     // a view has no action verb
+  // A pure view/navigation feature is NOT action-intent (it uses destination-content); actions are.
+  assert.equal(featureIsActionIntent('View Cart'), false);
+  assert.equal(featureIsActionIntent('View Account'), false);
+  assert.equal(featureIsActionIntent('Logout'), true);
+  assert.equal(featureIsActionIntent('Sign Out'), true);                     // multi-word exit
+  assert.equal(featureIsActionIntent('Remove Product from Cart'), true);
+  assert.equal(featureIsActionIntent('Product Sorting'), true);
+});
+
+// 21. snapshotHasValidationError only fires on a real alert/validation message, not on normal content.
+test('21. snapshotHasValidationError detects an unresolved validation error', () => {
+  assert.equal(snapshotHasValidationError(CART_CONTENT), false);
+  assert.equal(snapshotHasValidationError(LOGIN_FORM), false);
+  assert.equal(snapshotHasValidationError('- text "Error: First Name is required" [ref=e9]'), true);
+  assert.equal(snapshotHasValidationError('- alert "Epic sadface: Username is required" [ref=e9]'), true);
+});
+
+// A realistic "Remove Product from Cart" walk: login → add product (PREREQUISITE, shares the noun "cart") →
+// open cart → click Remove (NO navigation) → cart re-renders without the item. Different completion shape
+// than Logout (click-only, but no navigation and a same-page effect) — must pass with NO new code path.
+const CART_AFTER_REMOVE = `
+- heading "Your Cart" [level=2]
+- button "Continue Shopping" [ref=e20]
+`.trim();
+
+function removeFromCartWalk(): AgentStep[] {
+  return [
+    step({ tool: 'click', args: {}, locator: "getByRole('button', { name: 'Login' })", url: INVENTORY }),
+    step({ tool: 'click', args: {}, context: '- button "Add to cart" [ref=e2]', locator: "getByRole('button', { name: 'Add to cart' })", url: INVENTORY }),
+    step({ tool: 'click', args: {}, context: '- link "Cart" [ref=e3]', locator: "getByRole('link', { name: 'Cart' })", url: CART }),
+    step({ tool: 'snapshot', args: { acceptance: true }, context: CART_CONTENT, url: CART }),
+    step({ tool: 'click', args: {}, context: '- button "Remove" [ref=e13]', locator: "getByRole('button', { name: 'Remove' })", url: CART }), // no navigation
+    step({ tool: 'snapshot', args: {}, context: CART_AFTER_REMOVE, url: CART }),
+  ];
+}
+
+// 22. GENERALIZATION (new shape #1): Remove is a click-only action that does NOT navigate. It passes via the
+//     SAME action-match rule — because the acted control's own name ("Remove") matches the feature verb —
+//     and the prerequisite "Add to cart" (which shares the noun "cart") is NOT mistaken for the feature.
+test('22. Remove from Cart passes via action-match (verb name), not the prerequisite that shares a noun', () => {
+  const walk = removeFromCartWalk();
+  const act = detectActionCompletion('Remove Product from Cart', walk, INVENTORY);
+  assert.ok(act, 'an action completion is detected');
+  assert.equal(act?.via, 'verb');
+  assert.equal(act?.completionIndex, 4);       // the Remove click — NOT the earlier Add-to-cart click
+  assert.equal(act?.control, 'remove');
+  const b = detectFeatureBoundary('Remove Product from Cart', INVENTORY, walk);
+  assert.equal(b.acceptanceVerified, true);
+  assert.equal(b.completedViaAction, true);
+  assert.equal(b.completionIndex, 4);
+  assert.equal(resolveFeatureStatus('failed', b), 'passed');
+  // The Add-to-cart prerequisite is separated out, never counted as the feature completion.
+  const { prerequisiteTrace, primaryTrace } = splitTrace(walk, b);
+  assert.ok(prerequisiteTrace.some((s) => /Add to cart/i.test(s.locator || '')));
+  assert.ok(primaryTrace.some((s) => /Remove/i.test(s.locator || '')));
+});
+
+// A realistic "Product Sorting" walk: login → change the sort dropdown → the list re-renders. No navigation
+// AND no discrete verb-named button — a genuinely different completion shape (a select/affordance action).
+const INVENTORY_SORTED = `
+- heading "Products" [level=2]
+- text "Sauce Labs Onesie" [ref=e30]
+- text "7.99" [ref=e31]
+`.trim();
+
+function productSortingWalk(): AgentStep[] {
+  return [
+    step({ tool: 'click', args: {}, locator: "getByRole('button', { name: 'Login' })", url: INVENTORY }),
+    step({ tool: 'snapshot', args: {}, context: '- combobox [ref=e9]', url: INVENTORY }),
+    step({ tool: 'select', args: { value: 'lohi' }, locator: "getByRole('combobox')", url: INVENTORY }), // no navigation, no verb-named button
+    step({ tool: 'snapshot', args: {}, context: INVENTORY_SORTED, url: INVENTORY }),
+  ];
+}
+
+// 23. GENERALIZATION (new shape #2): Sorting is a SELECT action with no navigation and no verb-named control.
+//     It passes via the AFFORDANCE arm of the same rule (feature verb "sort" ⇒ a select/combobox action),
+//     proving the mechanism handles a dropdown-driven feature with NO new code.
+test('23. Product Sorting passes via the affordance arm (select action), no navigation needed', () => {
+  const walk = productSortingWalk();
+  const act = detectActionCompletion('Product Sorting', walk, INVENTORY);
+  assert.ok(act, 'an action completion is detected');
+  assert.equal(act?.via, 'affordance');
+  assert.equal(act?.completionIndex, 2);       // the select
+  const b = detectFeatureBoundary('Product Sorting', INVENTORY, walk);
+  assert.equal(b.acceptanceVerified, true);
+  assert.equal(b.completedViaAction, true);
+  assert.equal(b.completionIndex, 2);
+  assert.equal(resolveFeatureStatus('failed', b), 'passed');
+});
+
+// 24. The unified rule SUBSUMES the old special cases: Checkout still completes via the 'commit' arm and
+//     Logout via the 'verb' arm — the same detectActionCompletion mechanism, no separate detectors.
+test('24. the unified rule subsumes both the old submit (commit) and exit (verb) special cases', () => {
+  const commit = detectActionCompletion('Checkout - Your Information', checkoutInfoWalk(), INVENTORY);
+  assert.equal(commit?.via, 'commit');
+  assert.equal(commit?.completionIndex, 6);    // the Continue click, after the fills
+  const exit = detectActionCompletion('Logout', logoutWalk(), INVENTORY);
+  assert.equal(exit?.via, 'verb');
+  assert.equal(exit?.completionIndex, 2);      // the Logout click
+});
+
+// 25. A sort/remove that shows a validation error afterward is NOT accepted (the last-action guard applies
+//     uniformly to every shape, not just form submits).
+test('25. an action whose resulting screen shows a validation error is not a completion', () => {
+  const walk = removeFromCartWalk();
+  walk[5] = step({ tool: 'snapshot', args: {}, context: '- alert "Error: item could not be removed" [ref=e21]', url: CART });
+  const act = detectActionCompletion('Remove Product from Cart', walk, INVENTORY);
+  assert.equal(act, null);
+  const b = detectFeatureBoundary('Remove Product from Cart', INVENTORY, walk);
   assert.equal(b.acceptanceVerified, false);
 });
