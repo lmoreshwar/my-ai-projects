@@ -17,6 +17,7 @@ const JiraTool = require('./_tools/jira_tool');
 const LLMConnector = require('./_tools/llm_connector');
 const DocxGenerator = require('./_tools/docx_generator');
 const ConfluenceTool = require('./_tools/confluence_tool');
+const { assertPublicUrl } = require('./_tools/ssrf_guard');
 
 // GitHub's API occasionally returns a transient 5xx ("503 No server is currently available").
 // Retry idempotent GitHub calls a few times with backoff so a single blip doesn't fail the user.
@@ -95,10 +96,12 @@ app.post('/test-connection', async (req, res) => {
         const conn = req.body;
         
         if (conn.type === 'jira' || conn.type === 'ado') {
+            await assertPublicUrl(conn.config.url);
             const tool = new JiraTool(conn.config.url, conn.config.email, conn.config.token);
             const userData = await tool.testConnection();
             return res.json({ status: 'success', message: `Connected as ${userData.displayName || 'User'}` });
         } else if (conn.type === 'llm') {
+            if (conn.config.endpoint) await assertPublicUrl(conn.config.endpoint);
             const connector = new LLMConnector(conn.config.platform, conn.config.apiKey, conn.config.endpoint);
             // Use user's model if provided, otherwise let connector use its default
             let userModel = conn.config.model && conn.config.model.trim() ? conn.config.model.trim() : null;
@@ -122,6 +125,7 @@ app.post('/test-connection', async (req, res) => {
 app.post('/test-jira', async (req, res) => {
     try {
         const { url, email, token } = req.body;
+        await assertPublicUrl(url);
         const tool = new JiraTool(url, email, token);
         const userData = await tool.testConnection();
         return res.json({ status: 'success', message: `Connected as ${userData.displayName}` });
@@ -136,6 +140,7 @@ app.post('/test-zephyr', async (req, res) => {
         const { url, apiKey } = req.body;
         const axios = require('axios');
         const baseUrl = (url || 'https://api.zephyrscale.smartbear.com/v2').replace(/\/$/, '');
+        await assertPublicUrl(baseUrl);
         const response = await axios.get(`${baseUrl}/healthcheck`, {
             headers: {
                 'Authorization': `Bearer ${apiKey}`,
@@ -149,6 +154,7 @@ app.post('/test-zephyr', async (req, res) => {
         try {
             const axios = require('axios');
             const baseUrl = (req.body.url || 'https://api.zephyrscale.smartbear.com/v2').replace(/\/$/, '');
+            await assertPublicUrl(baseUrl);
             const response = await axios.get(`${baseUrl}/testcases?maxResults=1`, {
                 headers: {
                     'Authorization': `Bearer ${req.body.apiKey}`,
@@ -170,6 +176,7 @@ app.post('/test-github', async (req, res) => {
         const { token, apiUrl } = req.body;
         const axios = require('axios');
         const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
+        await assertPublicUrl(baseUrl);
 
         // Use Bearer for fine-grained tokens (github_pat_), also works for classic (ghp_)
         const authHeader = `Bearer ${token}`;
@@ -205,6 +212,7 @@ app.post('/github-branches', async (req, res) => {
         const { token, apiUrl, repo } = req.body;
         const axios = require('axios');
         const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
+        await assertPublicUrl(baseUrl);
 
         const authHeader = `Bearer ${token}`;
         const branchRes = await axios.get(`${baseUrl}/repos/${repo}/branches?per_page=100`, {
@@ -230,6 +238,7 @@ app.post('/github-create-from-template', async (req, res) => {
         const isPrivate = req.body.private !== false; // default to a private repo
         const axios = require('axios');
         const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
+        await assertPublicUrl(baseUrl);
         const authHeader = `Bearer ${token}`;
 
         const repoName = String(name || '').trim();
@@ -297,6 +306,7 @@ app.post('/github-create-branch', async (req, res) => {
         const { token, apiUrl, repo, baseBranch, newBranch } = req.body;
         const axios = require('axios');
         const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
+        await assertPublicUrl(baseUrl);
         const authHeader = `Bearer ${token}`;
 
         // 1. Get the SHA of the base branch
@@ -328,6 +338,7 @@ app.post('/github-file-content', async (req, res) => {
         const { token, apiUrl, repo, branch, filePath } = req.body;
         const axios = require('axios');
         const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
+        await assertPublicUrl(baseUrl);
         const authHeader = `Bearer ${token}`;
 
         const fileRes = await axios.get(`${baseUrl}/repos/${repo}/contents/${filePath}?ref=${branch}`, {
@@ -352,6 +363,7 @@ app.post('/github-push-tree', async (req, res) => {
         // files: [{ path, content }]
         const axios = require('axios');
         const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
+        await assertPublicUrl(baseUrl);
         const authHeader = `Bearer ${token}`;
         const headers = { Authorization: authHeader, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json' };
 
@@ -416,6 +428,7 @@ app.post('/github-compare', async (req, res) => {
         // filePaths: [{ remotePath, localContent }]
         const axios = require('axios');
         const baseUrl = (apiUrl || 'https://api.github.com').replace(/\/$/, '');
+        await assertPublicUrl(baseUrl);
         const authHeader = `Bearer ${token}`;
         const headers = { Authorization: authHeader, Accept: 'application/vnd.github+json' };
 
@@ -452,6 +465,7 @@ app.post('/github-compare', async (req, res) => {
 app.post('/test-confluence', async (req, res) => {
     try {
         const { url, email, token } = req.body;
+        await assertPublicUrl(url);
         const tool = new ConfluenceTool(url, email, token);
         const user = await tool.testConnection();
         return res.json({ status: 'success', message: `Confluence connected as ${user.displayName || user.username || 'User'}` });
@@ -464,6 +478,7 @@ app.post('/test-confluence', async (req, res) => {
 app.post('/confluence-spaces', async (req, res) => {
     try {
         const { url, email, token } = req.body;
+        await assertPublicUrl(url);
         const tool = new ConfluenceTool(url, email, token);
         const spaces = await tool.listSpaces();
         return res.json({ status: 'success', spaces });
@@ -476,6 +491,7 @@ app.post('/confluence-spaces', async (req, res) => {
 app.post('/confluence-pages', async (req, res) => {
     try {
         const { url, email, token, spaceKey, query } = req.body;
+        await assertPublicUrl(url);
         const tool = new ConfluenceTool(url, email, token);
         const pages = await tool.searchPages(spaceKey, query || '');
         return res.json({ status: 'success', pages });
@@ -491,6 +507,7 @@ app.post('/push-confluence', async (req, res) => {
         if (!spaceKey || !title || !content) {
             return res.status(400).json({ status: 'error', message: 'spaceKey, title, and content are required' });
         }
+        await assertPublicUrl(url);
         const tool = new ConfluenceTool(url, email, token);
         const result = await tool.publishPage(spaceKey, title, content, parentPageId || null);
         console.log(`[Confluence] Page ${result.action}: ${result.title} (ID: ${result.id})`);
@@ -507,6 +524,7 @@ app.post('/confluence-page-content', async (req, res) => {
         if (!pageId) {
             return res.status(400).json({ status: 'error', message: 'pageId is required' });
         }
+        await assertPublicUrl(url);
         const tool = new ConfluenceTool(url, email, token);
         const page = await tool.fetchPageContent(pageId);
         return res.json({ status: 'success', ...page });
@@ -519,6 +537,7 @@ app.post('/confluence-page-content', async (req, res) => {
 app.post('/fetch-issue', async (req, res) => {
     try {
         const reqData = req.body;
+        await assertPublicUrl(reqData.jira.url);
         const tool = new JiraTool(reqData.jira.url, reqData.jira.email, reqData.jira.token);
 
         const productName = (reqData.productName || '').trim();
