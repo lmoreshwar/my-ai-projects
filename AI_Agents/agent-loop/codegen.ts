@@ -1948,12 +1948,37 @@ function artifactDir(file: string, fallback: string): string {
   return clean.startsWith('src/') && clean.includes('/') ? clean.slice(0, clean.lastIndexOf('/')) : fallback;
 }
 
+/**
+ * API-PRESERVATION gate (in-memory, repairable). Regenerating an EXISTING module may ADD methods, but must
+ * never DROP or RENAME a public method that other specs already depend on — the exact defect that shipped a
+ * "green" PR whose repo no longer type-checked (a rewritten CompletePurchaseModule dropped a method an older
+ * spec still called). Reads the current module's public API from disk and rejects a candidate that removes any
+ * of it. Generic across every app — driven only by the public API already committed on disk.
+ */
+export function assertExistingModuleApiPreserved(fw: string, candidate: LlmArtifacts): void {
+  const rel = candidate.module?.file;
+  if (!rel) return;
+  const existing = safeRead(join(fw, rel));
+  if (!existing.trim()) return; // brand-new module — no prior API to preserve
+  const before = new Set(extractPublicMethods(existing).map((mm) => mm.name));
+  const after = new Set(extractPublicMethods(candidate.module.content).map((mm) => mm.name));
+  const dropped = [...before].filter((name) => !after.has(name));
+  if (!dropped.length) return;
+  throw new Error(
+    `Codegen: the regenerated ${rel} removes existing public method(s) [${dropped.join(', ')}] that other specs may `
+    + `already call. Preserve the existing module API — keep ${dropped.length > 1 ? 'these methods' : 'this method'} and ADD a `
+    + 'new method for any new behaviour instead of renaming or removing one. Re-emit the module with every existing '
+    + 'public method still present.',
+  );
+}
+
 /** Run EVERY in-memory quality gate against a parsed candidate. Throws ONE clear, repairable message. */
 function runQualityGates(fw: string, job: CodegenJob, trace: AgentStep[], candidate: LlmArtifacts, uniquenessObserved: boolean): void {
   const page = { file: candidate.page.file || 'Page', content: candidate.page.content };
   const moduleFile = { file: candidate.module.file || 'Module', content: candidate.module.content };
   const spec = { file: candidate.spec.file || 'Spec', content: candidate.spec.content };
   assertDependencyArtifactsPreserved({ page: page.file, module: moduleFile.file, spec: spec.file }, job.dependencyResolution);
+  assertExistingModuleApiPreserved(fw, candidate);
   assertNoPositionalPageLocators(candidate.page.file || 'generated Page', candidate.page.content);
   assertNavigationUrlContract([page, moduleFile, spec]);
   assertSingleNavigationPath(spec);
