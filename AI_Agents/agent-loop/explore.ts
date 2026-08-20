@@ -48,7 +48,9 @@ When the feature needs one of these states, establish it as setup before verifyi
   // FEATURE BOUNDARY / TARGET COMPLETION (generic): a VERIFIED feature target is a SUCCESS even when
   // the walk later wandered into a downstream capability. The PRIMARY trace (prerequisite + feature,
   // no downstream) is what we author from, and the effective status is never a failure after success.
-  const boundary = detectFeatureBoundary(feature, url, walk.steps);
+  // Prefer the boundary the agent already accepted at finish (computed WITH the resolved on-screen
+  // state — a non-navigating action's resulting snapshot is not re-derivable from steps alone).
+  const boundary = walk.featureBoundary ?? detectFeatureBoundary(feature, url, walk.steps);
   const effStatus = resolveFeatureStatus(walk.status, boundary);
   const primaryTrace = boundary.acceptanceVerified ? splitTrace(walk.steps, boundary).primaryTrace : walk.steps;
   if (boundary.acceptanceVerified && walk.status !== 'passed') {

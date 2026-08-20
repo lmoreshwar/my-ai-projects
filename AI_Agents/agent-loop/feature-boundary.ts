@@ -481,7 +481,7 @@ export interface ActionCompletion {
  * Matching keys on the feature's action VERB (never its nouns), so a prerequisite that merely shares a noun
  * (e.g. clicking "Add to cart" while automating "Remove … from Cart") is never mistaken for the feature.
  */
-export function detectActionCompletion(feature: string, steps: AgentStep[], initialUrl = ''): ActionCompletion | null {
+export function detectActionCompletion(feature: string, steps: AgentStep[], initialUrl = '', resultingSnapshot = ''): ActionCompletion | null {
   if (!steps || !steps.length) return null;
   const actionVerbs = featureActionVerbs(feature);
   const exitFeature = EXIT_CONTROL_RE.test(String(feature || ''));
@@ -514,13 +514,19 @@ export function detectActionCompletion(feature: string, steps: AgentStep[], init
     const fromUrl = pageOf[i];
     const destUrl = String(s.url || '');
     const navigated = !!destUrl && !!fromUrl && !samePagePath(fromUrl, destUrl);
-    // The screen AFTER this action: the last following snapshot (its resolved state).
+    // The screen AFTER this action: prefer a trailing snapshot recorded as a step; otherwise the
+    // resolved screen captured at finish time. The live loop records plain `snapshot` calls as tool
+    // RESULTS, not steps, so a non-navigating action (sort/toggle/remove) has NO trailing snapshot
+    // step — its resolved state is only observable via the passed-in resultingSnapshot. Verifying the
+    // ACTION (Playwright resolves select/click/check only after the control received the event) is the
+    // effect; we do not require a navigation/destination.
     let lastCtx: string | null = null;
     for (let j = steps.length - 1; j > i; j -= 1) {
       if (!stepIsAction(steps[j]) && steps[j].context) { lastCtx = String(steps[j].context); break; }
     }
-    if (lastCtx != null && snapshotHasValidationError(lastCtx)) continue; // rejected on screen ⇒ not a completion
-    const hasEffect = navigated || lastCtx != null;                       // navigated, or a resolved post-state exists
+    const resolvedScreen = lastCtx != null ? lastCtx : (resultingSnapshot ? String(resultingSnapshot) : null);
+    if (resolvedScreen != null && snapshotHasValidationError(resolvedScreen)) continue; // error on screen ⇒ not a completion
+    const hasEffect = navigated || resolvedScreen != null;                              // navigated, or a resolved post-state is observable
     if (!hasEffect) continue;
     best = { completionIndex: i, featureStartIndex: i, targetUrl: navigated ? destUrl : (fromUrl || destUrl), control: label, via: verbMatch ? 'verb' : 'affordance' };
   }
@@ -554,7 +560,7 @@ export interface FeatureBoundaryResult {
  * page URL forward across steps (goto/click set it; fills inherit it), so a snapshot step's stored
  * a11y context is attributed to the right page.
  */
-export function detectFeatureBoundary(feature: string, initialUrl: string, steps: AgentStep[]): FeatureBoundaryResult {
+export function detectFeatureBoundary(feature: string, initialUrl: string, steps: AgentStep[], resultingSnapshot = ''): FeatureBoundaryResult {
   const tokens = featureTokens(feature);
   const view = featureIntentIsView(feature);
   const actionIntent = featureIsActionIntent(feature);
@@ -578,7 +584,7 @@ export function detectFeatureBoundary(feature: string, initialUrl: string, steps
   // submit advanced with no validation error). This subsumes the former fills-then-submit and
   // click-only-exit special cases; there is no per-shape branching to keep extending.
   if (actionIntent) {
-    const act = detectActionCompletion(feature, steps, initialUrl);
+    const act = detectActionCompletion(feature, steps, initialUrl, resultingSnapshot);
     if (act) {
       completionIndex = act.completionIndex;
       featureStartIndex = act.featureStartIndex;

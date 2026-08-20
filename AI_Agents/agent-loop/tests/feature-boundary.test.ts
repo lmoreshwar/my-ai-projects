@@ -354,14 +354,15 @@ const CART_AFTER_REMOVE = `
 - button "Continue Shopping" [ref=e20]
 `.trim();
 
+// The live loop records plain `snapshot` calls as tool RESULTS, not steps, so a non-navigating action
+// (Remove) has NO trailing snapshot step — its resolved screen is supplied at finish time via the
+// resultingSnapshot argument (the model's most recent snapshot).
 function removeFromCartWalk(): AgentStep[] {
   return [
     step({ tool: 'click', args: {}, locator: "getByRole('button', { name: 'Login' })", url: INVENTORY }),
     step({ tool: 'click', args: {}, context: '- button "Add to cart" [ref=e2]', locator: "getByRole('button', { name: 'Add to cart' })", url: INVENTORY }),
     step({ tool: 'click', args: {}, context: '- link "Cart" [ref=e3]', locator: "getByRole('link', { name: 'Cart' })", url: CART }),
-    step({ tool: 'snapshot', args: { acceptance: true }, context: CART_CONTENT, url: CART }),
-    step({ tool: 'click', args: {}, context: '- button "Remove" [ref=e13]', locator: "getByRole('button', { name: 'Remove' })", url: CART }), // no navigation
-    step({ tool: 'snapshot', args: {}, context: CART_AFTER_REMOVE, url: CART }),
+    step({ tool: 'click', args: {}, context: '- button "Remove" [ref=e13]', locator: "getByRole('button', { name: 'Remove' })", url: CART }), // no navigation, no trailing snapshot step
   ];
 }
 
@@ -370,15 +371,15 @@ function removeFromCartWalk(): AgentStep[] {
 //     and the prerequisite "Add to cart" (which shares the noun "cart") is NOT mistaken for the feature.
 test('22. Remove from Cart passes via action-match (verb name), not the prerequisite that shares a noun', () => {
   const walk = removeFromCartWalk();
-  const act = detectActionCompletion('Remove Product from Cart', walk, INVENTORY);
+  const act = detectActionCompletion('Remove Product from Cart', walk, INVENTORY, CART_AFTER_REMOVE);
   assert.ok(act, 'an action completion is detected');
   assert.equal(act?.via, 'verb');
-  assert.equal(act?.completionIndex, 4);       // the Remove click — NOT the earlier Add-to-cart click
+  assert.equal(act?.completionIndex, 3);       // the Remove click — NOT the earlier Add-to-cart click
   assert.equal(act?.control, 'remove');
-  const b = detectFeatureBoundary('Remove Product from Cart', INVENTORY, walk);
+  const b = detectFeatureBoundary('Remove Product from Cart', INVENTORY, walk, CART_AFTER_REMOVE);
   assert.equal(b.acceptanceVerified, true);
   assert.equal(b.completedViaAction, true);
-  assert.equal(b.completionIndex, 4);
+  assert.equal(b.completionIndex, 3);
   assert.equal(resolveFeatureStatus('failed', b), 'passed');
   // The Add-to-cart prerequisite is separated out, never counted as the feature completion.
   const { prerequisiteTrace, primaryTrace } = splitTrace(walk, b);
@@ -397,9 +398,7 @@ const INVENTORY_SORTED = `
 function productSortingWalk(): AgentStep[] {
   return [
     step({ tool: 'click', args: {}, locator: "getByRole('button', { name: 'Login' })", url: INVENTORY }),
-    step({ tool: 'snapshot', args: {}, context: '- combobox [ref=e9]', url: INVENTORY }),
-    step({ tool: 'select', args: { value: 'lohi' }, locator: "getByRole('combobox')", url: INVENTORY }), // no navigation, no verb-named button
-    step({ tool: 'snapshot', args: {}, context: INVENTORY_SORTED, url: INVENTORY }),
+    step({ tool: 'select', args: { value: 'lohi' }, context: '- combobox [ref=e9]', locator: "getByRole('combobox')", url: INVENTORY }), // no navigation, no verb-named button, no trailing snapshot step
   ];
 }
 
@@ -408,14 +407,17 @@ function productSortingWalk(): AgentStep[] {
 //     proving the mechanism handles a dropdown-driven feature with NO new code.
 test('23. Product Sorting passes via the affordance arm (select action), no navigation needed', () => {
   const walk = productSortingWalk();
-  const act = detectActionCompletion('Product Sorting', walk, INVENTORY);
+  // Without the resolved screen there is no observable effect yet — the live loop supplies the model's
+  // most recent snapshot at finish time (a non-navigating action records no trailing snapshot step).
+  assert.equal(detectActionCompletion('Product Sorting', walk, INVENTORY), null);
+  const act = detectActionCompletion('Product Sorting', walk, INVENTORY, INVENTORY_SORTED);
   assert.ok(act, 'an action completion is detected');
   assert.equal(act?.via, 'affordance');
-  assert.equal(act?.completionIndex, 2);       // the select
-  const b = detectFeatureBoundary('Product Sorting', INVENTORY, walk);
+  assert.equal(act?.completionIndex, 1);       // the select
+  const b = detectFeatureBoundary('Product Sorting', INVENTORY, walk, INVENTORY_SORTED);
   assert.equal(b.acceptanceVerified, true);
   assert.equal(b.completedViaAction, true);
-  assert.equal(b.completionIndex, 2);
+  assert.equal(b.completionIndex, 1);
   assert.equal(resolveFeatureStatus('failed', b), 'passed');
 });
 
@@ -434,9 +436,9 @@ test('24. the unified rule subsumes both the old submit (commit) and exit (verb)
 //     uniformly to every shape, not just form submits).
 test('25. an action whose resulting screen shows a validation error is not a completion', () => {
   const walk = removeFromCartWalk();
-  walk[5] = step({ tool: 'snapshot', args: {}, context: '- alert "Error: item could not be removed" [ref=e21]', url: CART });
-  const act = detectActionCompletion('Remove Product from Cart', walk, INVENTORY);
+  const errored = '- alert "Error: item could not be removed" [ref=e21]';
+  const act = detectActionCompletion('Remove Product from Cart', walk, INVENTORY, errored);
   assert.equal(act, null);
-  const b = detectFeatureBoundary('Remove Product from Cart', INVENTORY, walk);
+  const b = detectFeatureBoundary('Remove Product from Cart', INVENTORY, walk, errored);
   assert.equal(b.acceptanceVerified, false);
 });

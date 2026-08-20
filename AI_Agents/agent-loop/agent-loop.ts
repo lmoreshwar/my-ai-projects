@@ -846,7 +846,7 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         // visiting the cart page). If not yet verified, reject the finish and make the model try a
         // genuinely different approach, bounded so it can never loop forever.
         if (status === 'passed' && boundaryTokens.length && !earlyStopped) {
-          const boundary = detectFeatureBoundary(featureText, opts.url, steps);
+          const boundary = detectFeatureBoundary(featureText, opts.url, steps, latestSnapshot);
           if (!boundary.acceptanceVerified) {
             if (alternativeAttempts < MAX_ALTERNATIVE_ATTEMPTS) {
               alternativeAttempts += 1;
