@@ -75,6 +75,22 @@ export function featureIntentIsView(feature: string): boolean {
   return true; // bare noun ⇒ view of that thing
 }
 
+/** Control labels whose click ENDS a session (logout / sign-out / log-off). Matched to the clicked
+ * control's accessible name or id (underscores/hyphens normalized to spaces first). Generic — no app rules. */
+const EXIT_CONTROL_RE = /\b(?:log\s?out|sign\s?out|log\s?off|sign\s?off|logout|signout|logoff)\b/i;
+
+/** Labels/paths that identify a login/sign-in destination — the successful landing page after an exit. */
+const LOGIN_CONTROL_RE = /\b(?:log\s?in|sign\s?in|log\s?on|login|signin|logon)\b/i;
+
+/**
+ * Whether the requested feature is a sign-out/exit action. Its successful end-state is the login/landing
+ * page (which by definition contains no "logout" token), so path/identity matching can never confirm it —
+ * detectExitCompletion supplies the completion signal instead.
+ */
+export function featureIntentIsExit(feature: string): boolean {
+  return EXIT_CONTROL_RE.test(String(feature || ''));
+}
+
 /** The path portion of a URL (no scheme/host/query/hash), lowercased. Robust to relative URLs. */
 function urlPath(url: string): string {
   let s = String(url || '').trim().toLowerCase();
@@ -171,6 +187,43 @@ function submitButtonLabel(step: AgentStep): string {
   return m ? m[1] : '';
 }
 
+/**
+ * The clicked control's label for ANY interactive role (button/link/menuitem/tab/option), evidence-first with
+ * a snapshot-context fallback. Used for click-only EXIT detection where the sign-out control is often a
+ * link/menuitem. Underscores/hyphens are normalized to spaces so an id like "logout_sidebar_link" reads as
+ * "logout".
+ */
+function clickedControlLabel(step: AgentStep): string {
+  if (step.tool !== 'click') return '';
+  const ix = step.interaction;
+  if (ix) {
+    const named = ix.accessibleName || ix.controlId || '';
+    if (named) return named.replace(/[_\-/]+/g, ' ').trim();
+  }
+  const m = String(step.context || '').match(/(?:button|link|menuitem|tab|option)\s+"([^"]+)"/i);
+  return m ? m[1].replace(/[_\-/]+/g, ' ').trim() : '';
+}
+
+/**
+ * Whether a destination is a login/landing page — the successful outcome of a sign-out. True when the
+ * snapshot shows an explicit login form (a password field, or a login/sign-in button/link) OR the URL is a
+ * bare landing/root path (or a /login|/signin|/auth path). Fully generic — no app-specific rules.
+ */
+export function looksLikeLoginLanding(snapshot: string, url: string): boolean {
+  const text = String(snapshot || '');
+  for (const line of text.split('\n')) {
+    const m = line.match(REF_LINE_RE);
+    if (!m) continue;
+    const role = m[1].toLowerCase();
+    const name = (m[2] || '').trim();
+    if (role === 'textbox' && /\bpass(?:word|code)?\b/i.test(name)) return true;
+    if ((role === 'button' || role === 'link') && LOGIN_CONTROL_RE.test(name)) return true;
+  }
+  const path = urlPath(url);
+  if (path === '' || path === '/') return true;
+  return /(?:^|\/)(?:login|signin|sign-in|logon|auth)(?:\.[a-z]+)?$/i.test(path);
+}
+
 /** A detected write-flow completion: fields filled on a form page, then a submit click advanced away. */
 export interface SubmitCompletion {
   /** Index of the first fill on the form page. */
@@ -219,6 +272,47 @@ export function detectSubmitCompletion(steps: AgentStep[], initialUrl = ''): Sub
   return best;
 }
 
+/** A detected click-only EXIT/sign-out completion: a logout/sign-out click that navigated to a login/landing page. */
+export interface ExitCompletion {
+  /** Index of the logout/sign-out click that ended the session. */
+  completionIndex: number;
+  fromUrl: string;
+  destUrl: string;
+  /** The clicked control's label. */
+  control: string;
+}
+
+/**
+ * Detect a click-only EXIT completion from live INTERACTION evidence (generic — no app rules): a click on a
+ * logout/sign-out-labeled control whose result NAVIGATES to a different page that looks like a login/landing
+ * page. This is the click-only analogue of detectSubmitCompletion — the successful outcome of "logout" is the
+ * login page, which by definition has no "logout" token, so path/identity matching can never see it. Returns
+ * the LAST such click in the walk.
+ */
+export function detectExitCompletion(steps: AgentStep[], initialUrl = ''): ExitCompletion | null {
+  if (!steps || !steps.length) return null;
+  const pageOf: string[] = [];
+  let carry = initialUrl || '';
+  for (let i = 0; i < steps.length; i += 1) {
+    pageOf[i] = carry;
+    if (steps[i].url) carry = String(steps[i].url);
+  }
+  let best: ExitCompletion | null = null;
+  for (let i = 0; i < steps.length; i += 1) {
+    const control = clickedControlLabel(steps[i]);
+    if (!control || !EXIT_CONTROL_RE.test(control)) continue;
+    const fromUrl = pageOf[i];
+    const destUrl = String(steps[i].url || '');
+    if (!fromUrl || !destUrl || samePagePath(fromUrl, destUrl)) continue; // no navigation ⇒ not exited yet
+    // Destination must look like a login/landing page: the dest URL itself, or a later snapshot of it.
+    const landing = looksLikeLoginLanding('', destUrl)
+      || steps.some((s, j) => j >= i && samePagePath(String(s.url || ''), destUrl) && !!s.context && looksLikeLoginLanding(s.context, destUrl));
+    if (!landing) continue;
+    best = { completionIndex: i, fromUrl, destUrl, control };
+  }
+  return best;
+}
+
 /** The result of analyzing a completed walk for its feature boundary. */
 export interface FeatureBoundaryResult {
   featureTokens: string[];
@@ -234,6 +328,8 @@ export interface FeatureBoundaryResult {
   acceptanceVerified: boolean;
   /** True when acceptance came from a write-flow submit that advanced to a post-submit page. */
   completedViaRedirect?: boolean;
+  /** True when acceptance came from a click-only sign-out that landed on a login/landing page. */
+  completedViaExit?: boolean;
   reason: string;
 }
 
@@ -284,6 +380,21 @@ export function detectFeatureBoundary(feature: string, initialUrl: string, steps
     }
   }
 
+  // EXIT/SIGN-OUT COMPLETION (generic, click-only): a logout/sign-out feature is DONE when a click on a
+  // sign-out control navigated to a login/landing page. The successful end-state of logout IS the login
+  // page, which contains no "logout" token — so it can never be found by path/identity, nor by the
+  // form-submit detector (no fields filled, "logout" is not a submit verb). Gated on an exit feature.
+  let completedViaExit = false;
+  if (completionIndex < 0 && featureIntentIsExit(feature)) {
+    const exit = detectExitCompletion(steps, initialUrl);
+    if (exit) {
+      completionIndex = exit.completionIndex;
+      if (featureStartIndex < 0) featureStartIndex = exit.completionIndex;
+      if (!targetUrl) targetUrl = exit.destUrl;
+      completedViaExit = true;
+    }
+  }
+
   const acceptanceVerified = completionIndex >= 0;
   return {
     featureTokens: tokens,
@@ -293,10 +404,13 @@ export function detectFeatureBoundary(feature: string, initialUrl: string, steps
     targetUrl,
     acceptanceVerified,
     completedViaRedirect,
+    completedViaExit,
     reason: acceptanceVerified
-      ? completedViaRedirect
-        ? `write flow completed via submit "${targetUrl}" — fields filled then the page advanced to a post-submit page (feature-completed-via-redirect)`
-        : `feature target ${targetUrl} reached and content verified at step ${completionIndex + 1}`
+      ? completedViaExit
+        ? `sign-out completed — a logout click navigated to the login/landing page "${targetUrl}" (feature-completed-via-exit)`
+        : completedViaRedirect
+          ? `write flow completed via submit "${targetUrl}" — fields filled then the page advanced to a post-submit page (feature-completed-via-redirect)`
+          : `feature target ${targetUrl} reached and content verified at step ${completionIndex + 1}`
       : featureStartIndex >= 0
         ? `feature target ${targetUrl} reached but no acceptance content verified`
         : 'feature target never reached',

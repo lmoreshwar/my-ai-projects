@@ -13,6 +13,7 @@ import assert from 'node:assert/strict';
 import {
   featureTokens, featureIntentIsView, pathMatchesFeature, snapshotHasContent,
   detectFeatureBoundary, detectSubmitCompletion, splitTrace, resolveFeatureStatus,
+  featureIntentIsExit, detectExitCompletion, looksLikeLoginLanding,
 } from '../feature-boundary';
 import { authorFeatureVerificationScenarios } from '../codegen';
 import type { AgentStep } from '../agent-loop';
@@ -226,4 +227,90 @@ test('13. a submit that does not navigate (validation) is not a completion', () 
   const b = detectFeatureBoundary('Checkout - Your Information', INVENTORY, walk);
   assert.equal(b.acceptanceVerified, false);
   assert.equal(resolveFeatureStatus('failed', b), 'failed');
+});
+
+// The login/landing page reached after a successful Logout (the CORRECT success end-state of signing out).
+const LOGIN = 'https://www.saucedemo.com/';
+const LOGIN_FORM = `
+- textbox "Username" [ref=e1]
+- textbox "Password" [ref=e2]
+- button "Login" [ref=e3]
+`.trim();
+
+// A realistic Logout walk: login → open the burger menu → click Logout → land back on the login page.
+// Logout is a CLICK-ONLY exit (no fields, "logout" is not a submit verb) and its success page (login)
+// contains no "logout" token — the exact class of case the form-submit detector cannot cover.
+function logoutWalk(): AgentStep[] {
+  return [
+    step({ tool: 'click', args: {}, locator: "getByRole('button', { name: 'Login' })", url: INVENTORY }),
+    step({ tool: 'click', args: {}, context: '- button "Open Menu" [ref=e5]', locator: "getByRole('button', { name: 'Open Menu' })", url: INVENTORY }),
+    step({ tool: 'click', args: {}, context: '- link "Logout" [ref=e50]', locator: "getByRole('link', { name: 'Logout' })", url: LOGIN }),
+    step({ tool: 'snapshot', args: {}, context: LOGIN_FORM, url: LOGIN }),
+  ];
+}
+
+// 14. featureIntentIsExit recognizes sign-out features (and not ordinary read/write features).
+test('14. featureIntentIsExit recognizes sign-out features', () => {
+  assert.equal(featureIntentIsExit('Logout'), true);
+  assert.equal(featureIntentIsExit('Log out'), true);
+  assert.equal(featureIntentIsExit('Sign Out'), true);
+  assert.equal(featureIntentIsExit('Log Off'), true);
+  assert.equal(featureIntentIsExit('View Cart'), false);
+  assert.equal(featureIntentIsExit('Checkout - Your Information'), false);
+});
+
+// 15. looksLikeLoginLanding accepts a login form or a bare landing/root URL, rejects normal content pages.
+test('15. looksLikeLoginLanding detects the post-logout landing page', () => {
+  assert.equal(looksLikeLoginLanding(LOGIN_FORM, LOGIN), true);     // explicit login form
+  assert.equal(looksLikeLoginLanding('', LOGIN), true);            // bare root path (no snapshot needed)
+  assert.equal(looksLikeLoginLanding('', 'https://app.example.com/login'), true);
+  assert.equal(looksLikeLoginLanding(CART_CONTENT, CART), false);  // a real content page is not a landing
+});
+
+// 16. detectExitCompletion finds the sign-out click that navigated to the login/landing page.
+test('16. detectExitCompletion is detected from a logout click + URL change to a login page', () => {
+  const walk = logoutWalk();
+  const e = detectExitCompletion(walk, INVENTORY);
+  assert.ok(e, 'an exit completion is detected');
+  assert.equal(e?.completionIndex, 2); // the Logout click
+  assert.equal(e?.destUrl, LOGIN);
+  assert.equal(e?.control, 'Logout');
+});
+
+// 17. REGRESSION: Logout resolves as passed on the FIRST finish — landing on the login page IS success,
+//     the same principle as Checkout's post-submit Overview page (click-only exit, not a form submit).
+test('17. Logout passes via click-only exit (login page IS the success signal)', () => {
+  const walk = logoutWalk();
+  const b = detectFeatureBoundary('Logout', INVENTORY, walk);
+  assert.equal(b.acceptanceVerified, true);
+  assert.equal(b.completedViaExit, true);
+  assert.equal(b.completionIndex, 2);       // the Logout click
+  assert.equal(b.targetUrl, LOGIN);
+  assert.equal(resolveFeatureStatus('failed', b), 'passed');
+  // The logout click is the feature step; login + open-menu are separated as prerequisites.
+  const { primaryTrace, prerequisiteTrace } = splitTrace(walk, b);
+  assert.ok(prerequisiteTrace.some((s) => /Login/i.test(s.locator || '')));
+  assert.ok(primaryTrace.some((s) => /Logout/i.test(s.locator || '')));
+});
+
+// 18. A sign-out click during a NON-exit feature is NOT mistaken for that feature's completion.
+test('18. a stray logout click does not complete a non-exit feature', () => {
+  const walk: AgentStep[] = [
+    step({ tool: 'click', args: {}, context: '- link "Logout" [ref=e50]', locator: "getByRole('link', { name: 'Logout' })", url: LOGIN }),
+    step({ tool: 'snapshot', args: {}, context: LOGIN_FORM, url: LOGIN }),
+  ];
+  const b = detectFeatureBoundary('View Cart', INVENTORY, walk);
+  assert.equal(b.acceptanceVerified, false); // logout is not a View Cart completion
+  assert.equal(resolveFeatureStatus('failed', b), 'failed');
+});
+
+// 19. A logout click that did NOT navigate (still on the same page) is not a completion.
+test('19. a logout click with no navigation is not an exit completion', () => {
+  const walk: AgentStep[] = [
+    step({ tool: 'click', args: {}, locator: "getByRole('button', { name: 'Login' })", url: INVENTORY }),
+    step({ tool: 'click', args: {}, context: '- link "Logout" [ref=e50]', locator: "getByRole('link', { name: 'Logout' })", url: INVENTORY }), // stayed put
+  ];
+  assert.equal(detectExitCompletion(walk, INVENTORY), null);
+  const b = detectFeatureBoundary('Logout', INVENTORY, walk);
+  assert.equal(b.acceptanceVerified, false);
 });
