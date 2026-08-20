@@ -3,11 +3,21 @@ const router = express.Router();
 const User = require('../models/User');
 const jwt = require('jsonwebtoken');
 const { getJwtSecret } = require('../_tools/jwt_secret');
+const { loginLimiter, signupLimiter, clientIp, rateLimitEnabled } = require('../_tools/auth_rate_limit');
 
 // @route   POST /api/auth/signup
 // @desc    Register a new user
 router.post('/signup', async (req, res) => {
   try {
+    const ip = clientIp(req);
+    if (rateLimitEnabled()) {
+      if (signupLimiter.isLimited(ip)) {
+        res.set('Retry-After', String(Math.ceil(signupLimiter.retryAfterMs(ip) / 1000)));
+        return res.status(429).json({ message: 'Too many attempts. Please try again later.' });
+      }
+      signupLimiter.record(ip);
+    }
+
     const { firstName, lastName, password } = req.body;
     const email = (req.body.email || '').trim().toLowerCase();
 
@@ -60,6 +70,12 @@ router.post('/signup', async (req, res) => {
 // @desc    Authenticate user & get token
 router.post('/login', async (req, res) => {
   try {
+    const ip = clientIp(req);
+    if (rateLimitEnabled() && loginLimiter.isLimited(ip)) {
+      res.set('Retry-After', String(Math.ceil(loginLimiter.retryAfterMs(ip) / 1000)));
+      return res.status(429).json({ message: 'Too many attempts. Please try again later.' });
+    }
+
     const email = (req.body.email || '').trim().toLowerCase();
     const { password } = req.body;
 
@@ -70,14 +86,19 @@ router.post('/login', async (req, res) => {
     // Check if user exists
     const user = await User.findOne({ email });
     if (!user) {
+      if (rateLimitEnabled()) loginLimiter.record(ip);
       return res.status(400).json({ message: 'Invalid Credentials' });
     }
 
     // Compare password
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
+      if (rateLimitEnabled()) loginLimiter.record(ip);
       return res.status(400).json({ message: 'Invalid Credentials' });
     }
+
+    // Successful authentication clears the failed-attempt counter for this IP.
+    if (rateLimitEnabled()) loginLimiter.reset(ip);
 
     // Generate JWT token
     const payload = {
