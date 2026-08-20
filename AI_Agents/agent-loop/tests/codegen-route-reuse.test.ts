@@ -23,7 +23,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { assertExistingModuleApiPreserved, assertRoutesResolvable } from '../codegen';
+import { assertExistingModuleApiPreserved, assertRoutesResolvable, assertAssertionsMatchDestinationPage } from '../codegen';
 import { assertResolvedDependenciesUsed, resolveCapabilityDependencies } from '../capability-dependencies';
 import { newTypeErrors, parseTscErrors } from '../generate';
 
@@ -349,6 +349,95 @@ test('D-sig: adding a NEW method for the new behaviour while preserving the exis
   } finally {
     cleanup(fw);
   }
+});
+
+// ── Page-context assertion gate (destination-page-aware) ─────────────────────
+// A generated spec's terminal assertions run on the DESTINATION page. A control observed only on a
+// SOURCE page (before navigation) must not be asserted after navigation — it compiles but times out.
+type Trace = Parameters<typeof assertAssertionsMatchDestinationPage>[1];
+
+const STEP_ONE = 'https://www.saucedemo.com/checkout-step-one.html';
+const STEP_TWO = 'https://www.saucedemo.com/checkout-step-two.html';
+
+/** A snapshot step observing the given role/name nodes on `url`. */
+function snapshot(url: string, nodes: string[]): Trace[number] {
+  return { tool: 'snapshot', args: {}, url, result: ['### Snapshot', ...nodes].join('\n') } as Trace[number];
+}
+
+/** The checkout trace: step-one (Continue/Cancel) → click Continue → step-two (Finish/Cancel). */
+function checkoutTrace(): Trace {
+  return [
+    snapshot(STEP_ONE, ['- button "Continue"', '- button "Cancel"', '- textbox "First Name"']),
+    { tool: 'click', args: { element: 'Continue button' }, url: STEP_TWO, result: 'clicked' } as Trace[number],
+    snapshot(STEP_TWO, ['- button "Finish"', '- button "Cancel"']),
+  ];
+}
+
+/** The generated CompletePurchasePage with a source-page (Continue) and a destination-page (Finish) control. */
+const COMPLETE_PURCHASE_PAGE = [
+  'export class CompletePurchasePage {',
+  "  continueButton() { return this.page.getByRole('button', { name: 'Continue' }); }",
+  "  finishButton() { return this.page.getByRole('button', { name: 'Finish' }); }",
+  '}',
+].join('\n');
+
+test('Page-context A: a SOURCE-page control asserted AFTER navigation is REJECTED (the Continue-after-step-two defect)', () => {
+  const candidate = buildCandidate({
+    pageContent: COMPLETE_PURCHASE_PAGE,
+    specContent: [
+      "import { test, expect } from '../fixtures';",
+      "test('TC_001', async ({ page }) => {",
+      '  const completePurchasePage = new CompletePurchasePage(page);',
+      '  await expect(completePurchasePage.continueButton()).toBeVisible();',
+      '});',
+    ].join('\n'),
+  });
+  assert.throws(
+    () => assertAssertionsMatchDestinationPage(candidate, checkoutTrace()),
+    /post-navigation assertion[\s\S]*continueButton[\s\S]*checkout-step-two/,
+  );
+});
+
+test('Page-context B: a DESTINATION-page control observed in the destination snapshot is ALLOWED', () => {
+  const candidate = buildCandidate({
+    pageContent: COMPLETE_PURCHASE_PAGE,
+    specContent: [
+      "import { test, expect } from '../fixtures';",
+      "test('TC_001', async ({ page }) => {",
+      '  const completePurchasePage = new CompletePurchasePage(page);',
+      '  await expect(completePurchasePage.finishButton()).toBeVisible();',
+      '});',
+    ].join('\n'),
+  });
+  assert.doesNotThrow(() => assertAssertionsMatchDestinationPage(candidate, checkoutTrace()));
+});
+
+test('Page-context C: asserting the destination URL/page state (no source-page control) remains valid', () => {
+  const candidate = buildCandidate({
+    pageContent: COMPLETE_PURCHASE_PAGE,
+    specContent: [
+      "import { test, expect } from '../fixtures';",
+      "import { routes, urlRegex } from '../config';",
+      "test('TC_001', async ({ page }) => {",
+      '  await expect(page).toHaveURL(urlRegex(routes.checkoutStepTwo));',
+      '});',
+    ].join('\n'),
+  });
+  assert.doesNotThrow(() => assertAssertionsMatchDestinationPage(candidate, checkoutTrace()));
+});
+
+test('Page-context: asserting the source control is GONE (.not.toBeVisible) after navigation is ALLOWED', () => {
+  const candidate = buildCandidate({
+    pageContent: COMPLETE_PURCHASE_PAGE,
+    specContent: [
+      "import { test, expect } from '../fixtures';",
+      "test('TC_001', async ({ page }) => {",
+      '  const completePurchasePage = new CompletePurchasePage(page);',
+      '  await expect(completePurchasePage.continueButton()).not.toBeVisible();',
+      '});',
+    ].join('\n'),
+  });
+  assert.doesNotThrow(() => assertAssertionsMatchDestinationPage(candidate, checkoutTrace()));
 });
 
 // ── E ────────────────────────────────────────────────────────────────────────

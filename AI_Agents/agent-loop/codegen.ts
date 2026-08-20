@@ -1245,6 +1245,180 @@ export function snapshotRoleNameLocators(trace: AgentStep[]): string[] {
   return out;
 }
 
+/** A live-snapshot node line: `- role "accessible name"` (nameless structural `generic` nodes excluded). */
+const SNAPSHOT_ROLE_NAME_LINE = /^\s*-\s+([a-z][a-z-]*)\s+"((?:[^"\\]|\\.)*)"/;
+
+/** Canonical identity of a role+name control so a Page locator can be matched to a snapshot node. */
+function controlKey(role: string, name: string): string {
+  return `${role.toLowerCase()}\u0000${name.trim().replace(/\s+/g, ' ').toLowerCase()}`;
+}
+
+/** Host+path of a URL (query/hash and trailing slash dropped) so two snapshots of the SAME page compare equal. */
+function pageIdentity(url: string): string {
+  return String(url || '').split(/[?#]/)[0].replace(/\/+$/, '');
+}
+
+/**
+ * Attribute every snapshot's observed role+name controls to the PAGE (URL) it was captured on, and report
+ * the DESTINATION page = the page of the LAST snapshot in the trace (where a spec's terminal assertions run).
+ * A snapshot step's own `url` is the page it snapshots; the last known url is carried forward for a snapshot
+ * that does not restate it. Generic — driven only by per-page trace snapshots, never app/route specifics.
+ */
+export function controlsByPage(trace: AgentStep[]): {
+  observedByPage: Map<string, Set<string>>;
+  allObserved: Set<string>;
+  destinationPage: string;
+} {
+  const observedByPage = new Map<string, Set<string>>();
+  const allObserved = new Set<string>();
+  let destinationPage = '';
+  let carry = '';
+  for (const step of trace) {
+    const effectiveUrl = String(step.url || carry || '');
+    const result = String(step.result || '');
+    const isSnapshot = step.tool === 'snapshot' || /###\s*Snapshot|```yaml/.test(result);
+    if (isSnapshot && effectiveUrl) {
+      const key = pageIdentity(effectiveUrl);
+      let set = observedByPage.get(key);
+      if (!set) { set = new Set<string>(); observedByPage.set(key, set); }
+      for (const raw of result.split('\n')) {
+        const m = raw.match(SNAPSHOT_ROLE_NAME_LINE);
+        if (!m) continue;
+        const [, role, name] = m;
+        if (role === 'generic' || !name) continue;
+        const ck = controlKey(role, name);
+        set.add(ck);
+        allObserved.add(ck);
+      }
+      destinationPage = key;
+    }
+    if (step.url) carry = String(step.url);
+  }
+  return { observedByPage, allObserved, destinationPage };
+}
+
+/** Map each PUBLIC Page member to the role+name control its locator targets (the LAST named getByRole in it). */
+function pageRoleNameMembers(pageContent: string): { className: string; members: Map<string, string> } {
+  const members = new Map<string, string>();
+  const source = ts.createSourceFile('page.ts', String(pageContent || ''), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const cls = source.statements.find((s): s is ts.ClassDeclaration => ts.isClassDeclaration(s) && !!s.name);
+  if (!cls) return { className: '', members };
+  const ROLE_NAME = /getByRole\(\s*['"`]([\w-]+)['"`]\s*,\s*\{[^}]*?\bname\s*:\s*(?:'((?:[^'\\]|\\.)*)'|"((?:[^"\\]|\\.)*)"|`((?:[^`\\]|\\.)*)`)/g;
+  for (const member of cls.members) {
+    if (hasNonPublicModifier(member) || hasStaticModifier(member)) continue;
+    const name = sourceMemberName(member.name);
+    const src = pageMemberLocatorSource(member, source);
+    if (!name || !src) continue;
+    let last: RegExpExecArray | null = null;
+    let m: RegExpExecArray | null;
+    ROLE_NAME.lastIndex = 0;
+    while ((m = ROLE_NAME.exec(src))) last = m;
+    if (!last) continue;
+    const label = last[2] ?? last[3] ?? last[4] ?? '';
+    if (!label) continue;
+    members.set(name, controlKey(last[1], label));
+  }
+  return { className: cls.name?.text || '', members };
+}
+
+/** Positive presence/visibility matchers whose target MUST exist on the page the assertion runs on. */
+const PRESENCE_MATCHERS = new Set(['toBeVisible', 'toBeInViewport', 'toBeEnabled', 'toBeChecked', 'toBeFocused']);
+
+/**
+ * PAGE-CONTEXT ASSERTION GATE. A generated spec's terminal assertions execute on the DESTINATION page — the
+ * last page the verified trace observed. Reject a positive visibility/presence assertion that targets a
+ * generated Page control the trace observed ONLY on a SOURCE page (before navigation) and NOT on the
+ * destination page: the classic "assert Continue (checkout-step-one) after navigating to checkout-step-two"
+ * defect that compiles green but times out at runtime because the code carried a source-page control past a
+ * navigation. Controls proven on the destination page — and controls never observed anywhere (already covered
+ * by the invented-locator evidence gate) — are left untouched. Generic: driven purely by per-page snapshot
+ * evidence, no app/route specifics.
+ */
+export function assertAssertionsMatchDestinationPage(candidate: LlmArtifacts, trace: AgentStep[]): void {
+  if (!trace || !trace.length) return;
+  const { observedByPage, allObserved, destinationPage } = controlsByPage(trace);
+  if (!destinationPage) return; // no snapshot evidence — other gates cover invented locators
+  const destinationControls = observedByPage.get(destinationPage) || new Set<string>();
+  if (!destinationControls.size) return; // destination page not snapshotted — don't risk a false positive
+
+  const { className, members } = pageRoleNameMembers(candidate.page?.content || '');
+  if (!className || !members.size) return;
+
+  const specSource = ts.createSourceFile(
+    candidate.spec?.file || 'spec.ts', String(candidate.spec?.content || ''), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS,
+  );
+  // Local instances of the generated Page (the undefined-fixture guard forces `new Page(page)` in the body).
+  const instances = new Set<string>();
+  const collectInstances = (node: ts.Node): void => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer
+      && ts.isNewExpression(node.initializer) && ts.isIdentifier(node.initializer.expression)
+      && node.initializer.expression.text === className) {
+      instances.add(node.name.text);
+    }
+    ts.forEachChild(node, collectInstances);
+  };
+  collectInstances(specSource);
+
+  // Unwrap trailing locator refinements (.first()/.filter()/…) to the base `<instance>.<member>()` call.
+  const resolveMember = (arg: ts.Expression): { instance: string; member: string } | null => {
+    let node: ts.Expression = arg;
+    while (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const owner = node.expression.expression;
+      if (ts.isIdentifier(owner)) return { instance: owner.text, member: node.expression.name.text };
+      if (ts.isNewExpression(owner) && ts.isIdentifier(owner.expression) && owner.expression.text === className) {
+        return { instance: '', member: node.expression.name.text };
+      }
+      node = owner;
+    }
+    return null;
+  };
+
+  const violations: Array<{ member: string; control: string }> = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)
+      && PRESENCE_MATCHERS.has(node.expression.name.text)) {
+      let negated = false;
+      let expectArg: ts.Expression | undefined;
+      let cur: ts.Node = node.expression.expression;
+      // Walk the matcher chain back to the `expect(...)` call, noting any `.not.` (asserting ABSENCE is fine).
+      while (cur) {
+        if (ts.isCallExpression(cur) && ts.isIdentifier(cur.expression) && cur.expression.text === 'expect') { expectArg = cur.arguments[0]; break; }
+        if (ts.isPropertyAccessExpression(cur)) { if (cur.name.text === 'not') negated = true; cur = cur.expression; continue; }
+        if (ts.isCallExpression(cur)) { cur = cur.expression; continue; }
+        break;
+      }
+      if (expectArg && !negated) {
+        const ref = resolveMember(expectArg);
+        if (ref && (ref.instance === '' || instances.has(ref.instance)) && members.has(ref.member)) {
+          const ck = members.get(ref.member)!;
+          if (!destinationControls.has(ck) && allObserved.has(ck)) violations.push({ member: ref.member, control: ck });
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(specSource);
+
+  if (violations.length) {
+    const sourcePagesOf = (ck: string): string =>
+      [...observedByPage.entries()].filter(([, set]) => set.has(ck)).map(([url]) => url).join(', ') || 'a prior page';
+    const destSample = [...destinationControls].slice(0, 8).map((k) => k.split('\u0000')[1]).filter(Boolean);
+    const lines = [...new Map(violations.map((v) => [v.member, v])).values()].map((v) => {
+      const [role, name] = v.control.split('\u0000');
+      return `  - ${className}.${v.member}() targets ${role} "${name}", which the trace observed only on ${sourcePagesOf(v.control)} — NOT on the destination page ${destinationPage}.`;
+    });
+    throw new Error(
+      'Codegen: post-navigation assertion(s) reference a control from a PREVIOUS page, not the destination page the '
+      + 'test lands on (this compiles but times out at runtime, e.g. asserting "Continue" from checkout-step-one after '
+      + `navigating to checkout-step-two):\n${lines.join('\n')}\n`
+      + `Controls the trace actually observed on the destination page (${destinationPage}): ${destSample.join(', ') || '(none captured)'}.\n`
+      + 'Assert a control the trace observed ON THE DESTINATION PAGE, or assert the destination page state itself '
+      + '(expect(page).toHaveURL(urlRegex(routes.X))). Do NOT reuse a source-page control after navigation. Re-emit the '
+      + 'COMPLETE corrected spec.',
+    );
+  }
+}
+
 /**
  * Reject a generated Module or Spec that calls a Page Object member which the imported Page Object
  * does not declare. The gate uses the TypeScript parser rather than text matching so aliases,
@@ -2050,6 +2224,7 @@ function runQualityGates(fw: string, job: CodegenJob, trace: AgentStep[], candid
   assertResolvedDependenciesUsed(candidate.module.content, job.dependencyResolution);
   assertWrapperMethodsExist(fw, [page, moduleFile, spec]);
   assertPageObjectContracts(fw, { page, module: moduleFile, spec }, trace, job.discoveryEvidence);
+  assertAssertionsMatchDestinationPage(candidate, trace);
   assertProvenInteractionLocators([page, moduleFile, spec], trace);
   // Every named import must resolve to a real export — prevents the `undefined` runtime read.
   assertImportsResolve(fw, [
