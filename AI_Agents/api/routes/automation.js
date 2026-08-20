@@ -259,7 +259,7 @@ router.post('/generate', auth, async (req, res) => {
 //          (page → API → job flow only; the explore/author engine is wired in Phase 1).
 router.post('/explore', auth, async (req, res) => {
   try {
-    const { project, environment, url, feature, testTypes, maxCases, scopeHint, notes,
+    const { project, environment, url, feature, summary, testTypes, maxCases, scopeHint, notes,
       browser, evidenceFiles, loginUrl, flowUrls, level3 } = req.body;
     // SECURITY: username/password may arrive for the transient explore session. They are read into
     // LOCAL variables only, passed straight to the explore engine (child-process env), and are NEVER
@@ -339,6 +339,9 @@ router.post('/explore', auth, async (req, res) => {
       environment: environment || 'QA',
       url: String(url).trim(),
       feature: String(feature).trim(),
+      // Optional free-text task description. When present it becomes the PRIMARY exploration goal in the
+      // engine (feature stays the short label used for branch/PR/artifact naming).
+      summary: summary ? String(summary).trim() : '',
       // Zero-config: nothing selected → full-breadth coverage so a bare URL still yields a rich suite.
       testTypes: Array.isArray(testTypes) && testTypes.length ? testTypes : ['Positive', 'Negative', 'Boundary', 'Security-lite', 'Accessibility'],
       maxCases: Number(maxCases) > 0 ? Number(maxCases) : 20,

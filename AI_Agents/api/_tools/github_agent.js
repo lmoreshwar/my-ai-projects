@@ -411,6 +411,7 @@ async function dispatchExplore(job, git, creds) {
       job_id: String(job.jobId),
       app_url: job.url || '',
       feature_name: job.feature || '',
+      summary: job.summary || '',
       test_types: testTypes || 'positive',
       max_cases: String(job.maxCases > 0 ? job.maxCases : 3),
     };

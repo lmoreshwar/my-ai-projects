@@ -39,6 +39,7 @@ export default function AutopilotExplorer({ apiBase, connections }) {
   const [form, setForm] = useState({
     url: '',
     feature: '',
+    summary: '',
     username: '',
     password: '',
     loginUrl: '',
@@ -104,6 +105,9 @@ export default function AutopilotExplorer({ apiBase, connections }) {
         body: JSON.stringify({
           url: form.url.trim(),
           feature: form.feature.trim(),
+          // Optional free-text task description. When present the engine uses it as the primary goal
+          // (the agent logs in, navigates, and completes the whole flow); feature stays the short label.
+          summary: form.summary.trim() || undefined,
           // "Automate anyway" — skip the already-automated guard and explore regardless.
           force: force || undefined,
           // Creds are sent for the transient explore session only — the API never persists them.
@@ -308,7 +312,17 @@ export default function AutopilotExplorer({ apiBase, connections }) {
             <input className={inputCls} value={form.feature} onChange={(e) => set('feature', e.target.value)}
               placeholder="Login, Cart, Checkout, Menu…" />
             <p className="text-[11px] text-on-surface-variant/70 dark:text-slate-500 mt-1">
-              What to test. Keeps authoring focused — no crawling.
+              A short label for naming (branch, PR, files). Describe the actual task in Summary below.
+            </p>
+          </div>
+
+          <div>
+            <label className={labelCls}>Summary</label>
+            <textarea className={inputCls} rows={3} value={form.summary}
+              onChange={(e) => set('summary', e.target.value)}
+              placeholder={'Describe the whole task in your own words, e.g. “Log in, add a backpack to the cart, check out with my details, and confirm the order is complete.”'} />
+            <p className="text-[11px] text-on-surface-variant/70 dark:text-slate-500 mt-1">
+              Optional but recommended. When set, this drives the run end-to-end — the agent logs in, navigates, and completes it.
             </p>
           </div>
 

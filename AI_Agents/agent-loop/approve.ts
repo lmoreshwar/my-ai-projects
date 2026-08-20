@@ -9,8 +9,8 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { generateFromTrace, selectTraceForScenarios, type CodegenJob, type Scenario } from './codegen';
-import { verifySpec, commitAndOpenPr } from './generate';
+import { selectTraceForScenarios, type CodegenJob, type Scenario } from './codegen';
+import { generateVerifyHeal, commitAndOpenPr } from './generate';
 import type { AgentStep } from './agent-loop';
 import type { FieldInventoryItem, StateTransition } from './discovery';
 import { resolveCapabilityDependencies } from './capability-dependencies';
@@ -75,16 +75,15 @@ async function main(): Promise<void> {
     coverageFields, discoveryEvidence, dependencyResolution,
   };
   log(`[approve] Generating from ${trace.length} verified step(s) for "${job.feature}"…`);
-  const art = await generateFromTrace(fw, job, trace, log);
+  const { passed, art } = await generateVerifyHeal(fw, job, trace, log);
 
-  const specRel = art.files.find((f) => f.includes('/tests/')) || '';
-  if (specRel && !(await verifySpec(fw, specRel))) {
+  if (!passed) {
     // Dump the generated files so the written locators can be compared against the verified trace.
     for (const rel of art.files) {
       try { log(`\n───── generated ${rel} ─────\n${readFileSync(join(fw, rel), 'utf8')}`); }
       catch { /* unreadable file — skip */ }
     }
-    console.error('[approve] Generated spec did not pass — no PR opened.');
+    console.error('[approve] Generated spec did not pass after self-heal — no PR opened.');
     process.exit(1);
   }
 

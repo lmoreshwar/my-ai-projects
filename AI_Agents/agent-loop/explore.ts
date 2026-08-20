@@ -21,6 +21,9 @@ async function main(): Promise<void> {
   const url = process.env.APP_URL || '';
   const feature = process.env.FEATURE_NAME || '';
   const fw = process.env.FRAMEWORK_PATH || '';
+  // Optional free-text summary: when the website sends a full task description it becomes the PRIMARY
+  // exploration goal (feature stays a short label for naming). Empty → the feature-name goal (unchanged).
+  const summary = (process.env.SUMMARY || '').trim();
   if (!url || !feature) throw new Error('APP_URL and FEATURE_NAME are required.');
 
   const testTypes = (process.env.TEST_TYPES || 'positive').split(',').map((s) => s.trim()).filter(Boolean);
@@ -29,7 +32,14 @@ async function main(): Promise<void> {
   const outDir = process.env.OUTPUT_DIR || fw || '.';
 
   const initialDependencies = resolveCapabilityDependencies(fw, feature, url);
-  const goal = `Explore and verify the "${feature}" feature. Log in if a login form is present, reach the feature, and EXHAUSTIVELY exercise its primary flow (${testTypes.join(', ')}): once on the feature form, fill EVERY discovered field (including optional ones) with realistic valid data before saving, and confirm the expected outcome.
+  // The summary (when provided) is the user's own description of the task and drives the walk verbatim;
+  // otherwise fall back to the feature-name template. The prerequisite context is appended either way.
+  const primary = summary
+    ? `${summary}
+
+Log in if a login form is present, reach the described feature, and COMPLETE the task end-to-end (${testTypes.join(', ')}): once on each form, fill EVERY discovered field (including optional ones) with realistic valid data before saving/submitting, then confirm the expected FINAL outcome.`
+    : `Explore and verify the "${feature}" feature. Log in if a login form is present, reach the feature, and EXHAUSTIVELY exercise its primary flow (${testTypes.join(', ')}): once on the feature form, fill EVERY discovered field (including optional ones) with realistic valid data before saving, and confirm the expected outcome.`;
+  const goal = `${primary}
 
 INTERNAL PREREQUISITE CONTEXT (already verified capabilities; do not treat these as new feature scope):
 ${dependencyResolutionContext(initialDependencies)}

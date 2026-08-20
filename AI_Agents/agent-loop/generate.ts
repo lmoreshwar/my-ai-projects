@@ -30,8 +30,8 @@
 
 import { spawn } from 'node:child_process';
 import { request } from 'node:https';
-import { runAgentLoop } from './agent-loop';
-import { generateFromTrace, type CodegenJob } from './codegen';
+import { runAgentLoop, type AgentStep } from './agent-loop';
+import { generateFromTrace, healArtifacts, type CodegenJob, type GeneratedArtifacts } from './codegen';
 import { dependencyResolutionContext, resolveCapabilityDependencies } from './capability-dependencies';
 
 const log = (l: string) => console.log(l);
@@ -133,9 +133,9 @@ export async function commitAndOpenPr(fw: string, feature: string, files: string
   throw new Error(`GitHub PR create failed (HTTP ${status}): ${JSON.stringify(json).slice(0, 300)}`);
 }
 
-/** Run the generated spec headless; resolve true when it passes (gates the PR). */
-export async function verifySpec(fw: string, specRel: string): Promise<boolean> {
-  if (process.env.SKIP_VERIFY === '1') return true;
+/** Run the generated spec headless; resolve { passed, output } (the output feeds self-heal). */
+export async function verifySpec(fw: string, specRel: string): Promise<{ passed: boolean; output: string }> {
+  if (process.env.SKIP_VERIFY === '1') return { passed: true, output: '' };
   const project = process.env.PLAYWRIGHT_PROJECT || 'desktop-chrome';
   log(`[generate] Verifying ${specRel} on project ${project}…`);
   const { code, out } = await run('npx', ['playwright', 'test', specRel, `--project=${project}`], fw, true);
@@ -147,7 +147,39 @@ export async function verifySpec(fw: string, specRel: string): Promise<boolean> 
     log('[generate] Verification FAILED — full Playwright output below:');
     log(out);
   }
-  return code === 0;
+  return { passed: code === 0, output: out };
+}
+
+/**
+ * Generate from the verified trace, run the spec, and SELF-HEAL on failure (bounded). Each heal round
+ * feeds the REAL Playwright error back to the model, which fixes wiring/steps/locators — never the
+ * assertion (enforced by the heal-prompt guardrail). Returns the final artifacts + pass state so the
+ * caller opens a PR only when green. Shared by the runner (generate) and the approve gate.
+ */
+export async function generateVerifyHeal(
+  fw: string, job: CodegenJob, trace: AgentStep[], log: (l: string) => void = console.log,
+): Promise<{ passed: boolean; art: GeneratedArtifacts; output: string }> {
+  let art = await generateFromTrace(fw, job, trace, log);
+  let specRel = art.files.find((f) => f.includes('/tests/')) || '';
+  if (!specRel) return { passed: true, art, output: '' };
+  let verdict = await verifySpec(fw, specRel);
+
+  const MAX_HEAL_ROUNDS = 2;
+  const seen = new Set<string>();
+  for (let heal = 1; !verdict.passed && heal <= MAX_HEAL_ROUNDS; heal += 1) {
+    // No-progress guard: if the identical failure recurs, another full re-run just wastes time.
+    const sig = verdict.output.replace(/:\d+:\d+/g, '').replace(/\s+/g, ' ').trim().slice(0, 4000);
+    if (sig && seen.has(sig)) { log('[generate] Self-heal made no progress (same failure) — stopping.'); break; }
+    if (sig) seen.add(sig);
+    log(`[generate] Verify failed — self-heal round ${heal}/${MAX_HEAL_ROUNDS}…`);
+    const healed = await healArtifacts(fw, job, trace, art.files, verdict.output, log);
+    if (!healed) { log('[generate] Self-heal produced nothing usable — stopping.'); break; }
+    art = healed;
+    specRel = art.files.find((f) => f.includes('/tests/')) || specRel;
+    verdict = await verifySpec(fw, specRel);
+    log(verdict.passed ? `[generate] Re-run PASSED after self-heal ${heal}.` : `[generate] Re-run ${heal} still failing.`);
+  }
+  return { passed: verdict.passed, art, output: verdict.output };
 }
 
 export async function generate(): Promise<{ status: string; prUrl?: string; files: string[]; summary: string }> {
@@ -155,12 +187,18 @@ export async function generate(): Promise<{ status: string; prUrl?: string; file
   const feature = process.env.FEATURE_NAME || '';
   const fw = process.env.FRAMEWORK_PATH || '';
   if (!url || !feature || !fw) throw new Error('APP_URL, FEATURE_NAME and FRAMEWORK_PATH are required.');
+  const summary = (process.env.SUMMARY || '').trim();
   const testTypes = (process.env.TEST_TYPES || 'positive').split(',').map((s) => s.trim()).filter(Boolean);
   const maxCases = Number(process.env.MAX_CASES) > 0 ? Number(process.env.MAX_CASES) : 3;
 
   // 1) EXPLORE — verify the real flow live (credentials come from env inside runAgentLoop).
   const initialDependencies = resolveCapabilityDependencies(fw, feature, url);
-  const goal = `Explore and verify the "${feature}" feature. Log in if a login form is present, reach the feature, and exercise its primary flow (${testTypes.join(', ')}), confirming the expected outcome.
+  const primary = summary
+    ? `${summary}
+
+Log in if a login form is present, reach the described feature, and COMPLETE the task end-to-end (${testTypes.join(', ')}), confirming the expected FINAL outcome.`
+    : `Explore and verify the "${feature}" feature. Log in if a login form is present, reach the feature, and exercise its primary flow (${testTypes.join(', ')}), confirming the expected outcome.`;
+  const goal = `${primary}
 
 INTERNAL PREREQUISITE CONTEXT (existing verified capabilities):
 ${dependencyResolutionContext(initialDependencies)}
@@ -177,12 +215,10 @@ Use an applicable prerequisite only as setup; do not re-automate it as the new f
     discoveryEvidence: walk.discovery ? { inventory: walk.discovery.inventory, transitions: walk.discovery.transitions } : undefined,
     dependencyResolution: resolveCapabilityDependencies(fw, feature, url, walk.discovery),
   };
-  const art = await generateFromTrace(fw, job, walk.steps, log);
-  const specRel = art.files.find((f) => f.includes('/tests/')) || '';
-
-  // 3) VERIFY green before PR.
-  if (specRel && !(await verifySpec(fw, specRel))) {
-    return { status: 'failed', files: art.files, summary: 'Generated spec did not pass — no PR opened.' };
+  // 3) GENERATE → VERIFY → self-heal on failure (bounded). Open a PR only when green.
+  const { passed, art } = await generateVerifyHeal(fw, job, walk.steps, log);
+  if (!passed) {
+    return { status: 'failed', files: art.files, summary: 'Generated spec did not pass after self-heal — no PR opened.' };
   }
 
   // 4) COMMIT + PR.

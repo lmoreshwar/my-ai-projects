@@ -36,6 +36,10 @@ on:
       feature_name:
         description: Human feature name (e.g. "PIM employee search")
         required: true
+      summary:
+        description: Full task description; when set it drives exploration (feature_name stays the label)
+        required: false
+        default: ""
       test_types:
         description: Comma list e.g. "positive,negative"
         required: false
@@ -90,6 +94,7 @@ jobs:
         env:
           APP_URL: ${{ inputs.app_url }}
           FEATURE_NAME: ${{ inputs.feature_name }}
+          SUMMARY: ${{ inputs.summary }}
           TEST_TYPES: ${{ inputs.test_types }}
           MAX_CASES: ${{ inputs.max_cases }}
           FRAMEWORK_PATH: ${{ github.workspace }}

@@ -1762,79 +1762,128 @@ function safePath(fw: string, rel: string, fallback: string): string {
   return join(fw, target);
 }
 
-/**
- * Generate the Page/Module/Spec from a verified trace, reusing existing capabilities and writing
- * new artifacts + refreshing the index. Returns the files written. Throws on an unusable LLM reply.
- */
-export async function generateFromTrace(
-  fw: string,
-  job: CodegenJob,
-  trace: AgentStep[],
-  log: (l: string) => void = console.log,
-): Promise<GeneratedArtifacts> {
-  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
-  const model = job.model || process.env.OPENAI_MODEL || 'gpt-4o';
-
-  log('[codegen] Loading reuse index + exemplars and asking the model for files…');
-  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-    { role: 'system', content: 'You are a senior Playwright/TypeScript engineer. Reuse existing framework code, copy proven locators verbatim, and reply with STRICT JSON only.' },
-    { role: 'user', content: buildPrompt(fw, job, trace) },
-  ];
-
-  // Did the live explore walk actually prove a uniqueness constraint (a duplicate/"already exists"
-  // validation)? Only then may codegen FORCE unique-value handling on a name-matching field.
-  const uniquenessObserved = traceExposedUniquenessConstraint(trace);
-
-  // Parse the reply and run EVERY in-memory quality gate. Throws one clear message the model can repair against.
-  const parseAndValidate = (raw: string): LlmArtifacts => {
-    const match = raw.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error('Codegen: model did not return JSON.');
-    let candidate: LlmArtifacts;
-    try { candidate = JSON.parse(match[0]); } catch (e) { throw new Error(`Codegen: invalid JSON (${(e as Error).message}).`); }
-    if (!candidate.page?.content || !candidate.module?.content || !candidate.spec?.content) {
-      throw new Error('Codegen: reply missing page/module/spec content.');
+/** The set of NAMES a TypeScript module exports (best-effort). Returns null when the module uses a
+ * wildcard re-export (`export * from`) or `export =`, so the caller SKIPS the strict check instead of
+ * risking a false rejection. Generic — no framework/app specifics. */
+function moduleExportedNames(src: string): Set<string> | null {
+  if (/export\s+\*\s+from/.test(src) || /export\s*=/.test(src)) return null;
+  const names = new Set<string>();
+  if (/export\s+default\b/.test(src)) names.add('default');
+  const decl = /export\s+(?:async\s+)?(?:const|let|var|function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = decl.exec(src)) !== null) names.add(m[1]);
+  const block = /export\s*\{([^}]*)\}/g;
+  while ((m = block.exec(src)) !== null) {
+    for (const part of m[1].split(',')) {
+      const alias = part.trim().split(/\s+as\s+/i).pop()?.trim();
+      if (alias) names.add(alias);
     }
-    assertDependencyArtifactsPreserved({
-      page: candidate.page.file || 'Page', module: candidate.module.file || 'Module', spec: candidate.spec.file || 'Spec',
-    }, job.dependencyResolution);
-    assertNoPositionalPageLocators(candidate.page.file || 'generated Page', candidate.page.content);
-    assertNavigationUrlContract([
-      { file: candidate.page.file || 'Page', content: candidate.page.content },
-      { file: candidate.module.file || 'Module', content: candidate.module.content },
-      { file: candidate.spec.file || 'Spec', content: candidate.spec.content },
-    ]);
-    assertSingleNavigationPath({ file: candidate.spec.file || 'Spec', content: candidate.spec.content });
-    assertPrepopulatedFieldsUntouched(candidate, trace);
-    assertUniqueFieldsHandled(candidate, uniquenessObserved);
-    assertNoUndefinedFixtures(fw, candidate);
-    assertTraceCoverage(candidate, job.coverageFields, trace);
-    assertResolvedDependenciesUsed(candidate.module.content, job.dependencyResolution);
-    assertWrapperMethodsExist(fw, [
-      { file: candidate.page.file || 'Page', content: candidate.page.content },
-      { file: candidate.module.file || 'Module', content: candidate.module.content },
-      { file: candidate.spec.file || 'Spec', content: candidate.spec.content },
-    ]);
-    assertPageObjectContracts(fw, {
-      page: { file: candidate.page.file || 'Page', content: candidate.page.content },
-      module: { file: candidate.module.file || 'Module', content: candidate.module.content },
-      spec: { file: candidate.spec.file || 'Spec', content: candidate.spec.content },
-    }, trace, job.discoveryEvidence);
-    assertProvenInteractionLocators([
-      { file: candidate.page.file || 'Page', content: candidate.page.content },
-      { file: candidate.module.file || 'Module', content: candidate.module.content },
-      { file: candidate.spec.file || 'Spec', content: candidate.spec.content },
-    ], trace);
-    // In-memory + repairable: a routes.X reference must be defined in config OR returned in "routes".
-    // Runs inside the loop so the model self-corrects (with the verified path) instead of failing hard after it.
-    assertRoutesResolvable(fw, candidate, trace);
-    return candidate;
-  };
+  }
+  return names;
+}
 
-  // Self-repair loop: when a quality gate rejects the reply, feed the exact rejection back and let the
-  // model correct its own output. Generic — this covers positional locators, prepopulated fields,
-  // unique fields, and any future in-memory gate, instead of hand-patching one case. A malformed reply
-  // (invalid JSON / not JSON / missing content) is a FORMAT problem, not a quality one, so it gets its
-  // own bounded retries and never burns the quality-gate budget — a single fluke can't kill the build.
+/** Resolve a RELATIVE import specifier to an existing TS file on disk (.ts / .tsx / /index.ts), else null. */
+function resolveTsImport(fromDir: string, spec: string): string | null {
+  const base = normalize(join(fromDir, spec));
+  for (const candidate of [`${base}.ts`, `${base}.tsx`, join(base, 'index.ts')]) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Every NAMED import from a RESOLVABLE module must be a REAL export of that module. Catches the class of
+ * runtime crash where the model imports a symbol the target does not export (e.g. `import { testData } from
+ * '../config'` when config exports no `testData`) → the binding is `undefined` → "Cannot read properties of
+ * undefined". In-memory + repairable. Non-relative (node_modules) imports and sibling files still being
+ * generated (not yet on disk) are skipped so a real dependency is never falsely rejected. Generic.
+ */
+export function assertImportsResolve(fw: string, files: Array<{ dir: string; file: string; content: string }>): void {
+  const violations: string[] = [];
+  const importRe = /import\s+(?:type\s+)?\{([^}]*)\}\s+from\s+['"]([^'"]+)['"]/g;
+  for (const f of files) {
+    let m: RegExpExecArray | null;
+    importRe.lastIndex = 0;
+    while ((m = importRe.exec(f.content)) !== null) {
+      const spec = m[2];
+      if (!spec.startsWith('.')) continue;
+      const target = resolveTsImport(join(fw, f.dir), spec);
+      if (!target || target.endsWith('.json')) continue;
+      const exported = moduleExportedNames(safeRead(target));
+      if (!exported) continue;
+      for (const raw of m[1].split(',')) {
+        const name = raw.trim().split(/\s+as\s+/i)[0].trim();
+        if (!name || name === 'type') continue;
+        if (!exported.has(name)) violations.push(`'${name}' is imported from '${spec}' in ${f.file} but that module does not export it`);
+      }
+    }
+  }
+  if (violations.length) {
+    throw new Error(
+      `Codegen: unresolved import(s): ${violations.join('; ')}. Import each symbol from the module that ` +
+      `actually exports it, or define/inline the value — never import a symbol the target does not export.`,
+    );
+  }
+}
+
+/** Parse the model's STRICT-JSON reply into artifacts. Throws a FORMAT-class error the loop retries. */
+function parseArtifacts(raw: string): LlmArtifacts {
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('Codegen: model did not return JSON.');
+  let candidate: LlmArtifacts;
+  try { candidate = JSON.parse(match[0]); } catch (e) { throw new Error(`Codegen: invalid JSON (${(e as Error).message}).`); }
+  if (!candidate.page?.content || !candidate.module?.content || !candidate.spec?.content) {
+    throw new Error('Codegen: reply missing page/module/spec content.');
+  }
+  return candidate;
+}
+
+/** The pages/modules/tests directory a generated file lives in (for relative-import resolution). */
+function artifactDir(file: string, fallback: string): string {
+  const clean = String(file || '').replace(/\\/g, '/');
+  return clean.startsWith('src/') && clean.includes('/') ? clean.slice(0, clean.lastIndexOf('/')) : fallback;
+}
+
+/** Run EVERY in-memory quality gate against a parsed candidate. Throws ONE clear, repairable message. */
+function runQualityGates(fw: string, job: CodegenJob, trace: AgentStep[], candidate: LlmArtifacts, uniquenessObserved: boolean): void {
+  const page = { file: candidate.page.file || 'Page', content: candidate.page.content };
+  const moduleFile = { file: candidate.module.file || 'Module', content: candidate.module.content };
+  const spec = { file: candidate.spec.file || 'Spec', content: candidate.spec.content };
+  assertDependencyArtifactsPreserved({ page: page.file, module: moduleFile.file, spec: spec.file }, job.dependencyResolution);
+  assertNoPositionalPageLocators(candidate.page.file || 'generated Page', candidate.page.content);
+  assertNavigationUrlContract([page, moduleFile, spec]);
+  assertSingleNavigationPath(spec);
+  assertPrepopulatedFieldsUntouched(candidate, trace);
+  assertUniqueFieldsHandled(candidate, uniquenessObserved);
+  assertNoUndefinedFixtures(fw, candidate);
+  assertTraceCoverage(candidate, job.coverageFields, trace);
+  assertResolvedDependenciesUsed(candidate.module.content, job.dependencyResolution);
+  assertWrapperMethodsExist(fw, [page, moduleFile, spec]);
+  assertPageObjectContracts(fw, { page, module: moduleFile, spec }, trace, job.discoveryEvidence);
+  assertProvenInteractionLocators([page, moduleFile, spec], trace);
+  // Every named import must resolve to a real export — prevents the `undefined` runtime read.
+  assertImportsResolve(fw, [
+    { dir: artifactDir(page.file, 'src/pages'), file: page.file, content: page.content },
+    { dir: artifactDir(moduleFile.file, 'src/modules'), file: moduleFile.file, content: moduleFile.content },
+    { dir: artifactDir(spec.file, 'src/tests'), file: spec.file, content: spec.content },
+  ]);
+  // In-memory + repairable: a routes.X reference must be defined in config OR returned in "routes".
+  assertRoutesResolvable(fw, candidate, trace);
+}
+
+/**
+ * The LLM request + self-repair loop shared by first-pass codegen and self-heal. When a quality gate
+ * rejects the reply, the exact rejection is fed back and the model corrects its own output. A malformed
+ * reply is a FORMAT problem with its own bounded retries so a single fluke can't kill the build. `validate`
+ * parses + runs every gate. Returns the accepted artifacts. Generic.
+ */
+async function requestValidatedArtifacts(
+  client: OpenAI,
+  model: string,
+  messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+  validate: (raw: string) => LlmArtifacts,
+  log: (l: string) => void,
+): Promise<LlmArtifacts> {
   const MAX_CODEGEN_ATTEMPTS = 3;
   const MAX_FORMAT_RETRIES = 2;
   const isFormatError = (msg: string): boolean =>
@@ -1849,7 +1898,7 @@ export async function generateFromTrace(
     const completion = await client.chat.completions.create(params);
     const raw = completion.choices[0]?.message?.content || '';
     try {
-      art = parseAndValidate(raw);
+      art = validate(raw);
       if (qualityAttempts + formatRetries > 0) log(`[codegen] repair succeeded (${qualityAttempts} gate repair(s), ${formatRetries} format retr(ies)).`);
       break;
     } catch (e) {
@@ -1891,7 +1940,12 @@ export async function generateFromTrace(
     }
   }
   if (!art) throw new Error(lastError || 'Codegen: no usable reply.');
+  return art;
+}
 
+/** Write the accepted artifacts to disk, merge testData/routes, refresh the reuse index, and return the
+ * file list. Shared by first-pass codegen and self-heal so both persist identically. */
+async function writeArtifacts(fw: string, job: CodegenJob, art: LlmArtifacts, trace: AgentStep[], log: (l: string) => void): Promise<GeneratedArtifacts> {
   const files: string[] = [];
   const feat = (job.feature || 'Feature').replace(/[^a-zA-Z0-9]/g, '') || 'Feature';
   const writes: Array<[string, string]> = [
@@ -1929,6 +1983,105 @@ export async function generateFromTrace(
   log('[codegen] Capability index refreshed (.ai-memory written back).');
 
   return { domain: art.domain || feat.toLowerCase(), files, reusedExisting: !!(art.reusedFrom && art.reusedFrom.length) };
+}
+
+/** The generic heal instruction appended after the full codegen evidence when a verify run FAILED. */
+function buildHealUserPrompt(currentFiles: string, failureOutput: string): string {
+  return [
+    'The generated Playwright test FAILED its verification run. Fix the ROOT cause and re-emit the COMPLETE',
+    'corrected artifact as STRICT JSON (page/module/spec plus testData/routes/uniqueFields as needed), keeping',
+    'the 3-layer split (pages = locators, modules = workflows, specs = assertions) and every unaffected file identical.',
+    '',
+    'HARD GUARDRAIL: NEVER weaken, delete, or loosen an assertion, and NEVER change an expected URL/outcome just to',
+    'make the test pass. If a destination was not reached, fix the STEPS that get there — never change what you assert.',
+    '',
+    'DIAGNOSE FROM THE STACK TRACE + ERROR FIRST:',
+    '- "Cannot read properties of undefined (reading \'<x>\')": a binding is undefined. If <x> was read off an',
+    '  IMPORTED value, that symbol is NOT exported by the module it is imported from — import it from the module',
+    '  that actually exports it, or define/inline the value. If it is a collaborator (this.<obj>.<x>()), assign',
+    '  this.<obj> = new <Class>(page) in the constructor. If it is a data key, add that key with a concrete value.',
+    '- A toHaveURL / waitFor / "to be visible" TIMEOUT while the browser is on the WRONG page means a PRECONDITION',
+    '  was skipped: ADD the missing setup/navigation steps to REACH the target page, following the verified trace',
+    '  order and REUSING existing Page/Module methods — do not change the locator or the final assertion.',
+    '- An invented/misspelled control (a name that appears NOWHERE in the evidence) must be replaced with the single',
+    '  closest REAL control from the verified trace; if none matches the intent, remove that invalid step.',
+    '- "<obj>.<method> is not a function": the method does not exist — define it on the owning Page/Module (return the',
+    '  FULL file) or call an existing method; never add methods to the shared wrappers.',
+    '',
+    '## Current files on disk',
+    currentFiles,
+    '',
+    '## Playwright failure output (the REAL error to fix)',
+    failureOutput.slice(-6000),
+  ].join('\n');
+}
+
+/**
+ * Self-heal a generated spec that FAILED its verify run: read the current files, feed the REAL Playwright
+ * failure + generic diagnostic rules back to the model, and return corrected, gate-passing artifacts written
+ * to disk. Mirrors the mature engine's heal round. The GUARDRAIL in the prompt forbids weakening assertions
+ * or changing expected outcomes to go green. Returns null when the reply is unusable. Generic.
+ */
+export async function healArtifacts(
+  fw: string, job: CodegenJob, trace: AgentStep[], currentFiles: string[], failureOutput: string,
+  log: (l: string) => void = console.log,
+): Promise<GeneratedArtifacts | null> {
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
+  const model = job.model || process.env.OPENAI_MODEL || 'gpt-4o';
+  const pick = (frag: string): string => {
+    const rel = currentFiles.find((f) => f.includes(frag));
+    if (!rel) return '';
+    const body = safeRead(join(fw, rel));
+    return body ? `===FILE:${rel}===\n${body}\n===ENDFILE===` : '';
+  };
+  const current = [pick('/pages/'), pick('/modules/'), pick('/tests/'), pick('testData')].filter(Boolean).join('\n\n');
+  const uniquenessObserved = traceExposedUniquenessConstraint(trace);
+  const validate = (raw: string): LlmArtifacts => {
+    const candidate = parseArtifacts(raw);
+    runQualityGates(fw, job, trace, candidate, uniquenessObserved);
+    return candidate;
+  };
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'system', content: 'You are a senior Playwright/TypeScript engineer. Fix the ROOT cause of a failing test and reply with STRICT JSON only.' },
+    { role: 'user', content: buildPrompt(fw, job, trace) },
+    { role: 'user', content: buildHealUserPrompt(current, failureOutput) },
+  ];
+  let art: LlmArtifacts;
+  try { art = await requestValidatedArtifacts(client, model, messages, validate, log); }
+  catch (e) { log(`[codegen] self-heal could not produce valid files: ${(e as Error).message}`); return null; }
+  return writeArtifacts(fw, job, art, trace, log);
+}
+
+/**
+ * Generate the Page/Module/Spec from a verified trace, reusing existing capabilities and writing
+ * new artifacts + refreshing the index. Returns the files written. Throws on an unusable LLM reply.
+ */
+export async function generateFromTrace(
+  fw: string,
+  job: CodegenJob,
+  trace: AgentStep[],
+  log: (l: string) => void = console.log,
+): Promise<GeneratedArtifacts> {
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY, baseURL: process.env.OPENAI_BASE_URL || undefined });
+  const model = job.model || process.env.OPENAI_MODEL || 'gpt-4o';
+
+  log('[codegen] Loading reuse index + exemplars and asking the model for files…');
+  const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+    { role: 'system', content: 'You are a senior Playwright/TypeScript engineer. Reuse existing framework code, copy proven locators verbatim, and reply with STRICT JSON only.' },
+    { role: 'user', content: buildPrompt(fw, job, trace) },
+  ];
+
+  // Did the live explore walk actually prove a uniqueness constraint (a duplicate/"already exists"
+  // validation)? Only then may codegen FORCE unique-value handling on a name-matching field.
+  const uniquenessObserved = traceExposedUniquenessConstraint(trace);
+
+  const validate = (raw: string): LlmArtifacts => {
+    const candidate = parseArtifacts(raw);
+    runQualityGates(fw, job, trace, candidate, uniquenessObserved);
+    return candidate;
+  };
+  const art = await requestValidatedArtifacts(client, model, messages, validate, log);
+  return writeArtifacts(fw, job, art, trace, log);
 }
 
 /**
