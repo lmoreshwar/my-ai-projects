@@ -35,7 +35,10 @@ INTERNAL PREREQUISITE CONTEXT (already verified capabilities; do not treat these
 ${dependencyResolutionContext(initialDependencies)}
 When the feature needs one of these states, establish it as setup before verifying the missing capability. Do not re-automate the prerequisite as a new feature.`;
   log(`[explore] Exploring "${feature}" at ${url}…`);
-  const walk = await runAgentLoop({ url, goal, feature, discover: true, maxSteps: Math.max(20, maxCases * 8), onLog: log });
+  // Floor of 32: a real feature walk spends ~24-28 steps on fixed overhead (login, prerequisite setup,
+  // navigation, discovery, per-field fills + inter-step snapshots) before its own submit — a 20-step cap
+  // lands multi-step flows (e.g. Checkout) exactly on the finish line. maxCases still scales larger runs.
+  const walk = await runAgentLoop({ url, goal, feature, discover: true, maxSteps: Math.max(32, maxCases * 8), onLog: log });
 
   const discovery = walk.discovery;
   const dependencies = resolveCapabilityDependencies(fw, feature, url, discovery);
