@@ -116,6 +116,11 @@ export interface Scenario {
   steps: ScenarioStep[];
   expectedResults: string;
   coverage: { fieldIds: string[]; fieldLabels: string[] };
+  /** Gap-aware planning (optional, backward compatible): set when this proposed scenario is already
+   * automated by an existing test in the repo's reuse index, so the UI can pre-skip it and author only
+   * the NEW (uncovered) scenarios. Undefined on legacy plans / when the repo has no index. */
+  covered?: boolean;
+  coveredBy?: { spec: string; testId: string; title: string };
 }
 
 /** The richer plan artifact (version 2) written by explore.ts and consumed by approve.ts / the API. */
@@ -182,6 +187,105 @@ function loadCapabilities(fw: string): string {
     }
   }
   return lines.join('\n');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gap-aware planning: match a PROPOSED scenario against the tests already automated
+// in the repo (the reuse index's global testIndex) so explore can author only the
+// NEW scenarios. Title-based (ids are not globally unique) and GENERIC — no app rules.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One already-automated test recovered from the reuse index. */
+export interface ExistingTest { spec: string; testId: string; title: string }
+
+/** Normalize a test/scenario title for comparison: drop @tags, lowercase, keep alphanumerics. */
+function normTitle(s: string): string {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/@\w+/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const TITLE_STOPWORDS = new Set([
+  'the', 'a', 'an', 'and', 'or', 'to', 'of', 'for', 'with', 'on', 'in', 'is', 'be', 'as',
+  'test', 'verify', 'verifies', 'check', 'checks', 'ensure', 'that', 'when', 'then', 'should',
+  'user', 'page', 'via', 'flow', 'case', 'scenario', 'valid', 'successfully',
+]);
+
+/** Distinctive (≥4-char, non-stopword) tokens that identify what a title is about. */
+function titleTokens(s: string): Set<string> {
+  return new Set(normTitle(s).split(' ').filter((w) => w.length >= 4 && !TITLE_STOPWORDS.has(w)));
+}
+
+/** Overlap of distinctive tokens between two titles, 0..1 (intersection / smaller set). */
+function titleOverlap(a: string, b: string): number {
+  const A = titleTokens(a);
+  const B = titleTokens(b);
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter += 1;
+  return inter / Math.min(A.size, B.size);
+}
+
+/** Read the repo's reuse index and return every already-automated test with its title. */
+export function existingTestTitles(fw: string): ExistingTest[] {
+  const root = safeJson(join(fw, '.ai-memory', 'capabilities.json'));
+  const testIndex = root && (root.testIndex as Record<string, unknown> | undefined);
+  if (!testIndex) return [];
+  const out: ExistingTest[] = [];
+  for (const [testId, arr] of Object.entries(testIndex)) {
+    const list = Array.isArray(arr) ? arr : [arr];
+    for (const e of list as Array<{ spec?: string; title?: string }>) {
+      if (e && e.title) out.push({ spec: String(e.spec || ''), testId, title: String(e.title) });
+    }
+  }
+  return out;
+}
+
+/**
+ * Is this proposed title already covered by an existing automated test? Title-first (ids are not
+ * unique): (1) normalized-title substring either way, else (2) distinctive-token overlap ≥ 0.75.
+ * Conservative on purpose — a miss just means the scenario is offered as NEW (never silently dropped).
+ */
+export function coveringTest(title: string, existing: ExistingTest[]): ExistingTest | null {
+  const want = normTitle(title);
+  if (want.length < 6 || !existing.length) return null;
+  for (const e of existing) {
+    const have = normTitle(e.title);
+    if (have.length >= 6 && (have.includes(want) || want.includes(have))) return e;
+  }
+  let best: ExistingTest | null = null;
+  let bestScore = 0;
+  for (const e of existing) {
+    const sc = titleOverlap(title, e.title);
+    if (sc > bestScore) { bestScore = sc; best = e; }
+  }
+  return bestScore >= 0.75 ? best : null;
+}
+
+/**
+ * Annotate proposed scenarios with prior-coverage flags from the repo's reuse index (mutates + returns
+ * the same array). Each scenario gets `covered` (true when an existing test already automates it) and,
+ * when covered, `coveredBy` (the existing spec/testId/title). Matches the bare scenario title AND the
+ * feature-qualified title so generic titles like "positive path" still resolve to the right feature.
+ * No index → all scenarios stay uncovered (new). Returns the count of scenarios found already covered.
+ */
+export function markCoveredScenarios(fw: string, feature: string, scenarios: Scenario[]): number {
+  const existing = existingTestTitles(fw);
+  let covered = 0;
+  for (const s of scenarios) {
+    const hit = coveringTest(s.title, existing) || coveringTest(`${feature} ${s.title}`, existing);
+    if (hit) {
+      s.covered = true;
+      s.coveredBy = { spec: hit.spec, testId: hit.testId, title: hit.title };
+      covered += 1;
+    } else {
+      s.covered = false;
+    }
+  }
+  return covered;
 }
 
 /** Locate and parse the `export const routes = { ... } as const;` map so we know which routes exist. */

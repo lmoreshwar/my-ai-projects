@@ -11,7 +11,7 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { runAgentLoop } from './agent-loop';
-import { authorPlanFromTrace, authorScenariosFromDiscovery, authorFeatureVerificationScenarios, scenariosToCases, type CodegenJob, type BlastPlanV2 } from './codegen';
+import { authorPlanFromTrace, authorScenariosFromDiscovery, authorFeatureVerificationScenarios, scenariosToCases, markCoveredScenarios, type CodegenJob, type BlastPlanV2 } from './codegen';
 import { dependencyResolutionContext, resolveCapabilityDependencies } from './capability-dependencies';
 import { detectFeatureBoundary, splitTrace, resolveFeatureStatus } from './feature-boundary';
 
@@ -89,6 +89,20 @@ When the feature needs one of these states, establish it as setup before verifyi
     for (const d of walk.diagnostics ?? []) {
       log(`[explore] ROOT CAUSE (${d.category}): ${d.headline}`);
       for (const line of d.evidence) log(`[explore]   • ${line}`);
+    }
+  }
+
+  // GAP-AWARE PLANNING: flag proposed scenarios that an existing test in the repo already automates,
+  // so the website can pre-select only the NEW ones (partial-automation top-up). Generic, evidence-only.
+  if (scenarios.length) {
+    const coveredCount = markCoveredScenarios(fw, feature, scenarios);
+    if (coveredCount) {
+      log(`[explore] gap-aware plan: ${coveredCount}/${scenarios.length} proposed scenario(s) already automated in this repo — ${scenarios.length - coveredCount} new to author.`);
+      for (const s of scenarios) {
+        if (s.covered && s.coveredBy) log(`[explore]   • "${s.title}" already covered by ${s.coveredBy.testId || s.coveredBy.title} in ${s.coveredBy.spec}`);
+      }
+    } else {
+      log(`[explore] gap-aware plan: all ${scenarios.length} proposed scenario(s) are new to this repo.`);
     }
   }
 

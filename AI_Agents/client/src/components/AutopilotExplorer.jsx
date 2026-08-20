@@ -179,11 +179,13 @@ export default function AutopilotExplorer({ apiBase, connections }) {
   }, [apiBase, job?.jobId, job?.status, job?.provider]);
 
   // When a V2 discovery plan arrives, pre-select every automation-ready scenario so the user can
-  // Proceed immediately (they can still untick). Blocked scenarios are never auto-selected.
+  // Proceed immediately (they can still untick). Blocked scenarios are never auto-selected, and
+  // scenarios an existing test already covers are left UNticked (gap-aware top-up) — the user can
+  // still tick one back on if a match looks wrong (nothing is silently dropped).
   const discoveryScenarios = Array.isArray(job?.discoveryPlan?.scenarios) ? job.discoveryPlan.scenarios : [];
   useEffect(() => {
     if (discoveryScenarios.length) {
-      setSelectedScenarios(new Set(discoveryScenarios.filter((s) => s.ready && !s.blocked).map((s) => s.id)));
+      setSelectedScenarios(new Set(discoveryScenarios.filter((s) => s.ready && !s.blocked && !s.covered).map((s) => s.id)));
     }
   }, [job?.jobId, discoveryScenarios.length]);
 
@@ -649,6 +651,11 @@ export default function AutopilotExplorer({ apiBase, connections }) {
                                 <span className={`ml-1 text-[10px] ${s.ready ? 'text-green-600' : 'text-amber-600'}`}>
                                   {s.ready ? '● automation-ready' : '○ needs a probe'}
                                 </span>
+                                {s.covered && (
+                                  <span className="ml-1 text-[10px] text-sky-600 dark:text-sky-400" title={s.coveredBy?.spec || ''}>
+                                    ✓ already automated{s.coveredBy?.testId ? ` (${s.coveredBy.testId})` : ''} — unticked; tick to re-add
+                                  </span>
+                                )}
                                 {disabled && <span className="block text-[10px] text-app-red">{s.blockedReason || 'Not automation-ready'}</span>}
                                 {steps.length > 0 && (
                                   <details className="mt-1">
