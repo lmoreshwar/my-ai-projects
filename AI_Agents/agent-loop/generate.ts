@@ -29,6 +29,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { request } from 'node:https';
 import { runAgentLoop, type AgentStep } from './agent-loop';
 import { generateFromTrace, healArtifacts, type CodegenJob, type GeneratedArtifacts } from './codegen';
@@ -150,6 +152,57 @@ export async function verifySpec(fw: string, specRel: string): Promise<{ passed:
   return { passed: code === 0, output: out };
 }
 
+/** Parse `tsc --noEmit` output into stable error identities ("file :: error TSxxxx: message"), dropping the
+ * line/col so an error's identity survives the line shifts that newly generated code introduces. */
+export function parseTscErrors(out: string): Set<string> {
+  const set = new Set<string>();
+  const re = /^(.+?)\(\d+,\d+\):\s*(error\s+TS\d+:\s*.+?)\s*$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(out)) !== null) set.add(`${m[1].trim()} :: ${m[2].trim()}`);
+  return set;
+}
+
+/** The tsc errors present now that were NOT in the pre-generation baseline — i.e. the ones the generated
+ * change introduced. Pre-existing repo debt is ignored so it can never block an otherwise-clean generation. */
+export function newTypeErrors(baseline: Set<string>, currentOutput: string): string[] {
+  return [...parseTscErrors(currentOutput)].filter((e) => !baseline.has(e));
+}
+
+/** Whole-repo TypeScript gate. Runs the target framework's OWN `tsc --noEmit` so a generated change that
+ * breaks compilation ANYWHERE in the repo (e.g. a regenerated module whose renamed method breaks a
+ * pre-existing spec) can never ship a green PR. Skipped only when SKIP_TYPECHECK=1 or the target has no
+ * tsconfig (non-TS repo). Generic — no app specifics. */
+export async function typecheckFramework(fw: string): Promise<{ passed: boolean; output: string; errors: Set<string> }> {
+  if (process.env.SKIP_TYPECHECK === '1' || !existsSync(join(fw, 'tsconfig.json'))) return { passed: true, output: '', errors: new Set() };
+  log('[generate] Type-checking the whole framework (tsc --noEmit)…');
+  const { code, out } = await run('npx', ['tsc', '--noEmit'], fw, true);
+  return { passed: code === 0, output: out, errors: parseTscErrors(out) };
+}
+
+/** Verify the generated change: the WHOLE repo must still type-check (no NEW tsc errors vs the
+ * pre-generation baseline) AND the spec must run green. tsc runs first (fast; catches compile breaks a
+ * single-spec Playwright run misses) and its NEW errors feed the same bounded self-heal loop. */
+async function verifyArtifacts(fw: string, specRel: string, baseline: Set<string>): Promise<{ passed: boolean; output: string }> {
+  const tc = await typecheckFramework(fw);
+  const introduced = newTypeErrors(baseline, tc.output);
+  if (introduced.length) {
+    log(`[generate] Type-check gate FAILED — ${introduced.length} NEW TypeScript error(s) introduced by the generated change:`);
+    for (const e of introduced) log(`  - ${e}`);
+    return {
+      passed: false,
+      output: [
+        `The generated change introduced ${introduced.length} NEW TypeScript error(s). The WHOLE framework must still`,
+        'type-check (tsc --noEmit) before this can be a green PR. Fix the ROOT cause in the generated Page/Module/Spec —',
+        'do NOT weaken assertions. If a regenerated Module changed a method other code calls, restore a compatible public',
+        'API (keep the existing method; ADD a new one for new behaviour).',
+        '',
+        ...introduced,
+      ].join('\n'),
+    };
+  }
+  return verifySpec(fw, specRel);
+}
+
 /**
  * Generate from the verified trace, run the spec, and SELF-HEAL on failure (bounded). Each heal round
  * feeds the REAL Playwright error back to the model, which fixes wiring/steps/locators — never the
@@ -159,10 +212,13 @@ export async function verifySpec(fw: string, specRel: string): Promise<{ passed:
 export async function generateVerifyHeal(
   fw: string, job: CodegenJob, trace: AgentStep[], log: (l: string) => void = console.log,
 ): Promise<{ passed: boolean; art: GeneratedArtifacts; output: string }> {
+  // Capture pre-existing type errors BEFORE generation so the gate blocks only NEW ones this change adds.
+  const baseline = (await typecheckFramework(fw)).errors;
+  if (baseline.size) log(`[generate] Framework has ${baseline.size} pre-existing type error(s); the gate will block only NEW ones.`);
   let art = await generateFromTrace(fw, job, trace, log);
   let specRel = art.files.find((f) => f.includes('/tests/')) || '';
   if (!specRel) return { passed: true, art, output: '' };
-  let verdict = await verifySpec(fw, specRel);
+  let verdict = await verifyArtifacts(fw, specRel, baseline);
 
   const MAX_HEAL_ROUNDS = 2;
   const seen = new Set<string>();
@@ -176,7 +232,7 @@ export async function generateVerifyHeal(
     if (!healed) { log('[generate] Self-heal produced nothing usable — stopping.'); break; }
     art = healed;
     specRel = art.files.find((f) => f.includes('/tests/')) || specRel;
-    verdict = await verifySpec(fw, specRel);
+    verdict = await verifyArtifacts(fw, specRel, baseline);
     log(verdict.passed ? `[generate] Re-run PASSED after self-heal ${heal}.` : `[generate] Re-run ${heal} still failing.`);
   }
   return { passed: verdict.passed, art, output: verdict.output };
