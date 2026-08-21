@@ -96,6 +96,7 @@ jobs:
           FEATURE_NAME: ${{ inputs.feature_name }}
           TESTCASES: ${{ inputs.testcases }}
           FRAMEWORK_PATH: ${{ github.workspace }}
+          BASE_BRANCH: ${{ github.ref_name }}
           # Job id → deterministic PR branch blast/auto-<jobId> so the API can find & merge this PR.
           JOB_ID: ${{ inputs.job_id }}
           # App login — injected into the browser securely; never reaches the LLM or logs.
@@ -119,3 +120,15 @@ jobs:
           path: ${{ github.workspace }}/blast-plan.json
           if-no-files-found: warn
           retention-days: 3
+
+      - name: Upload generation failure evidence
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blast-testcase-failure-evidence-${{ inputs.job_id }}
+          path: |
+            test-results/
+            ai-debug-report/
+            playwright-report/
+          if-no-files-found: warn
+          retention-days: 14
