@@ -2504,6 +2504,55 @@ function isolateNewTestsToOwnSpec(emitted, invaded, ownSpecPrior) {
 }
 
 /**
+ * DETERMINISTIC SCENARIO-ID PRESERVATION. The approved job assigns each new case an AUTHORITATIVE TC id
+ * (wantId). LLMs sometimes label the emitted test() with a reset id (e.g. TC_001) regardless of the
+ * requested id — which then trips the append-only / duplicate / integrity gates and makes TC_003…TC_005
+ * "disappear". This finds the genuinely-NEW test block (matched by the requested TITLE, else the first
+ * block that does NOT reproduce an existing prior test) and rewrites ONLY that block's id to wantId.
+ * A block that reproduces an existing prior test is NEVER touched, so existing tests stay verbatim.
+ * Returns { content, changed, from }. Pure, deterministic — no second LLM call. Generic.
+ */
+function forceRequestedScenarioId(emitted, priorSpec, wantId, wantTitle) {
+  const want = normId(wantId);
+  if (!want) return { content: emitted, changed: false, from: '' };
+  const priorTitles = specIdTitleMap(priorSpec || ''); // existing id -> normalized title
+  const blocks = specTestFullBlocks(emitted);
+  if (!blocks.length) return { content: emitted, changed: false, from: '' };
+  const stripId = (t) => normalizeText(String(t).replace(/^\s*\[?\s*TC[_-]?\d+[A-Za-z_]*\]?\s*/i, ''));
+  const wantTitleNorm = stripId(wantTitle || '');
+  // A block "reproduces" an existing prior test when it shares that id AND the SAME (verbatim) title.
+  // Exact equality — NOT token overlap — because behaviorally-opposite scenarios can share tokens
+  // (e.g. "name A to Z" vs "name Z to A"): overlap would wrongly treat the new Z-A block as a copy.
+  const reproducesPrior = (b) => {
+    const id = b.id ? normId(b.id) : '';
+    return !!id && priorTitles.has(id) && stripId(b.title) === priorTitles.get(id);
+  };
+  // Already correct: some block carries wantId and is not a mislabeled reproduction of an existing test.
+  if (blocks.some((b) => normId(b.id) === want && !reproducesPrior(b))) return { content: emitted, changed: false, from: '' };
+  // Pick the NEW block: (1) best title match to the requested scenario, else (2) first non-reproducing block.
+  let target = null;
+  if (wantTitleNorm) {
+    let best = 0;
+    for (const b of blocks) {
+      if (reproducesPrior(b)) continue;
+      const sc = titleOverlap(stripId(b.title), wantTitleNorm);
+      if (sc > best) { best = sc; target = b; }
+    }
+    if (best < 0.34) target = null; // weak match — don't guess
+  }
+  if (!target) target = blocks.find((b) => !reproducesPrior(b)) || null;
+  if (!target) return { content: emitted, changed: false, from: '' };
+  const fromId = target.id ? normId(target.id) : '';
+  if (fromId === want) return { content: emitted, changed: false, from: '' };
+  const newTitle = /TC[_-]?\d+[A-Za-z_]*/i.test(target.title)
+    ? target.title.replace(/TC[_-]?\d+[A-Za-z_]*/i, want)
+    : `${want} ${target.title}`;
+  const newSource = target.source.replace(target.title, () => newTitle);
+  if (newSource === target.source) return { content: emitted, changed: false, from: '' };
+  return { content: emitted.replace(target.source, () => newSource), changed: true, from: fromId };
+}
+
+/**
  * Canonicalize a data-source expression to a stable key so two variables that point at
  * the SAME underlying record collapse to one identity. This is what lets a locked-user
  * case written as `testData.invalidLogins.find(l => l.username === 'locked_out_user')`
@@ -4156,6 +4205,14 @@ async function coreGenerate(fw, job, log, logs) {
         }
       }
       const priorForFile = safeRead(path.join(fw, f.rel), 200000);
+      // DETERMINISTIC SCENARIO-ID PRESERVATION: the approved job id is authoritative. If the LLM
+      // labeled the NEW test with a reset id (e.g. TC_001) instead of the requested one, rewrite
+      // ONLY the new block's id to normId(tc.id). Existing tests (reproductions) are never touched.
+      const forcedId = forceRequestedScenarioId(f.content, priorForFile, normId(tc.id), tc.title);
+      if (forcedId.changed) {
+        log(`[local] 🔢 ${tc.id}: LLM emitted id ${forcedId.from || '(none)'} for the new test — deterministically normalized it to the approved scenario id ${normId(tc.id)} (existing tests untouched).`);
+        f.content = forcedId.content;
+      }
       const dups = duplicateSpecIds(f.content);
       if (dups.length) { log(`[local] ⚠ ${tc.id}: rejected spec ${f.rel} — duplicate id(s) ${dups.join(', ')}.`); return false; }
       // APPEND-ONLY GUARD: compare against the CURRENT content of THIS SAME spec file, not
@@ -5131,6 +5188,10 @@ module.exports = {
   dataVarMap,
   specTestBlocks,
   generationIntegrity,
+  forceRequestedScenarioId,
+  renumberedTests,
+  mergeNewTestsIntoSpec,
+  specTestIds,
   pushBranch,
   commitAndPushBranch,
   discardBranch,
