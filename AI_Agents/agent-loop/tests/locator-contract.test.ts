@@ -15,7 +15,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertProvenInteractionLocators } from '../codegen';
+import { assertProvenInteractionLocators, assertUniqueNamedRoleLocators, ambiguousSnapshotRoleNames } from '../codegen';
 import { deriveLocatorScopeHint, interactionEvidenceForRef } from '../agent-loop';
 import type { AgentStep, InteractionEvidence } from '../agent-loop';
 
@@ -175,4 +175,82 @@ test('capture ➜ gate: an unnamed switch snapshot rejects the bare locator and 
   );
   // … and accepts the proven, label-scoped target the contract captured.
   assert.doesNotThrow(() => assertProvenInteractionLocators(files(`await this.${ev.locatorEvidence}.check();`), trace));
+});
+
+/* ── 8. GATE: named-role AMBIGUITY (image link + title link share one accessible name) ─────────── */
+
+// A SauceDemo-style inventory snapshot: each item exposes its name on BOTH an image link (name from its
+// alt text) and a text/title link, so getByRole('link', { name }) resolves to 2 elements. Generic a11y tree.
+const INVENTORY_SNAPSHOT = `
+- main:
+  - list:
+    - listitem:
+      - link "Sauce Labs Backpack":
+        - img "Sauce Labs Backpack"
+      - link "Sauce Labs Backpack"
+      - text: "$29.99"
+    - listitem:
+      - link "Sauce Labs Bike Light":
+        - img "Sauce Labs Bike Light"
+      - link "Sauce Labs Bike Light"
+      - text: "$9.99"
+- link "Open Menu"
+`.trim();
+
+const snap = (result: string): AgentStep => ({ tool: 'snapshot', args: {}, result });
+
+test('ambiguousSnapshotRoleNames flags a (role,name) that appears twice in ONE snapshot', () => {
+  const amb = ambiguousSnapshotRoleNames([snap(INVENTORY_SNAPSHOT)]);
+  assert.ok(amb.has('link\u0000Sauce Labs Backpack'), 'the dual image+title link must be flagged');
+  assert.ok(amb.has('link\u0000Sauce Labs Bike Light'));
+  assert.ok(!amb.has('link\u0000Open Menu'), 'a unique link must NOT be flagged');
+});
+
+test('ambiguousSnapshotRoleNames counts PER snapshot — a unique name seen in two snapshots is not flagged', () => {
+  const one = snap('- link "Sauce Labs Backpack"\n- text: "$29.99"');
+  const two = snap('- link "Sauce Labs Backpack"\n- text: "$29.99"');
+  const amb = ambiguousSnapshotRoleNames([one, two]);
+  assert.equal(amb.size, 0, 'the same UNIQUE element captured across snapshots must not look like a duplicate');
+});
+
+test('assertUniqueNamedRoleLocators REJECTS a bare named getByRole(link) that matches image + title link', () => {
+  const trace = [snap(INVENTORY_SNAPSHOT)];
+  assert.throws(
+    () => assertUniqueNamedRoleLocators(files("backpackLink = (): Locator => this.page.getByRole('link', { name: 'Sauce Labs Backpack' });"), trace),
+    /getByRole\('link', \{ name: 'Sauce Labs Backpack' \}\)[\s\S]*resolved to N elements[\s\S]*getByText/,
+    'the ambiguous product-title role locator must be rejected with the data-test / getByText remedy',
+  );
+});
+
+test('assertUniqueNamedRoleLocators ACCEPTS the getByText title target (only the title, not the alt-named image)', () => {
+  const trace = [snap(INVENTORY_SNAPSHOT)];
+  assert.doesNotThrow(
+    () => assertUniqueNamedRoleLocators(files("backpackTitle = (): Locator => this.page.getByText('Sauce Labs Backpack', { exact: true });"), trace),
+  );
+});
+
+test('assertUniqueNamedRoleLocators ACCEPTS a stable data-test locator', () => {
+  const trace = [snap(INVENTORY_SNAPSHOT)];
+  assert.doesNotThrow(
+    () => assertUniqueNamedRoleLocators(files(`backpackTitle = (): Locator => this.page.locator('[data-test="item-4-title-link"]');`), trace),
+  );
+});
+
+test('assertUniqueNamedRoleLocators ACCEPTS a SCOPED named role locator (a call sits between page. and getByRole)', () => {
+  const trace = [snap(INVENTORY_SNAPSHOT)];
+  const scoped = "row = (): Locator => this.page.locator('.inventory_item', { hasText: 'Sauce Labs Backpack' }).getByRole('link', { name: 'Sauce Labs Backpack' });";
+  assert.doesNotThrow(() => assertUniqueNamedRoleLocators(files(scoped), trace));
+});
+
+test('assertUniqueNamedRoleLocators stays silent when the named role is UNIQUE in the snapshot', () => {
+  const trace = [snap(INVENTORY_SNAPSHOT)];
+  assert.doesNotThrow(
+    () => assertUniqueNamedRoleLocators(files("menu = (): Locator => this.page.getByRole('link', { name: 'Open Menu' });"), trace),
+  );
+});
+
+test('assertUniqueNamedRoleLocators is a no-op when there is no snapshot evidence', () => {
+  assert.doesNotThrow(
+    () => assertUniqueNamedRoleLocators(files("backpackLink = (): Locator => this.page.getByRole('link', { name: 'Sauce Labs Backpack' });"), []),
+  );
 });

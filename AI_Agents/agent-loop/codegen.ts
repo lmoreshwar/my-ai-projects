@@ -704,6 +704,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- LOCATOR STRATEGY (Playwright official priority — pick the HIGHEST-priority strategy the element ACTUALLY supports; fall back only when a higher one does not exist): (1) getByTestId() when the app exposes data-testid/data-test/data-qa; (2) getByRole(role, { name }) for interactive elements (button/link/textbox/checkbox/radio/menuitem/option) — the PRIMARY strategy; (3) getByLabel() for form fields with a real <label>; (4) getByPlaceholder() only when no label/role/testid; (5) getByText({ exact: true }) for static content/links; (6) getByAltText() for images; (7) CSS/XPath LAST RESORT and only SCOPED/chained (e.g. locator(".row", { hasText: "Admin" }).getByRole("textbox")). Default to ONE strategy per element; do NOT stack.',
     '- NEVER write a locator containing an auto-generated id/hash/framework class (e.g. #react-select-3, .MuiButton-root-482, .css-1a2b3c, numeric-suffix classes) — they change every build. Prefer role/label/text even when such an id is visible. NEVER a bare brittle class name.',
     '- DISAMBIGUATION: if a role/text locator matches MANY elements (tables, repeated rows, form fields with no distinct name), SCOPE from a stable parent (row/section/dialog/labelled group) and chain. For every [AMBIGUOUS ...] trace entry, use the supplied EXACT label-anchored Page locator; it was derived by climbing the live snapshot tree to the nearest distinguishing label and then selecting that label\'s nearest container with the target control. NEVER use .nth(), .first(), or .last() in a generated Page locator.',
+    '- ITEM/CARD TITLE vs IMAGE LINK: in a repeated list/grid the item IMAGE link and the item TITLE link often share ONE accessible name (the image link\'s name comes from its alt text), so a bare getByRole(\'link\', { name }) resolves to BOTH — a strict-mode violation on .textContent()/.click(). To read or click a SINGLE item title, target its TEXT via getByText(name, { exact: true }) (matches only the title, not the alt-named image) or the item\'s stable data-test/testid title target — NEVER the bare named role. For ALL item names, use the repeated-item collection locator (a data-test shared by every item name) with .allTextContents()/.count(), not a per-name role locator.',
     '- DROPDOWNS: detect from the live snapshot whether it is a native <select> (use this.actions.selectOption) or a custom JS dropdown (React-select/MUI/PrimeNG/OXD — click-to-open then getByRole("option", { name }) via this.workflowActions.selectDropdownOption / this.workflowActions.searchAndSelectOption). Never assume one pattern.',
     '- IFRAMES/SHADOW DOM: if the target is inside an iframe or shadow root (per the snapshot), use frameLocator()/shadow-piercing correctly — never fall back to a wrong-scope locator. WAITING: rely on Playwright auto-waiting; never use fixed sleeps — only waitFor(state) for genuinely async/animated UI, with a `// reason:` note.',
     '- Every generated Page locator MUST be based on the verified live explore evidence. Copy a non-positional echoed locator verbatim. When an action has an [AMBIGUOUS ...] scope hint, use its exact supplied locator instead of the CLI echo (which may use .first(), .last(), or .nth()). Never re-guess a locator.',
@@ -955,6 +956,41 @@ export function assertProvenInteractionLocators(artFiles: Array<{ file: string; 
       + `${why}. Do NOT use generic getByRole('${ev.semanticRole}'). Reuse the EXACT live interaction target `
       + `captured during exploration: ${ev.locatorEvidence || '(the label-scoped locator from the trace)'}.`,
     );
+  }
+}
+
+/**
+ * A NAMED getByRole('<role>', { name }) chained DIRECTLY off the page is a strict-mode trap when the live
+ * a11y snapshot shows that SAME (role, name) on >=2 elements — the classic image-link + title-link pair that
+ * share one accessible name (SauceDemo item-N-img-link + item-N-title-link both named "Sauce Labs Backpack").
+ * getByRole then resolves to 2 elements and every .textContent()/.click() throws. This rejects that locator
+ * BEFORE Playwright runs so the repair loop switches to the INTENDED element's stable target. A SCOPED
+ * locator (a call sits between `page.` and `.getByRole`, e.g. page.locator('.row').getByRole(...)) is left
+ * alone. Evidence-only — driven by the captured snapshot, never app selectors.
+ */
+export function assertUniqueNamedRoleLocators(artFiles: Array<{ file: string; content: string }>, trace: AgentStep[]): void {
+  const ambiguous = ambiguousSnapshotRoleNames(trace);
+  if (!ambiguous.size) return;
+  // page.getByRole('role', { name: '…' }) / this.page.getByRole(...) chained DIRECTLY off the page (no
+  // scoping call in between). Quote-balanced name capture; a regex name (/…/) has no quote and is skipped.
+  const NAMED = /(?:this\.)?page\.getByRole\(\s*['"]([\w-]+)['"]\s*,\s*\{[^}]*?\bname\s*:\s*(['"])((?:\\.|(?!\2).)*)\2/g;
+  const unescape = (s: string): string => s.replace(/\\(['"\\])/g, '$1');
+  for (const { file, content } of artFiles) {
+    NAMED.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = NAMED.exec(content)) !== null) {
+      const role = m[1];
+      const name = unescape(m[3]);
+      if (!ambiguous.has(`${role}\u0000${name}`)) continue;
+      throw new Error(
+        `Codegen: getByRole('${role}', { name: '${name}' }) in ${file} matches >=2 elements in the live snapshot `
+        + '(an image/icon link and a text/title link share this accessible name), so Playwright throws a strict-mode '
+        + 'violation ("resolved to N elements"). Do NOT use a bare named role here and NEVER .first()/.nth()/.last(). '
+        + "Use the INTENDED element's stable data-test/testid, or its exact TEXT via getByText(name, { exact: true }) "
+        + "for a title/name read (the image link's name comes from alt text, so getByText hits only the title). For "
+        + "ALL item names use the repeated item's data-test collection locator with .allTextContents()/.count().",
+      );
+    }
   }
 }
 
@@ -1295,6 +1331,34 @@ export function snapshotRoleNameLocators(trace: AgentStep[]): string[] {
     }
   }
   return out;
+}
+
+/**
+ * Accessible (role, name) pairs that occur >=2x WITHIN A SINGLE captured a11y snapshot. A bare
+ * getByRole(role, { name }) for one of these is a strict-mode trap: e.g. a repeated list/grid item's
+ * IMAGE link and TITLE link expose ONE shared accessible name (SauceDemo `item-N-img-link` +
+ * `item-N-title-link` both named "Sauce Labs Backpack"), so the locator resolves to 2 elements. Counting
+ * is PER snapshot so a UNIQUE element captured across several snapshots is never mistaken for a duplicate.
+ * Evidence-only, app-agnostic — parses just the snapshot text the agent actually captured.
+ */
+export function ambiguousSnapshotRoleNames(trace: AgentStep[]): Set<string> {
+  const LINE = /^\s*-\s+([a-z][a-z-]*)\s+"((?:[^"\\]|\\.)*)"/;
+  const ambiguous = new Set<string>();
+  for (const step of trace) {
+    const result = String(step.result || '');
+    if (step.tool !== 'snapshot' && !/###\s*Snapshot|```yaml/.test(result)) continue;
+    const counts = new Map<string, number>();
+    for (const raw of result.split('\n')) {
+      const m = raw.match(LINE);
+      if (!m) continue;
+      const [, role, name] = m;
+      if (role === 'generic' || !name) continue;
+      const key = `${role}\u0000${name}`;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    for (const [key, n] of counts) if (n >= 2) ambiguous.add(key);
+  }
+  return ambiguous;
 }
 
 /** A live-snapshot node line: `- role "accessible name"` (nameless structural `generic` nodes excluded). */
@@ -2329,6 +2393,7 @@ function runQualityGates(fw: string, job: CodegenJob, trace: AgentStep[], candid
   assertPageObjectContracts(fw, { page, module: moduleFile, spec }, trace, job.discoveryEvidence);
   assertAssertionsMatchDestinationPage(candidate, trace);
   assertProvenInteractionLocators([page, moduleFile, spec], trace);
+  assertUniqueNamedRoleLocators([page, moduleFile, spec], trace);
   // Every named import must resolve to a real export — prevents the `undefined` runtime read.
   assertImportsResolve(fw, [
     { dir: artifactDir(page.file, 'src/pages'), file: page.file, content: page.content },
@@ -2475,6 +2540,11 @@ function buildHealUserPrompt(currentFiles: string, failureOutput: string): strin
     '  closest REAL control from the verified trace; if none matches the intent, remove that invalid step.',
     '- "<obj>.<method> is not a function": the method does not exist — define it on the owning Page/Module (return the',
     '  FULL file) or call an existing method; never add methods to the shared wrappers.',
+    '- "strict mode violation: ... resolved to N elements": your locator matches MORE THAN ONE element. Playwright',
+    '  prints each match with its exact stable locator ("... aka locator(\'[data-test=...]\')"). Pick the ONE the step',
+    '  INTENDS and REPLACE the ambiguous locator with that exact stable locator: for a name/title/text read or click,',
+    '  choose the TEXT/title match (whose id/data-test does NOT contain img/image/icon/thumb), NOT the image link.',
+    '  NEVER disambiguate with .first()/.last()/.nth().',
     '',
     '## Current files on disk',
     currentFiles,
