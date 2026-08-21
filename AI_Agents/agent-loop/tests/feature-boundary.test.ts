@@ -15,6 +15,7 @@ import {
   detectFeatureBoundary, detectSubmitCompletion, splitTrace, resolveFeatureStatus,
   featureIntentIsExit, detectExitCompletion, looksLikeLoginLanding,
   featureActionVerbs, featureIsActionIntent, detectActionCompletion, snapshotHasValidationError,
+  featureIsApplicationItself,
 } from '../feature-boundary';
 import { authorFeatureVerificationScenarios } from '../codegen';
 import type { AgentStep } from '../agent-loop';
@@ -441,4 +442,55 @@ test('25. an action whose resulting screen shows a validation error is not a com
   assert.equal(act, null);
   const b = detectFeatureBoundary('Remove Product from Cart', INVENTORY, walk, errored);
   assert.equal(b.acceptanceVerified, false);
+});
+
+// 26. FEATURE == THE APPLICATION ITSELF. When the job's feature name is the app/site name (e.g.
+//     "SauceDemo" on saucedemo.com) there is no inner page whose path/heading carries that name, so the
+//     destination-token arm can never confirm it and every self-reported "passed" was wrongly rejected
+//     (real failure: run 32505009740 exhausted the alternative-approach budget after login+sort worked).
+//     Acceptance now = got past the entry/login screen onto real in-app content. Fully generic.
+const APP_ROOT = 'https://www.saucedemo.com/';
+const APP_LOGIN_PAGE = `
+- textbox "Username" [ref=e1]
+- textbox "Password" [ref=e2]
+- button "Login" [ref=e3]
+`.trim();
+const APP_INVENTORY_CONTENT = `
+- combobox "Sort" [ref=e9]
+- list [ref=e10]:
+  - listitem "Sauce Labs Backpack" [ref=e11]
+  - listitem "Sauce Labs Bike Light" [ref=e12]
+`.trim();
+
+function appNameWalk(): AgentStep[] {
+  return [
+    step({ tool: 'snapshot', args: {}, context: APP_LOGIN_PAGE, url: APP_ROOT }),
+    step({ tool: 'fill', args: {}, url: APP_ROOT }),
+    step({ tool: 'click', args: {}, locator: "getByRole('button', { name: 'Login' })", url: INVENTORY }),
+    step({ tool: 'snapshot', args: { acceptance: true }, context: APP_INVENTORY_CONTENT, url: INVENTORY }),
+  ];
+}
+
+test('26a. featureIsApplicationItself is true only when the feature name IS the site host', () => {
+  assert.equal(featureIsApplicationItself('SauceDemo', APP_ROOT), true);
+  assert.equal(featureIsApplicationItself('View Cart', APP_ROOT), false);      // real sub-feature
+  assert.equal(featureIsApplicationItself('Product Sorting', APP_ROOT), false); // action feature
+  assert.equal(featureIsApplicationItself('SauceDemo', ''), false);            // no host
+  assert.equal(featureIsApplicationItself('Cart', APP_ROOT), false);           // token not in host
+});
+
+test('26b. app-name feature is verified once past the login screen onto real content', () => {
+  const b = detectFeatureBoundary('SauceDemo', APP_ROOT, appNameWalk());
+  assert.equal(b.acceptanceVerified, true);
+  assert.equal(b.completionIndex, 3);          // the post-login inventory snapshot
+  assert.equal(b.targetUrl, INVENTORY);
+  assert.equal(b.completedViaAction, false);   // verified via in-app content, not an action verb
+  assert.equal(resolveFeatureStatus('failed', b), 'passed');
+});
+
+test('26c. app-name feature is NOT verified while still on the login/landing screen', () => {
+  const loginOnly = [step({ tool: 'snapshot', args: {}, context: APP_LOGIN_PAGE, url: APP_ROOT })];
+  const b = detectFeatureBoundary('SauceDemo', APP_ROOT, loginOnly);
+  assert.equal(b.acceptanceVerified, false);
+  assert.match(b.reason, /never reached/);
 });

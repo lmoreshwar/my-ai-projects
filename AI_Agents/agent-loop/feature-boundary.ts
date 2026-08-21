@@ -142,6 +142,29 @@ export function featureIsActionIntent(feature: string): boolean {
   return featureActionVerbs(f).length > 0 || EXIT_CONTROL_RE.test(f) || LOGIN_CONTROL_RE.test(f);
 }
 
+/** The host of a URL (no scheme/path/query), lowercased; '' for a relative URL. */
+function urlHost(url: string): string {
+  const m = String(url || '').trim().toLowerCase().match(/^[a-z]+:\/\/([^/]+)/);
+  return m ? m[1] : '';
+}
+
+/**
+ * Whether the requested "feature" is really the APPLICATION/SITE itself — its name matches the host of
+ * the app URL (e.g. feature "SauceDemo" on https://www.saucedemo.com). Such a feature has NO distinct
+ * inner target page whose path or heading carries the site's own name (apps rarely brand inner pages
+ * with their domain), so destination-token matching can NEVER confirm it. When true, acceptance falls
+ * back to "got past the entry/login screen onto real in-app content". Fully generic: compares the
+ * feature's flattened tokens to the flattened host — no application- or feature-name-specific rules.
+ */
+export function featureIsApplicationItself(feature: string, initialUrl: string): boolean {
+  if (featureIsActionIntent(feature)) return false; // an action feature is verified by its action, not this
+  const host = urlHost(initialUrl).replace(/[^a-z0-9]/g, '');
+  if (!host) return false;
+  const flat = featureTokens(feature).join('');
+  if (flat.length < 4) return false; // too short to be a confident site-name match
+  return host.includes(flat);
+}
+
 /** The path portion of a URL (no scheme/host/query/hash), lowercased. Robust to relative URLs. */
 function urlPath(url: string): string {
   let s = String(url || '').trim().toLowerCase();
@@ -592,6 +615,21 @@ export function detectFeatureBoundary(feature: string, initialUrl: string, steps
       completedViaAction = true;
       completedViaRedirect = act.via === 'commit';
       completedViaExit = act.via === 'verb' && featureIntentIsExit(feature);
+    }
+  } else if (featureIsApplicationItself(feature, initialUrl)) {
+    // FEATURE == THE APPLICATION ITSELF (its name matches the app host, e.g. "SauceDemo" on
+    // saucedemo.com). No inner page carries the site's own name in its path/heading, so destination-token
+    // matching can NEVER confirm it. Acceptance = the walk got PAST the entry/login screen onto a real
+    // in-app content page. Generic — derived from feature-vs-host + live content/login signals only.
+    let currentUrl = initialUrl || '';
+    for (let i = 0; i < steps.length; i += 1) {
+      const step = steps[i];
+      if (step.url) currentUrl = step.url;
+      if (!step.context) continue;
+      if (looksLikeLoginLanding(step.context, currentUrl)) continue; // still on the entry/login screen
+      if (!snapshotHasContent(step.context)) continue;               // shell/empty page — not verified yet
+      featureStartIndex = i; targetUrl = currentUrl; completionIndex = i;
+      break;
     }
   } else {
     // FALLBACK — DESTINATION CONTENT (only for a pure view/navigation feature that has no single discrete
