@@ -15,7 +15,14 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertProvenInteractionLocators, assertUniqueNamedRoleLocators, ambiguousSnapshotRoleNames } from '../codegen';
+import {
+  assertProvenInteractionLocators,
+  assertUniqueNamedRoleLocators,
+  ambiguousSnapshotRoleNames,
+  assertCollectionReadsUseCollectionLocators,
+  assertNoSelfReferentialSortAssertion,
+  singleTargetNamedPageMembers,
+} from '../codegen';
 import { deriveLocatorScopeHint, interactionEvidenceForRef } from '../agent-loop';
 import type { AgentStep, InteractionEvidence } from '../agent-loop';
 
@@ -253,4 +260,96 @@ test('assertUniqueNamedRoleLocators is a no-op when there is no snapshot evidenc
   assert.doesNotThrow(
     () => assertUniqueNamedRoleLocators(files("backpackLink = (): Locator => this.page.getByRole('link', { name: 'Sauce Labs Backpack' });"), []),
   );
+});
+
+/* ── 9. GATE: collection-read hygiene (a collection read backed by a single named/text locator) ──── */
+
+// The EXACT live SauceDemo Name-sort defect: productNames() is a single named LINK, so .allTextContents()
+// matches the item image link (empty text) + title link → ["", "Sauce Labs Backpack"]. Generic fixtures.
+const BUGGY_PAGE = "export class SauceDemoPage {\n  productNames = (): Locator => this.page.getByRole('link', { name: 'Sauce Labs Backpack' });\n}";
+const GOOD_TESTID_PAGE = "export class SauceDemoPage {\n  productNames = (): Locator => this.page.getByTestId('inventory-item-name');\n}";
+const GOOD_CSS_PAGE = 'export class SauceDemoPage {\n  productNames = (): Locator => this.page.locator(\'[data-test="inventory-item-name"]\');\n}';
+const BARE_ROLE_PAGE = "export class SauceDemoPage {\n  productNames = (): Locator => this.page.getByRole('link');\n}";
+const BUGGY_TEXT_PAGE = "export class SauceDemoPage {\n  productNames = (): Locator => this.page.getByText('Sauce Labs Backpack', { exact: true });\n}";
+const METHOD_STYLE_PAGE = "export class SauceDemoPage {\n  productNames(): Locator {\n    return this.page.getByRole('link', { name: 'Sauce Labs Backpack' });\n  }\n}";
+const READ_MODULE = 'export class SauceDemoModule {\n  async productNames(): Promise<string[]> {\n    return this.sauceDemoPage.productNames().allTextContents();\n  }\n}';
+const COUNT_MODULE = 'export class SauceDemoModule {\n  async productCount(): Promise<number> {\n    return this.sauceDemoPage.productNames().count();\n  }\n}';
+const CLICK_MODULE = 'export class SauceDemoModule {\n  async openBackpack(): Promise<void> {\n    await this.actions.click(this.sauceDemoPage.productNames());\n  }\n}';
+
+const pf = (content: string, file = 'SauceDemoPage.ts'): { file: string; content: string } => ({ file, content });
+const mf = (content: string, file = 'SauceDemoModule.ts'): { file: string; content: string } => ({ file, content });
+
+test('assertCollectionReadsUseCollectionLocators REJECTS .allTextContents() on a single named LINK getter', () => {
+  assert.throws(
+    () => assertCollectionReadsUseCollectionLocators(pf(BUGGY_PAGE), [mf(READ_MODULE)]),
+    /collection read[\s\S]*backed by a SINGLE-element locator[\s\S]*getByTestId/,
+    'the live productNames() named-link bug must be rejected with the collection-locator remedy',
+  );
+});
+
+test('assertCollectionReadsUseCollectionLocators REJECTS .count() on a getByText literal getter', () => {
+  assert.throws(
+    () => assertCollectionReadsUseCollectionLocators(pf(BUGGY_TEXT_PAGE), [mf(COUNT_MODULE)]),
+    /backed by a SINGLE-element locator \(getByText/,
+  );
+});
+
+test('assertCollectionReadsUseCollectionLocators REJECTS a method-style single named getter', () => {
+  assert.throws(
+    () => assertCollectionReadsUseCollectionLocators(pf(METHOD_STYLE_PAGE), [mf(READ_MODULE)]),
+    /backed by a SINGLE-element locator/,
+  );
+});
+
+test('assertCollectionReadsUseCollectionLocators ACCEPTS a getByTestId collection getter', () => {
+  assert.doesNotThrow(() => assertCollectionReadsUseCollectionLocators(pf(GOOD_TESTID_PAGE), [mf(READ_MODULE)]));
+});
+
+test('assertCollectionReadsUseCollectionLocators ACCEPTS a data-test CSS collection getter', () => {
+  assert.doesNotThrow(() => assertCollectionReadsUseCollectionLocators(pf(GOOD_CSS_PAGE), [mf(READ_MODULE)]));
+});
+
+test('assertCollectionReadsUseCollectionLocators ACCEPTS a bare getByRole(link) with no name', () => {
+  assert.doesNotThrow(() => assertCollectionReadsUseCollectionLocators(pf(BARE_ROLE_PAGE), [mf(READ_MODULE)]));
+});
+
+test('assertCollectionReadsUseCollectionLocators is a NO-OP when the single named getter is only CLICKED', () => {
+  // A single named locator is CORRECT for a click — the gate fires ONLY on a collection read of it.
+  assert.doesNotThrow(() => assertCollectionReadsUseCollectionLocators(pf(BUGGY_PAGE), [mf(CLICK_MODULE)]));
+});
+
+test('singleTargetNamedPageMembers detects named-role and text getters, not collections', () => {
+  assert.ok(singleTargetNamedPageMembers(BUGGY_PAGE).has('productNames'), 'named-role getter is single-target');
+  assert.ok(singleTargetNamedPageMembers(BUGGY_TEXT_PAGE).has('productNames'), 'getByText literal getter is single-target');
+  assert.ok(!singleTargetNamedPageMembers(GOOD_TESTID_PAGE).has('productNames'), 'getByTestId is a collection strategy');
+  assert.ok(!singleTargetNamedPageMembers(BARE_ROLE_PAGE).has('productNames'), 'a bare role (no name) is a collection strategy');
+});
+
+/* ── 10. GATE: tautological ordering assertion (compare a value to its OWN sorted copy) ──────────── */
+
+const specWith = (assertion: string, file = 'sauceDemo.spec.ts'): { file: string; content: string } => ({
+  file,
+  content: `test('sort', async ({ page }) => {\n  const productNames = await m.productNames();\n  ${assertion}\n});`,
+});
+
+test('assertNoSelfReferentialSortAssertion REJECTS expect(x).toEqual([...x].sort(desc)) — the live Z-A bug', () => {
+  assert.throws(
+    () => assertNoSelfReferentialSortAssertion(specWith('expect(productNames).toEqual([...productNames].sort((a, b) => b.localeCompare(a)));')),
+    /tautological ordering assertion[\s\S]*INDEPENDENT expected order/,
+  );
+});
+
+test('assertNoSelfReferentialSortAssertion REJECTS the .slice().sort(), Array.from().sort() and .reverse() forms', () => {
+  assert.throws(() => assertNoSelfReferentialSortAssertion(specWith('expect(names).toEqual(names.slice().sort());')), /tautological/);
+  assert.throws(() => assertNoSelfReferentialSortAssertion(specWith('expect(names).toEqual(Array.from(names).sort());')), /tautological/);
+  assert.throws(() => assertNoSelfReferentialSortAssertion(specWith('expect(names).toEqual([...names].reverse());')), /tautological/);
+});
+
+test('assertNoSelfReferentialSortAssertion ACCEPTS a comparison to an INDEPENDENT expected array', () => {
+  assert.doesNotThrow(() => assertNoSelfReferentialSortAssertion(specWith('expect(productNames).toEqual(expectedSortedNames);')));
+});
+
+test('assertNoSelfReferentialSortAssertion ACCEPTS a sort of a DIFFERENT array (not the asserted value)', () => {
+  // Comparing the observed list to a sorted copy of a SEPARATELY-captured baseline is legitimate.
+  assert.doesNotThrow(() => assertNoSelfReferentialSortAssertion(specWith('expect(sortedNames).toEqual([...originalNames].sort());')));
 });

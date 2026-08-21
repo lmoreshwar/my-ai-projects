@@ -705,6 +705,8 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- NEVER write a locator containing an auto-generated id/hash/framework class (e.g. #react-select-3, .MuiButton-root-482, .css-1a2b3c, numeric-suffix classes) — they change every build. Prefer role/label/text even when such an id is visible. NEVER a bare brittle class name.',
     '- DISAMBIGUATION: if a role/text locator matches MANY elements (tables, repeated rows, form fields with no distinct name), SCOPE from a stable parent (row/section/dialog/labelled group) and chain. For every [AMBIGUOUS ...] trace entry, use the supplied EXACT label-anchored Page locator; it was derived by climbing the live snapshot tree to the nearest distinguishing label and then selecting that label\'s nearest container with the target control. NEVER use .nth(), .first(), or .last() in a generated Page locator.',
     '- ITEM/CARD TITLE vs IMAGE LINK: in a repeated list/grid the item IMAGE link and the item TITLE link often share ONE accessible name (the image link\'s name comes from its alt text), so a bare getByRole(\'link\', { name }) resolves to BOTH — a strict-mode violation on .textContent()/.click(). To read or click a SINGLE item title, target its TEXT via getByText(name, { exact: true }) (matches only the title, not the alt-named image) or the item\'s stable data-test/testid title target — NEVER the bare named role. For ALL item names, use the repeated-item collection locator (a data-test shared by every item name) with .allTextContents()/.count(), not a per-name role locator.',
+    '- LIST/COLLECTION READS (counts, sorting, "all items", table columns): read EVERY row through ONE COLLECTION locator — the SHARED data-test/testid/class every item exposes on its TEXT node (e.g. getByTestId(\'inventory-item-name\') or locator(\'[data-test="inventory-item-name"]\')) — consumed with .allTextContents()/.count(). NEVER back a collection getter with a single-item getByRole(role, { name }) or getByText(\'literal\'): a literal name hardcodes ONE runtime value (so the "collection" only ever sees that one row) and, for a link, ALSO matches the item image link (empty text) so an empty "" contaminates .allTextContents(). A collection getter returns MANY elements; it is never a single named element.',
+    '- ORDERING/SORTING ASSERTIONS: verify order against an INDEPENDENT expected sequence, never the array\'s own re-sort. Read the collection, assert it is non-empty AND its .length equals the number of items observed, then assert it equals the SAME verified item names sorted by the rule under test. NEVER write expect(x).toEqual([...x].sort(...)) or expect(x).toEqual(x.slice().sort(...)) — comparing a value to a sorted copy of ITSELF is a tautology that proves nothing and FALSE-PASSES an already-ordered list.',
     '- DROPDOWNS: detect from the live snapshot whether it is a native <select> (use this.actions.selectOption) or a custom JS dropdown (React-select/MUI/PrimeNG/OXD — click-to-open then getByRole("option", { name }) via this.workflowActions.selectDropdownOption / this.workflowActions.searchAndSelectOption). Never assume one pattern.',
     '- IFRAMES/SHADOW DOM: if the target is inside an iframe or shadow root (per the snapshot), use frameLocator()/shadow-piercing correctly — never fall back to a wrong-scope locator. WAITING: rely on Playwright auto-waiting; never use fixed sleeps — only waitFor(state) for genuinely async/animated UI, with a `// reason:` note.',
     '- Every generated Page locator MUST be based on the verified live explore evidence. Copy a non-positional echoed locator verbatim. When an action has an [AMBIGUOUS ...] scope hint, use its exact supplied locator instead of the CLI echo (which may use .first(), .last(), or .nth()). Never re-guess a locator.',
@@ -991,6 +993,126 @@ export function assertUniqueNamedRoleLocators(artFiles: Array<{ file: string; co
         + "ALL item names use the repeated item's data-test collection locator with .allTextContents()/.count().",
       );
     }
+  }
+}
+
+/** Playwright APIs that read/count MANY elements at once — a getter used with one MUST be a collection. */
+const COLLECTION_READ_APIS = ['allTextContents', 'allInnerTexts', 'all', 'count'];
+
+/** Single-target text strategies — each resolves to ONE element by a literal name/text (never a collection). */
+const SINGLE_TARGET_BY_TEXT = new Set(['getByText', 'getByLabel', 'getByPlaceholder', 'getByTitle', 'getByAltText']);
+
+/** True when an args string starts with a STRING literal (quote/backtick) — a hardcoded single value. */
+function startsWithStringLiteral(args: string): boolean {
+  return /^\s*['"`]/.test(String(args || ''));
+}
+
+/** True when a getByRole(...) args string carries a name option whose value is a STRING literal. */
+function roleHasLiteralName(args: string): boolean {
+  return /\bname\s*:\s*['"`]/.test(String(args || ''));
+}
+
+/** Reduce a Page member's source (arrow getter, method body, or property initializer) to its locator expression. */
+function pageMemberLocatorExpr(member: ts.ClassElement, source: ts.SourceFile): string {
+  let src = pageMemberLocatorSource(member, source) || '';
+  const arrowIdx = src.indexOf('=>');
+  if (arrowIdx >= 0) src = src.slice(arrowIdx + 2);
+  src = src.trim();
+  if (src.startsWith('{')) {
+    const ret = src.match(/return\s+([\s\S]+?);/);
+    src = ret ? ret[1] : src.replace(/^\{|\}$/g, '');
+  }
+  return src.trim().replace(/^this\./, '').replace(/^page\./, '');
+}
+
+/**
+ * Public Page members whose locator resolves to a SINGLE named/text element — its terminal strategy is a
+ * getByRole(role, { name: 'literal' }) or a getByText/Label/Placeholder/Title/AltText('literal'). Keyed by
+ * member name → a short description of the offending strategy. A collection-capable terminal (getByTestId, a
+ * bare getByRole with no name, locator('.css')) is NOT single-target and is intentionally excluded. Generic.
+ */
+export function singleTargetNamedPageMembers(pageContent: string): Map<string, string> {
+  const out = new Map<string, string>();
+  const source = ts.createSourceFile('page.ts', String(pageContent || ''), ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const cls = source.statements.find((s): s is ts.ClassDeclaration => ts.isClassDeclaration(s) && !!s.name);
+  if (!cls) return out;
+  for (const member of cls.members) {
+    if (hasNonPublicModifier(member) || hasStaticModifier(member)) continue;
+    const name = sourceMemberName(member.name);
+    if (!name) continue;
+    const expr = pageMemberLocatorExpr(member, source);
+    if (!expr) continue;
+    const terminal = [...splitLocatorChain(expr)].reverse().find((s) => s.name.startsWith('getBy') || s.name === 'locator');
+    if (!terminal) continue;
+    if (terminal.name === 'getByRole' && roleHasLiteralName(terminal.args)) {
+      out.set(name, "getByRole(..., { name: '…' })");
+    } else if (SINGLE_TARGET_BY_TEXT.has(terminal.name) && startsWithStringLiteral(terminal.args)) {
+      out.set(name, `${terminal.name}('…')`);
+    }
+  }
+  return out;
+}
+
+/**
+ * COLLECTION-READ HYGIENE gate. A Page getter consumed by a Playwright collection API (.allTextContents(),
+ * .allInnerTexts(), .all(), .count()) MUST resolve to a real collection. Reject when that getter's locator is
+ * a SINGLE named/text element (getByRole(role,{name:'…'}) or getByText/Label/…('…')): a named link ALSO
+ * matches its sibling image link, so .allTextContents() leaks an empty "" (the live SauceDemo Name-sort
+ * failure — productNames() = getByRole('link', { name: 'Sauce Labs Backpack' }) returned ["", "Sauce Labs
+ * Backpack"]); and a literal name HARDCODES one runtime item so the "collection" can never see the others.
+ * Deterministic + evidence-independent — it inspects the generated code's own shape, so it holds even when no
+ * snapshot was captured. Generic across every application.
+ */
+export function assertCollectionReadsUseCollectionLocators(
+  page: { file: string; content: string },
+  consumers: Array<{ file: string; content: string }>,
+): void {
+  const singleTarget = singleTargetNamedPageMembers(page.content);
+  if (!singleTarget.size) return;
+  const apiAlt = COLLECTION_READ_APIS.join('|');
+  for (const [member, strategy] of singleTarget) {
+    const consumed = new RegExp(`\\.${member}\\s*\\(\\s*\\)\\s*\\.\\s*(?:${apiAlt})\\s*\\(`);
+    const hit = consumers.find((f) => consumed.test(stripCommentsAndStrings(f.content)));
+    if (!hit) continue;
+    throw new Error(
+      `Codegen: the collection read \`.${member}().<${apiAlt}>()\` in ${hit.file} is backed by a SINGLE-element `
+      + `locator (${strategy}) in ${page.file}. A named/text locator resolves to ONE element (and a named link ALSO `
+      + `matches its sibling image link, injecting an empty "" into .allTextContents()), and it hardcodes one runtime `
+      + `value so the "collection" only ever sees that single item. Back "${member}" with a real COLLECTION locator `
+      + `shared by EVERY item — the item's repeated data-test/testid (e.g. getByTestId('inventory-item-name') or `
+      + `locator('[data-test="inventory-item-name"]')) — then read it with .allTextContents()/.count(). Never build a `
+      + `collection from one item's name.`,
+    );
+  }
+}
+
+/**
+ * TAUTOLOGICAL-ORDERING gate. Reject comparing a value to ITS OWN sorted/reversed copy —
+ * expect(V).toEqual([...V].sort(…)) / V.slice().sort(…) / V.concat().sort(…) / Array.from(V).sort(…) /
+ * .reverse(). It proves nothing: a value always equals a sorted copy of itself when it is already in that
+ * order (the live SauceDemo A-Z case FALSE-PASSED this way while Z-A failed), and it silently tolerates a
+ * dirty collection. A real order check compares the observed collection to an INDEPENDENT expected order.
+ * Deterministic + generic — inspects only the spec's own shape.
+ */
+export function assertNoSelfReferentialSortAssertion(spec: { file: string; content: string }): void {
+  const src = stripCommentsAndStrings(spec.content);
+  const MATCHERS = '(?:toEqual|toStrictEqual|toMatchObject)';
+  const PATTERNS: RegExp[] = [
+    new RegExp(`expect\\(\\s*([A-Za-z_$][\\w$]*)\\s*\\)\\s*\\.\\s*(?:not\\s*\\.\\s*)?${MATCHERS}\\s*\\(\\s*\\[\\s*\\.\\.\\.\\s*\\1\\s*\\]\\s*\\.\\s*(?:sort|reverse)\\b`),
+    new RegExp(`expect\\(\\s*([A-Za-z_$][\\w$]*)\\s*\\)\\s*\\.\\s*(?:not\\s*\\.\\s*)?${MATCHERS}\\s*\\(\\s*\\1\\s*\\.\\s*(?:slice|concat)\\s*\\(\\s*\\)\\s*\\.\\s*(?:sort|reverse)\\b`),
+    new RegExp(`expect\\(\\s*([A-Za-z_$][\\w$]*)\\s*\\)\\s*\\.\\s*(?:not\\s*\\.\\s*)?${MATCHERS}\\s*\\(\\s*Array\\.from\\(\\s*\\1\\s*\\)\\s*\\.\\s*(?:sort|reverse)\\b`),
+  ];
+  for (const re of PATTERNS) {
+    const m = src.match(re);
+    if (!m) continue;
+    throw new Error(
+      `Codegen: tautological ordering assertion in ${spec.file}: \`expect(${m[1]}).toEqual(<a sorted copy of ${m[1]}>)\`. `
+      + `Comparing a value to its OWN sorted/reversed copy proves nothing — it passes whenever the data is already in `
+      + `that order (so an ascending list FALSE-PASSES) and it hides a dirty collection. Assert ordering against an `
+      + `INDEPENDENT expected order: capture the item set, assert it is non-empty AND its .length matches the expected `
+      + `item count, then compare the observed sequence to the SAME verified item names sorted by the rule under test — `
+      + `never to a re-sort of the very array you are checking.`,
+    );
   }
 }
 
@@ -2394,6 +2516,11 @@ function runQualityGates(fw: string, job: CodegenJob, trace: AgentStep[], candid
   assertAssertionsMatchDestinationPage(candidate, trace);
   assertProvenInteractionLocators([page, moduleFile, spec], trace);
   assertUniqueNamedRoleLocators([page, moduleFile, spec], trace);
+  // Collection-read hygiene: a getter read with .allTextContents()/.all()/.count() must be a real collection
+  // locator, never a single named/text element (evidence-independent — holds even without a snapshot).
+  assertCollectionReadsUseCollectionLocators(page, [page, moduleFile, spec]);
+  // Ban a tautological ordering assertion (expect(x).toEqual([...x].sort(...))) that proves nothing.
+  assertNoSelfReferentialSortAssertion(spec);
   // Every named import must resolve to a real export — prevents the `undefined` runtime read.
   assertImportsResolve(fw, [
     { dir: artifactDir(page.file, 'src/pages'), file: page.file, content: page.content },
@@ -2545,6 +2672,14 @@ function buildHealUserPrompt(currentFiles: string, failureOutput: string): strin
     '  INTENDS and REPLACE the ambiguous locator with that exact stable locator: for a name/title/text read or click,',
     '  choose the TEXT/title match (whose id/data-test does NOT contain img/image/icon/thumb), NOT the image link.',
     '  NEVER disambiguate with .first()/.last()/.nth().',
+    '- A sort/order assertion that FAILS with a deep-equality diff showing an unexpected empty "" (or a re-ordered',
+    '  clone): the collection read is DIRTY and/or the assertion is TAUTOLOGICAL. (1) If the Page getter behind the',
+    '  .allTextContents()/.all()/.count() read is a single named/text locator (getByRole(role,{ name }) / getByText',
+    '  (\'literal\')) it matches ONE item and, for a link, ALSO its image-link sibling → an empty "" leaks in; replace it',
+    '  with the item\'s SHARED repeated data-test/testid collection locator (getByTestId(\'…\') / locator(\'[data-test="…"]\'))',
+    '  so every row — and only the text nodes — are read. (2) NEVER assert expect(x).toEqual([...x].sort(...)) — comparing',
+    '  an array to a sorted copy of ITSELF proves nothing and false-passes an already-ordered list. Assert the read is',
+    '  non-empty and .length matches the item count, then compare it to the SAME verified item names sorted by the rule.',
     '',
     '## Current files on disk',
     currentFiles,
