@@ -545,9 +545,18 @@ router.post('/jobs/:jobId/approve', auth, async (req, res) => {
         // does codegen → verify → commit → PR. Fall back to the legacy blast-runner dispatch only
         // for jobs that never went through the explore phase (pre-authored AI-Native cases).
         const isAgentLoop = !!(job.exploreRunId || job.phase === 'explore');
+        // AI-Native (pre-authored test cases) path: opt in to the evidence-grounded blast-testcase.yml via
+        // BLAST_USE_TESTCASE=1 (or a per-job job.useTestcase flag). Default stays the legacy local_agent.js
+        // runner (blast-runner.yml) as the fallback until the new path is proven on a real CI run.
+        const useTestcase = !isAgentLoop && (
+          job.useTestcase === true
+          || /^(1|true|yes)$/i.test(String(process.env.BLAST_USE_TESTCASE || ''))
+        );
         const dispatch = isAgentLoop
           ? await githubAgent.dispatchApprove(job, git)
-          : await githubAgent.dispatchWorkflow(job, git);
+          : useTestcase
+            ? await githubAgent.dispatchTestcase(job, git)
+            : await githubAgent.dispatchWorkflow(job, git);
         job.phase = isAgentLoop ? 'approve' : job.phase;
         job.status = 'Generating';
         job.provider = 'github-actions';

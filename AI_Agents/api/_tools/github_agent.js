@@ -383,6 +383,80 @@ async function dispatchWorkflow(job, git) {
 }
 
 /**
+ * AI-NATIVE (test-case-driven) dispatch — trigger blast-testcase.yml. ONE headless run does directed
+ * exploration of the SUPPLIED test cases (live @playwright/cli evidence), generates on the SHARED codegen
+ * core (reuse + evidence gates + single-nav repair + typecheck + self-heal + verify), enforces the exact
+ * requested TC ids, and opens a PR — no manual approval gate. The evidence-grounded replacement for the
+ * legacy local_agent.js runner (kept as an opt-out fallback); opt in via BLAST_USE_TESTCASE / job.useTestcase.
+ *
+ * SECURITY: app login creds NEVER travel as workflow_dispatch inputs (they are plaintext in the Actions UI).
+ * Fresh form creds are pushed as encrypted repo secrets FIRST (APP_USERNAME/APP_PASSWORD) with the SAME token.
+ *
+ * @param {object} job   the AI-Native job (jobId, url, feature, testCases[], appCredentials?)
+ * @param {object} git   resolved GitHub connection { token, owner, repo, branch }
+ */
+async function dispatchTestcase(job, git) {
+  const { owner, repo, branch, token } = repoConfig(git);
+  const workflow = process.env.BLAST_TESTCASE_WORKFLOW || 'blast-testcase.yml';
+  const ref = process.env.BLAST_WORKFLOW_REF || branch || 'main';
+
+  // Normalize the supplied cases to the entrypoint's contract { id, title, steps[], expectedResults, type,
+  // tags[], testData }. steps/tags may arrive as a multiline/comma string (classic form) or an array.
+  const toSteps = (s) => (Array.isArray(s)
+    ? s.map((x) => String(x).trim())
+    : String(s || '').split(/\r?\n/).map((x) => x.trim())).filter(Boolean);
+  const toTags = (t) => (Array.isArray(t)
+    ? t.map((x) => String(x).trim())
+    : String(t || '').split(',').map((x) => x.trim())).filter(Boolean);
+  // testData may arrive as an object (modern) or a string (classic form): keep objects, JSON-parse a
+  // structured string, else carry free text as { notes } so it still reaches the LLM as directed context.
+  const toData = (d) => {
+    if (d && typeof d === 'object') return d;
+    const s = String(d || '').trim();
+    if (!s) return undefined;
+    try { const p = JSON.parse(s); if (p && typeof p === 'object') return p; } catch { /* not JSON */ }
+    return { notes: s };
+  };
+  const cases = (job.testCases || []).map((tc) => ({
+    id: tc.id,
+    title: tc.title || '',
+    steps: toSteps(tc.steps),
+    expectedResults: tc.expectedResults || '',
+    type: tc.type || '',
+    tags: toTags(tc.tags),
+    testData: toData(tc.testData),
+  }));
+
+  try {
+    // Same credential-safety contract as the explore/runner dispatch: push app creds as encrypted
+    // secrets FIRST when the caller supplied fresh form creds; never send them as plaintext inputs.
+    const appCreds = job.appCredentials;
+    if (appCreds && appCreds.username && appCreds.password) {
+      await setAppCredentialSecrets({ token, owner, repo }, appCreds);
+    }
+    const inputs = {
+      job_id: String(job.jobId),
+      app_url: job.url || '',
+      feature_name: job.feature || job.project || '',
+      testcases: JSON.stringify(cases),
+    };
+    await axios.post(
+      `${API}/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`,
+      { ref, inputs },
+      { headers: headers(git) },
+    );
+    return {
+      dispatched: true,
+      ref,
+      workflow,
+      runsUrl: `https://github.com/${owner}/${repo}/actions/workflows/${workflow}`,
+    };
+  } catch (err) {
+    throw friendlyError(err, 'testcase workflow dispatch');
+  }
+}
+
+/**
  * PHASE 1 dispatch — trigger the EXPLORE workflow (blast-explore.yml). One headless run drives
  * the live app with the agent-loop, VERIFIES the flow, authors the proposed test cases, and
  * uploads them (plus the verified trace) as the `blast-plan-<jobId>` artifact. NO codegen, NO PR.
@@ -1122,6 +1196,7 @@ module.exports = {
   getProgress,
   repoConfig,
   dispatchWorkflow,
+  dispatchTestcase,
   dispatchExplore,
   dispatchApprove,
   dispatchSmoke,
