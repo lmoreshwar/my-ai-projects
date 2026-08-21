@@ -2139,12 +2139,63 @@ export function assertImportsResolve(fw: string, files: Array<{ dir: string; fil
   }
 }
 
-/** Parse the model's STRICT-JSON reply into artifacts. Throws a FORMAT-class error the loop retries. */
-function parseArtifacts(raw: string): LlmArtifacts {
-  const match = raw.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('Codegen: model did not return JSON.');
+/**
+ * The FIRST brace-balanced `{…}` object in `text`, honoring string literals + escapes so a `}` (or `{`)
+ * inside a generated code string never ends the object early. JSON strings are double-quoted; a single
+ * quote only opens a string at top level (never inside a double-quoted value). Returns null when nothing
+ * is balanced. Pure, never throws.
+ */
+function firstBalancedObject(text: string): string | null {
+  const start = text.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0, inStr = false, quote = '', esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) { esc = false; continue; }
+      if (ch === '\\') { esc = true; continue; }
+      if (ch === quote) inStr = false;
+      continue;
+    }
+    if (ch === '"' || ch === '\'') { inStr = true; quote = ch; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) return text.slice(start, i + 1); }
+  }
+  return null;
+}
+
+/**
+ * Isolate ONE JSON object from a model reply that may be wrapped in ```json fences or surrounded by prose.
+ * Robust by construction: prefer a fenced block's body, else scan the whole (fence-stripped) reply for the
+ * first brace-balanced object. A stray markdown fence or explanatory sentence can never abort the run.
+ * Returns null when no plausible object is present. Exported for tests. Pure, never throws.
+ */
+export function extractJsonObject(raw: string): string | null {
+  if (!raw) return null;
+  const candidates: string[] = [];
+  // 1) Prefer any fenced ```json / ``` block whose body contains an object.
+  const fenceRe = /```(?:json|jsonc|json5|js|ts|typescript)?\s*([\s\S]*?)```/gi;
+  let fm: RegExpExecArray | null;
+  while ((fm = fenceRe.exec(raw)) !== null) { if (fm[1] && fm[1].includes('{')) candidates.push(fm[1]); }
+  // 2) Fall back to the whole reply with fence markers stripped so a brace scan can still find the object.
+  candidates.push(raw.replace(/```(?:json|jsonc|json5|js|ts|typescript)?/gi, ' ').replace(/```/g, ' '));
+  for (const text of candidates) {
+    const obj = firstBalancedObject(text);
+    if (obj) return obj;
+  }
+  return null;
+}
+
+/**
+ * Parse the model's STRICT-JSON reply into artifacts. Tolerant of markdown fences + surrounding prose via
+ * extractJsonObject(); still throws a FORMAT-class error (which the repair loop retries with bounded
+ * attempts) when nothing parseable is present or a required section is missing. Exported for tests.
+ */
+export function parseArtifacts(raw: string): LlmArtifacts {
+  const jsonText = extractJsonObject(raw);
+  if (!jsonText) throw new Error('Codegen: model did not return JSON.');
   let candidate: LlmArtifacts;
-  try { candidate = JSON.parse(match[0]); } catch (e) { throw new Error(`Codegen: invalid JSON (${(e as Error).message}).`); }
+  try { candidate = JSON.parse(jsonText); } catch (e) { throw new Error(`Codegen: invalid JSON (${(e as Error).message}).`); }
   if (!candidate.page?.content || !candidate.module?.content || !candidate.spec?.content) {
     throw new Error('Codegen: reply missing page/module/spec content.');
   }
