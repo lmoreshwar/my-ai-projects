@@ -978,6 +978,30 @@ export function assertSingleNavigationPath(spec: { file: string; content: string
 }
 
 /**
+ * Deterministic repair for the duplicate-feature-navigation defect (bug #3). When the spec's beforeEach
+ * navigates to the feature AND a test also navigates, mechanically reduce beforeEach to SHARED LOGIN ONLY by
+ * dropping the feature-navigation statement(s) from it — the exact resolution assertSingleNavigationPath
+ * recommends — so the fix never depends on the LLM self-repair round. A login Module/fixture goto() is shared
+ * setup (not feature navigation) and is always preserved. Repairs ONLY when BOTH sites navigate (safe: the
+ * test still owns feature navigation after the edit); otherwise the content is returned untouched so the gate
+ * can judge it. Returns the (possibly unchanged) content + whether it changed. Generic; never app-specific.
+ */
+export function repairDuplicateFeatureNavigation(spec: { file: string; content: string }): { content: string; changed: boolean } {
+  const src = spec.content;
+  const be = src.match(/beforeEach\s*\([\s\S]*?=>\s*\{([\s\S]*?)\n\s*\}\s*\)\s*;?/);
+  if (!be) return { content: src, changed: false };
+  const beforeBody = be[1] || '';
+  const rest = src.replace(be[0], '');
+  const FEATURE_NAV = /\bpage\.goto\s*\(|\b(?![A-Za-z_]*[Ll]ogin)\w*Module\.goto\s*\(\s*\)/;
+  // Safe ONLY when the test(s) ALSO navigate — then removing beforeEach's nav leaves exactly one path.
+  if (!(FEATURE_NAV.test(beforeBody) && FEATURE_NAV.test(rest))) return { content: src, changed: false };
+  const keptLines = beforeBody.split('\n').filter((line) => !FEATURE_NAV.test(line));
+  if (keptLines.join('\n') === beforeBody) return { content: src, changed: false };
+  const repairedBlock = be[0].replace(beforeBody, keptLines.join('\n'));
+  return { content: src.replace(be[0], repairedBlock), changed: true };
+}
+
+/**
  * Anti-hallucination gate for FRAMEWORK (wrapper) APIs. Every `this.<wrapperProp>.<method>()` call in the
  * generated Page/Module/Spec MUST target a method that actually exists on that wrapper's source class.
  *
@@ -2454,6 +2478,8 @@ export async function healArtifacts(
   const uniquenessObserved = traceExposedUniquenessConstraint(trace);
   const validate = (raw: string): LlmArtifacts => {
     const candidate = parseArtifacts(raw);
+    const navFix = repairDuplicateFeatureNavigation({ file: candidate.spec.file || 'Spec', content: candidate.spec.content });
+    if (navFix.changed) { candidate.spec.content = navFix.content; log('[codegen] deterministic repair: reduced beforeEach to shared login only (removed duplicate feature navigation).'); }
     runQualityGates(fw, job, trace, candidate, uniquenessObserved);
     return candidate;
   };
@@ -2493,6 +2519,8 @@ export async function generateFromTrace(
 
   const validate = (raw: string): LlmArtifacts => {
     const candidate = parseArtifacts(raw);
+    const navFix = repairDuplicateFeatureNavigation({ file: candidate.spec.file || 'Spec', content: candidate.spec.content });
+    if (navFix.changed) { candidate.spec.content = navFix.content; log('[codegen] deterministic repair: reduced beforeEach to shared login only (removed duplicate feature navigation).'); }
     runQualityGates(fw, job, trace, candidate, uniquenessObserved);
     return candidate;
   };
