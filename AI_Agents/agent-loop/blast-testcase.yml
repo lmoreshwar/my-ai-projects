@@ -1,0 +1,121 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# blast-testcase.yml — AI-NATIVE (test-case-driven) automation, ONE job.
+#
+# Unlike Autopilot's two-dispatch Explore→Approve flow, the AI-Native path takes
+# ALREADY-APPROVED test cases (id + title + steps + expected + data), so there is NO
+# manual approval gate. One headless run does everything on the SHARED core:
+#
+#   directed exploration (agent-loop live drive of the SUPPLIED steps)
+#     → scenariosFromTestCases (IDs preserved) → generateVerifyHeal (shared codegen:
+#        reuse index, evidence gates, single-nav repair, typecheck, self-heal, verify)
+#     → deterministic TC-id enforcement + generation integrity → PR (green + complete only)
+#
+# It does NOT route through blast-runner.yml / local_agent.js (kept as fallback) and does
+# NOT touch blast-explore.yml / blast-approve.yml. Reuses the proven @playwright/cli + xvfb
+# setup from blast-explore.yml.
+#
+# CANONICAL COPY: this template lives in the engine repo. Place a copy at
+# .github/workflows/blast-testcase.yml in EACH framework repo you test.
+#
+# Required repo secrets:
+#   APP_USERNAME, APP_PASSWORD  app login (injected securely; never in logs)
+#   OPENAI_API_KEY              LLM key   (OPENAI_MODEL / OPENAI_BASE_URL optional)
+#   BLAST_PAT                   PAT with: repo read on lmoreshwar/my-ai-projects (engine checkout)
+#                               + contents:write & pull_requests:write on THIS repo (push + PR).
+#                               USER_GH_TOKEN overrides for the push/PR attribution.
+# ─────────────────────────────────────────────────────────────────────────────
+name: BLAST Test Cases (AI-Native)
+
+run-name: BLAST Test Cases ${{ inputs.job_id }} — ${{ inputs.feature_name }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      job_id:
+        description: BLAST job id (names the PR branch blast/auto-<job_id>)
+        required: true
+      app_url:
+        description: Application URL to drive
+        required: true
+      feature_name:
+        description: Human feature name (spec/file naming, e.g. "Product Sorting")
+        required: true
+      testcases:
+        description: 'Authoritative test cases — inline JSON array: [{ "id","title","steps":[],"expectedResults","type","tags","testData" }]'
+        required: true
+
+jobs:
+  testcase:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # 1) The target framework (this repo) — checked out at the workspace root = FRAMEWORK_PATH.
+      - name: Checkout framework
+        uses: actions/checkout@v4
+        with:
+          # Don't persist the github-actions[bot] token — it would override the PAT on the PR push.
+          persist-credentials: false
+
+      # 2) The BLAST engine (agent-loop lives here) into a subfolder.
+      - name: Checkout BLAST engine
+        uses: actions/checkout@v4
+        with:
+          repository: lmoreshwar/my-ai-projects
+          path: .blast-engine
+          token: ${{ secrets.BLAST_PAT }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install framework deps
+        run: npm ci || npm install
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      # The agentic driver: Microsoft @playwright/cli + xvfb so the headless browser can start.
+      - name: Install @playwright/cli + xvfb
+        run: |
+          npm install -g @playwright/cli@latest
+          command -v xvfb-run >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y xvfb; }
+
+      - name: Install agent-loop deps
+        working-directory: .blast-engine/AI_Agents/agent-loop
+        run: npm install
+
+      # 3) Directed exploration → generate → verify → self-heal → deterministic ID enforcement → PR.
+      - name: Automate test cases (directed explore + generate + PR)
+        working-directory: .blast-engine/AI_Agents/agent-loop
+        env:
+          APP_URL: ${{ inputs.app_url }}
+          FEATURE_NAME: ${{ inputs.feature_name }}
+          TESTCASES: ${{ inputs.testcases }}
+          FRAMEWORK_PATH: ${{ github.workspace }}
+          # Job id → deterministic PR branch blast/auto-<jobId> so the API can find & merge this PR.
+          JOB_ID: ${{ inputs.job_id }}
+          # App login — injected into the browser securely; never reaches the LLM or logs.
+          AGENT_USERNAME: ${{ secrets.APP_USERNAME }}
+          AGENT_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          APP_USERNAME: ${{ secrets.APP_USERNAME }}
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          # The connected user's token for the push + PR (falls back to the workflow token).
+          GITHUB_TOKEN: ${{ secrets.USER_GH_TOKEN || secrets.BLAST_PAT || github.token }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+          OPENAI_REASONING_EFFORT: ${{ secrets.OPENAI_REASONING_EFFORT }}
+        run: xvfb-run -a npm run phase:testcase
+
+      - name: Upload plan
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blast-testcase-plan-${{ inputs.job_id }}
+          path: ${{ github.workspace }}/blast-plan.json
+          if-no-files-found: warn
+          retention-days: 3

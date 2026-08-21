@@ -58,6 +58,14 @@ export interface CodegenJob {
   discoveryEvidence?: DiscoveryEvidence;
   /** Internal prerequisite plan resolved from verified capabilities; never user-provided. */
   dependencyResolution?: CapabilityDependencyResolution;
+  /**
+   * AI-Native (test-case-driven) mode ONLY: the authoritative test cases to author, with their supplied
+   * TC IDs + titles. When present, buildPrompt instructs the model to author EXACTLY these cases with these
+   * IDs (never re-numbering), and the caller enforces the IDs deterministically after generation. Absent for
+   * Autopilot (feature-driven) codegen, which authors sequential IDs from the trace as before — so this field
+   * NEVER changes Autopilot behaviour.
+   */
+  caseContract?: Array<{ id: string; title: string }>;
 }
 
 /** The live discovery evidence codegen consumes: durable control inventory + before→after transitions. */
@@ -79,6 +87,17 @@ export interface PlanCase {
   type: string;
   steps: string[];
   expectedResults: string;
+}
+
+/** AI-Native (test-case-driven) input: an already-authored test case whose intent is authoritative. */
+export interface TestCaseInput {
+  id: string;
+  title: string;
+  steps: string[];
+  expectedResults?: string;
+  type?: string;
+  tags?: string[];
+  testData?: Record<string, unknown>;
 }
 /** How a control relates to the requested feature — the auditable reason it is (or is not) automated. */
 export type ControlClassification =
@@ -617,6 +636,15 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
   return [
     `Generate Playwright test files for the feature "${job.feature}" at ${job.url}.`,
     `Cover these test types only: ${types}. Author at most ${job.maxCases || 3} test case(s).`,
+    ...(job.caseContract && job.caseContract.length
+      ? [
+        '',
+        '## AUTHORITATIVE TEST CASES (author EXACTLY these — supplied IDs + titles are FINAL, never renumber)',
+        'Author ONE test() per row below, in this order. Put the EXACT id in brackets at the start of the test',
+        'title, e.g. `test(\'[TC_003] <title> @Regression\', …)`. NEVER reset an id to TC_001 or change a title.',
+        ...job.caseContract.map((c) => `- ${c.id}: ${c.title}`),
+      ]
+      : []),
     '',
     '## Verified live actions (HIGHEST-PRIORITY EVIDENCE — copy non-positional locators verbatim; an AMBIGUOUS scope hint overrides a positional CLI echo)',
     renderTrace(trace),
@@ -2907,6 +2935,155 @@ export function scenariosToCases(scenarios: Scenario[]): PlanCase[] {
     steps: s.steps.map((st) => `${st.order}. ${st.action}${st.input ? ` — ${st.input}` : ''}`),
     expectedResults: s.expectedResults,
   }));
+}
+
+// ─── AI-Native (test-case-driven) adapters ───────────────────────────────────────────────────────
+// Deterministic (no LLM) so the supplied test cases become the authoritative contract: their IDs are
+// preserved verbatim, distinct behaviours stay distinct (no false dedup), and generation integrity can be
+// measured against the exact requested set. These are used ONLY by the test-case entrypoint; Autopilot's
+// explore/approve path never calls them, so its behaviour is unchanged.
+
+/** Canonical TC id form: TC_003. Accepts TC3 / tc-3 / "TC_003 …" and normalises to TC_ + 3-digit. */
+export function normalizeTcId(id: string): string {
+  const m = String(id || '').match(/(\d+)/);
+  return m ? `TC_${m[1].padStart(3, '0')}` : String(id || '').trim();
+}
+
+/** Strip a leading [TC_00x] id and any @Tags from a test title so titles compare on behaviour only. */
+function stripIdAndTags(title: string): string {
+  return String(title || '').replace(/\[?TC[_-]?\d+\]?/gi, '').replace(/@\w+/g, '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Build the DIRECTED exploration goal from the supplied test cases. The test cases are authoritative intent —
+ * the explorer must FOLLOW them and collect verified evidence, never rewrite or invent scenarios. Deterministic.
+ */
+export function buildTestCaseGoal(cases: TestCaseInput[]): string {
+  const blocks = cases.map((c) => {
+    const steps = (c.steps || []).map((s, i) => (/^\s*\d+[.)]/.test(s) ? s.trim() : `${i + 1}. ${s.trim()}`)).join('\n');
+    const exp = c.expectedResults ? `\nExpected result: ${c.expectedResults}` : '';
+    const data = c.testData && Object.keys(c.testData).length ? `\nTest data: ${JSON.stringify(c.testData)}` : '';
+    return `### ${normalizeTcId(c.id)} — ${c.title}\nSteps:\n${steps}${exp}${data}`;
+  }).join('\n\n');
+  return [
+    'Follow these EXACT, already-approved test cases against the application and collect verified browser',
+    'evidence for every meaningful action and for each expected result. Log in first if a login form is',
+    'present. Do NOT crawl unrelated areas, do NOT invent additional scenarios, and do NOT rewrite the test',
+    'cases — they are the authoritative intent. For each step, perform the real action and capture the',
+    'resulting on-screen state so locators and assertions are grounded in live evidence.',
+    '',
+    blocks,
+  ].join('\n');
+}
+
+/**
+ * Convert supplied test cases DIRECTLY into Scenario objects (no LLM authoring). Each Scenario preserves the
+ * ORIGINAL TC id (authoritative — TC_003 stays TC_003) and title, so downstream integrity + ID enforcement
+ * measure the exact requested set. Distinct titles/steps stay distinct scenarios (no false dedup). Generic.
+ */
+export function scenariosFromTestCases(cases: TestCaseInput[]): Scenario[] {
+  return cases.map((c) => {
+    const rawSteps = Array.isArray(c.steps) ? c.steps : [];
+    const steps: ScenarioStep[] = rawSteps.map((s, i) => ({
+      order: i + 1,
+      action: String(s).replace(/^\s*\d+[.)]\s*/, '').trim(),
+      target: '',
+      type: 'click',
+      classification: 'feature-action',
+    }));
+    const tagText = `${c.type || ''} ${(c.tags || []).join(' ')} ${c.title || ''}`.toLowerCase();
+    const type = /negativ|invalid|unsupported|error|boundary/.test(tagText) ? 'negative' : (c.type || 'positive').toLowerCase();
+    return {
+      id: normalizeTcId(c.id),
+      title: c.title,
+      type,
+      ready: true,
+      blocked: false,
+      steps,
+      expectedResults: c.expectedResults || '',
+      coverage: { fieldIds: [], fieldLabels: [] },
+    };
+  });
+}
+
+/** Every TC id that labels a test() in a spec, normalised (order-preserving, de-duplicated). */
+export function extractSpecTestIds(content: string): string[] {
+  const ids: string[] = [];
+  const seen = new Set<string>();
+  for (const m of String(content || '').matchAll(/test\s*(?:\.\w+)?\s*\(\s*(['"`])([\s\S]*?)\1/g)) {
+    const idm = m[2].match(/TC[_-]?(\d+)/i);
+    if (!idm) continue;
+    const id = `TC_${idm[1].padStart(3, '0')}`;
+    if (!seen.has(id)) { seen.add(id); ids.push(id); }
+  }
+  return ids;
+}
+
+/**
+ * Generation integrity for the test-case path: which requested TC ids are present in the generated spec.
+ * No silent dropping — the caller FAILS (no PR) when anything is missing. Deterministic.
+ */
+export function testCaseIntegrity(requestedIds: string[], specContent: string): { complete: boolean; missing: string[]; present: string[] } {
+  const want = requestedIds.map(normalizeTcId);
+  const have = new Set(extractSpecTestIds(specContent));
+  const missing = want.filter((id) => !have.has(id));
+  return { complete: missing.length === 0, missing, present: want.filter((id) => have.has(id)) };
+}
+
+/**
+ * Deterministically enforce the authoritative TC ids on a generated spec. The LLM is prompted with the exact
+ * ids, but this is the SAFETY NET: for each requested case, find the test whose title best matches (by behaviour,
+ * ignoring any existing id/tags) and rewrite its bracketed id to the requested one when it differs. A test that
+ * ALREADY carries the correct id is left untouched. Never creates duplicate ids (each block is claimed once).
+ * Returns { content, changed, missing } — `missing` lists requested ids with no matching test (caller rejects).
+ * Only edits test TITLES (safe: no body/locator/assertion changes). Generic; used only by the test-case path.
+ */
+export function enforceTestCaseIds(
+  specContent: string,
+  requested: Array<{ id: string; title: string }>,
+): { content: string; changed: boolean; missing: string[] } {
+  interface Blk { titleStart: number; titleEnd: number; title: string; id: string | null; claimed: boolean; }
+  const blocks: Blk[] = [];
+  for (const m of specContent.matchAll(/test\s*(?:\.\w+)?\s*\(\s*(['"`])([\s\S]*?)\1/g)) {
+    const raw = m[2];
+    const titleStart = (m.index ?? 0) + m[0].indexOf(raw);
+    const idm = raw.match(/TC[_-]?(\d+)/i);
+    blocks.push({ titleStart, titleEnd: titleStart + raw.length, title: raw, id: idm ? `TC_${idm[1].padStart(3, '0')}` : null, claimed: false });
+  }
+  const edits: Array<{ start: number; end: number; text: string }> = [];
+  const missing: string[] = [];
+
+  // Pass 1: a block already carrying the exact requested id is correct — claim it, no edit.
+  for (const req of requested) {
+    const want = normalizeTcId(req.id);
+    const exact = blocks.find((b) => !b.claimed && b.id === want);
+    if (exact) exact.claimed = true;
+  }
+  // Pass 2: for each still-unsatisfied requested id, take the best behaviour-title match and rewrite its id.
+  for (const req of requested) {
+    const want = normalizeTcId(req.id);
+    if (blocks.some((b) => b.claimed && b.id === want)) continue; // already satisfied in pass 1
+    let best: Blk | null = null;
+    let bestScore = 0;
+    for (const b of blocks) {
+      if (b.claimed) continue;
+      const score = titleOverlap(stripIdAndTags(b.title), req.title);
+      if (score > bestScore) { bestScore = score; best = b; }
+    }
+    if (!best) { missing.push(want); continue; }
+    best.claimed = true;
+    const newTitle = best.id
+      ? best.title.replace(/TC[_-]?\d+/i, want)
+      : `[${want}] ${best.title.replace(/^\[?\s*\]?\s*/, '')}`;
+    if (newTitle !== best.title) edits.push({ start: best.titleStart, end: best.titleEnd, text: newTitle });
+    best.id = want;
+  }
+
+  if (!edits.length) return { content: specContent, changed: false, missing };
+  edits.sort((a, b) => b.start - a.start); // apply right-to-left so offsets stay valid
+  let out = specContent;
+  for (const e of edits) out = out.slice(0, e.start) + e.text + out.slice(e.end);
+  return { content: out, changed: true, missing };
 }
 
 /** Best-effort: which field label did a trace fill/select/check step target? (for trace filtering) */
