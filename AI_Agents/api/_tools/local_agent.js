@@ -2627,12 +2627,70 @@ function mergeJsonData(current, next) {
   return JSON.stringify(merge(cur, nxt), null, 2);
 }
 
+/** Body text between a class constructor's braces (brace-balanced), or '' when there is none. */
+function constructorBody(src) {
+  const m = /\bconstructor\s*\([^)]*\)\s*\{/.exec(src || '');
+  if (!m) return '';
+  const open = m.index + m[0].length - 1; // the '{'
+  let depth = 0;
+  for (let j = open; j < src.length; j++) {
+    const ch = src[j];
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) return src.slice(open + 1, j); }
+  }
+  return '';
+}
+
+/** Framework-dependency members a class WIRES in its constructor — the `this.X = …` assignments
+ * (e.g. `this.actions = new Actions(page)`, `this.loginPage = new LoginPage(page)`). Dropping one
+ * while the class still calls `this.X.<method>()` is the exact corruption behind the runtime
+ * `Cannot read properties of undefined`. Returns the Set of assigned member names. */
+function constructorWiredDeps(src) {
+  const deps = new Set();
+  const re = /\bthis\.([A-Za-z_]\w*)\s*=/g;
+  let m;
+  const body = constructorBody(src);
+  while ((m = re.exec(body))) deps.add(m[1]);
+  return deps;
+}
+
+/** Every `this.X` a source assigns ANYWHERE (constructor, method, or field initializer) — used to
+ * tell whether a regeneration still initializes a dependency it references. */
+function assignedThisProps(src) {
+  const out = new Set();
+  const text = src || '';
+  let m;
+  const assignRe = /\bthis\.([A-Za-z_]\w*)\s*=/g;
+  while ((m = assignRe.exec(text))) out.add(m[1]);
+  const fieldRe = /\n[ \t]*(?:public\s+|private\s+|protected\s+|readonly\s+|static\s+)*([A-Za-z_]\w*)\s*(?::[^=;\n]+)?=\s*[^=;]/g;
+  while ((m = fieldRe.exec(text))) out.add(m[1]);
+  return out;
+}
+
+/** DETERMINISTIC constructor-wiring guard. Returns the dependency members an EXISTING reusable
+ * class (`current`) initializes in its constructor that the regeneration (`next`) still CALLS
+ * (`this.X.…`) but no longer initializes anywhere — i.e. writing `next` would strip the wiring and
+ * crash at runtime with `Cannot read properties of undefined`. Empty array => safe to write. */
+function droppedConstructorWiring(current, next) {
+  const wired = constructorWiredDeps(current);
+  if (!wired.size) return [];
+  const nextAssigned = assignedThisProps(next);
+  const dropped = [];
+  for (const dep of wired) {
+    if (nextAssigned.has(dep)) continue;                        // next still wires it — fine
+    if (new RegExp(`\\bthis\\.${dep}\\s*\\.`).test(next)) dropped.push(dep); // used but unwired → corruption
+  }
+  return dropped;
+}
+
 /**
  * Would writing `next` over an existing `current` file DELETE existing coverage?
- * True when the new content drops tests/locators/methods, or shrinks by >40%.
+ * True when the new content drops tests/locators/methods, shrinks by >40%, OR strips a
+ * constructor dependency the class still uses (the LoginModule `this.actions` regression).
  * Used to protect canonical files: reuse-first, never clobber working code.
  */
 function isDestructiveOverwrite(current, next, layer) {
+  if ((layer === 'module' || layer === 'page') && droppedConstructorWiring(current, next).length > 0) return true;
   const oldMembers = countMembers(current, layer);
   const newMembers = countMembers(next, layer);
   if (oldMembers > 0 && newMembers < oldMembers) return true;
@@ -3251,6 +3309,12 @@ function writeFiles(fw, files, baselines = null) {
         // A file with no baseline entry was CREATED this run → its members are all correctable
         // (empty baseline), so compile-fix/heal can land fixes instead of protecting a broken file.
         const baseNames = baselines ? (baselines[relFromRoot] || new Set()) : null;
+        // Deterministic wiring guard: if the regen/heal strips a constructor dependency the class
+        // still uses (e.g. `this.actions`), report WHY so the run log shows the rejected replacement.
+        const droppedWiring = droppedConstructorWiring(current, next);
+        const wiringReason = droppedWiring.length
+          ? `preserved existing reusable — rejected replacement that dropped constructor wiring (this.${droppedWiring.join(', this.')})`
+          : undefined;
         const merged = mergeExisting(current, next, f.layer, baseNames);
         if (merged && merged.trim() !== current.trim()) {
           const bak = path.join(root, '.blast-backups', `${relFromRoot}.bak-${ts}`);
@@ -3259,10 +3323,10 @@ function writeFiles(fw, files, baselines = null) {
           backups.push(path.relative(root, bak).replace(/\\/g, '/'));
           fs.writeFileSync(abs, merged.endsWith('\n') ? merged : merged + '\n', 'utf8');
           report.overwritten += 1;
-          written.push({ path: relFromRoot, layer: f.layer, reused: false, action: 'merged' });
+          written.push({ path: relFromRoot, layer: f.layer, reused: false, action: 'merged', reason: wiringReason });
         } else {
           report.reused += 1;
-          written.push({ path: relFromRoot, layer: f.layer, reused: true, action: 'protected' });
+          written.push({ path: relFromRoot, layer: f.layer, reused: true, action: 'protected', reason: wiringReason });
         }
         continue;
       }
@@ -4962,6 +5026,11 @@ module.exports = {
   ensurePageFieldsInitialized,
   parseCliRefs,
   mergeExisting,
+  isDestructiveOverwrite,
+  droppedConstructorWiring,
+  constructorWiredDeps,
+  writeFiles,
+  captureBaselines,
   pushBranch,
   commitAndPushBranch,
   discardBranch,
