@@ -2549,38 +2549,99 @@ function dataVarMap(fileContent, testData) {
 }
 
 /**
- * Behavioral signature of a test body — captures WHAT the test does, independent of
- * its id/title/wording, so two cases that drive the same workflow collapse to the
- * same key. Primary key = the ordered workflow-layer (*Module) calls with normalized
- * args (same method + same RESOLVED test-data record + same field ⇒ same signature).
- * `varMap` (from dataVarMap) resolves argument variables to their underlying data so a
- * case doesn't dodge the dedup just by renaming its data variable. Pure UI-state tests
- * have no module action, so they fall back to their sorted assertion targets to avoid
- * colliding two unrelated page-only checks.
+ * Map a local `const/let/var X = <literal>` to its STABLE literal value (string / number /
+ * boolean / array-of-literals), quote- and whitespace-normalized. Lets the behavioral signature
+ * resolve a value held in a named variable (e.g. `const sortValue = 'za'`) to the value itself,
+ * so two scenarios that differ ONLY by that value (Name A-Z vs Name Z-A) never collapse merely
+ * because both generations happened to pick the same variable name.
+ */
+function localLiteralMap(fileContent) {
+  const map = new Map();
+  const re = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;]+?)\s*;/g;
+  let m;
+  while ((m = re.exec(fileContent || '')) !== null) {
+    const rhs = m[2].trim();
+    const isLiteral = /^(['"`])[\s\S]*\1$/.test(rhs) || /^\[[\s\S]*\]$/.test(rhs)
+      || /^-?\d[\d_.]*$/.test(rhs) || /^(true|false)$/.test(rhs);
+    if (isLiteral) map.set(m[1], rhs.replace(/\s+/g, '').replace(/['"`]/g, '"'));
+  }
+  return map;
+}
+
+/**
+ * Combined resolver for the behavioral signature: testData-record identity (dataVarMap) PLUS
+ * inline literal values (localLiteralMap). A testData key wins when a variable is both.
+ */
+function signatureVarMap(fileContent, testData) {
+  const map = localLiteralMap(fileContent);
+  for (const [k, v] of dataVarMap(fileContent, testData)) map.set(k, v);
+  return map;
+}
+
+/**
+ * Behavioral signature of a test body — captures WHAT the test does, independent of its
+ * id/title/wording/variable-names/whitespace/quote-style/ordering. Two cases collapse ONLY when
+ * they perform the SAME actions with the SAME meaningful values AND assert the SAME expected
+ * results. The signature INCLUDES, so distinct scenarios never falsely merge:
+ *   • workflow (*Module) calls with resolved args
+ *   • Page-level / this.page actions (click, fill, selectOption, check, press, reload, goBack, data-nav)
+ *   • dropdown/select and input VALUES (the arg literals — e.g. 'az' vs 'za')
+ *   • assertions: matcher chain + expected value/target (ascending vs descending never collapse)
+ * and IGNORES unstable noise: variable names, whitespace, quote style, token ordering, and
+ * zero-arg navigation plumbing. `varMap` (signatureVarMap) resolves variables to their underlying
+ * testData record or inline literal so a rename can neither dodge nor force a match.
  */
 function testSignature(body, varMap) {
-  const text = body || '';
-  const resolve = (args) => args.replace(/([A-Za-z_$][\w$]*)(?=\.)/g, (id) => (varMap && varMap.get(id)) || id);
+  const raw = body || '';
+  const resolve = (s) => s.replace(/[A-Za-z_$][\w$]*/g, (id) => (varMap && varMap.get(id)) || id);
+  const norm = (s) => s.replace(/\s+/g, '').replace(/['"`]/g, '"');
   // Zero-arg navigation/arrival calls (goto(), navigateToLoginPage(), openHomePage()…) are
-  // page-setup plumbing, not test behavior. Strip them so an extra navigate step can't hide
-  // that two tests exercise the same action+data. Data-carrying nav (openProtectedPage('/x'))
-  // is kept — its argument makes it a meaningful, differentiating step.
+  // page-setup plumbing, not behavior. Data-carrying nav (openProtectedPage('/x')) is kept.
   const isNavNoop = (name, args) => args === '' && /^(goto|navigate\w*|open\w*page|visit|load|browse\w*)$/i.test(name);
-  const actions = [];
-  const aRe = /\b\w+Module\.(\w+)\s*\(([^)]*)\)/g;
+  const tokens = [];
+  // 1) Assertions first — full expect(...) + matcher chain + expected value. Remove each matched
+  //    span from the text so its inner calls aren't double-counted as plain actions.
+  const assertRe = /expect\(\s*([^;]*?)\s*\)((?:\s*\.\s*\w+\s*(?:\([^;]*?\))?)+)/g;
+  const actionText = raw.replace(assertRe, (full, target, chain) => {
+    tokens.push(`E:${norm(resolve(target))}${norm(resolve(chain))}`);
+    return ' ';
+  });
+  // 2) Behavioral calls in what remains — walk each `receiver.method(args).method(args)…` CHAIN so
+  //    a value carried on a chained call (e.g. dropdown().selectOption('za')) is never lost. Keep
+  //    each method name + resolved args (the VALUES that differentiate scenarios); tag the chain's
+  //    first call with the receiver KIND (Module / Page / this / other) so a Module-vs-Page
+  //    distinction survives while a variable rename does not. Skip nav-noops and framework statics.
+  const chainRe = /\b([A-Za-z_$][\w$]*)((?:\s*\.\s*\w+\s*\([^;]*?\))+)/g;
+  const callRe = /\.\s*(\w+)\s*\(([^;]*?)\)/g;
   let m;
-  while ((m = aRe.exec(text)) !== null) {
-    const args = m[2].replace(/\s+/g, '').replace(/['"`]/g, '"');
-    if (isNavNoop(m[1], args)) continue;
-    actions.push(`${m[1]}(${resolve(args)})`);
+  while ((m = chainRe.exec(actionText)) !== null) {
+    const recv = m[1];
+    if (recv === 'expect' || recv === 'Promise' || recv === 'Math' || recv === 'JSON' || recv === 'Array' || recv === 'Object') continue;
+    const kind = /Module$/.test(recv) ? 'M' : /Page$/.test(recv) ? 'P' : recv === 'this' ? 'T' : 'x';
+    let first = true;
+    let c;
+    callRe.lastIndex = 0;
+    while ((c = callRe.exec(m[2])) !== null) {
+      const method = c[1];
+      const args = norm(resolve(c[2]));
+      if (isNavNoop(method, args)) { first = false; continue; }
+      tokens.push(`A:${first ? kind : '.'}.${method}(${args})`);
+      first = false;
+    }
   }
-  if (actions.length) return 'ACT:' + actions.join('>');
-  const asserts = new Set();
-  const eRe = /expect\(\s*([\w.]+(?:\([^)]*\))?)\s*\)\s*\.\s*(not\s*\.\s*)?(\w+)/g;
-  while ((m = eRe.exec(text)) !== null) {
-    asserts.add(`${resolve(m[1].replace(/\s+/g, ''))}|${m[2] ? 'not.' : ''}${m[3]}`);
-  }
-  return 'ASRT:' + [...asserts].sort().join('&');
+  return [...new Set(tokens)].sort().join('&') || 'EMPTY';
+}
+
+/**
+ * FIX 3 — generation integrity: which genuinely-new selected scenarios ended up neither WRITTEN
+ * this run nor legitimately REUSED (equivalent to a pre-existing test). Any such id is a hard
+ * failure (a requested scenario was silently dropped). Pure + deterministic for testability.
+ */
+function generationIntegrity(selectedNewIds, writtenNewIds, reusedNewIds) {
+  const written = writtenNewIds instanceof Set ? writtenNewIds : new Set(writtenNewIds || []);
+  const reused = reusedNewIds instanceof Set ? reusedNewIds : new Set(reusedNewIds || []);
+  const missing = (selectedNewIds || []).filter((id) => !written.has(id) && !reused.has(id));
+  return { complete: missing.length === 0, missing };
 }
 
 /**
@@ -4012,8 +4073,19 @@ async function coreGenerate(fw, job, log, logs) {
     if (!targetSpecRel) return new Set();
     try { return new Set(specTestIds(safeRead(path.join(fw, targetSpecRel), 200000))); } catch { return new Set(); }
   })();
+  // FIX 2/3 accounting. baselineSpecContent snapshots every spec's content at JOB START so the
+  // semantic dedup below compares a NEW case ONLY against pre-existing tests — never against a
+  // sibling generated earlier in THIS run (so one new scenario can't eliminate another). The id
+  // sets track that every genuinely-new selected scenario is written or legitimately reused.
+  const selectedNewIds = newCases.map((c) => normId(String(c.id || ''))).filter(Boolean);
+  const writtenNewIds = new Set();
+  const reusedNewIds = new Set();
+  const idAlias = new Map(); // original selected id → id it was actually written under (collision reassign)
+  const baselineSpecContent = {};
+  for (const s of listSpecs(fw)) baselineSpecContent[s.rel] = safeRead(path.join(fw, s.rel), 200000);
   for (let i = 0; i < newCases.length; i++) {
     const tc = { ...newCases[i] };
+    const origId = normId(String(newCases[i].id || ''));
     const existNow = findDomainFiles(fw, job); // reflects writes from earlier cases this run
     // COLLISION GUARD (root cause of the ugly renumber): if the requested id already labels a
     // DIFFERENT existing test IN THE TARGET SPEC, keeping it would force the LLM to renumber or
@@ -4025,6 +4097,7 @@ async function coreGenerate(fw, job, log, logs) {
       log(`[local] ⚠ Requested id ${wantId} already exists in ${targetSpecRel || 'this spec'} as a different test — reassigning the new case to ${freeId} (per-spec numbering; existing tests are NEVER renumbered).`);
       tc.id = freeId;
       specIds.add(freeId);
+      idAlias.set(origId, normId(freeId));
     } else if (wantId) {
       tc.id = wantId;
       specIds.add(wantId);
@@ -4055,6 +4128,7 @@ async function coreGenerate(fw, job, log, logs) {
       if (already) {
         log(`[local] ⏭ ${tc.id} "${tc.title || ''}" already covered by an existing test in ${already} — skipping (LLM emitted no new code; existing coverage reused).`);
         collapsedSpecs.add(already);
+        reusedNewIds.add(origId);
         const ri = requestedIds.lastIndexOf(pushed);
         if (ri >= 0) requestedIds.splice(ri, 1);
       } else {
@@ -4115,9 +4189,15 @@ async function coreGenerate(fw, job, log, logs) {
     try { testData = JSON.parse(safeRead(path.join(fw, 'src', 'testdata', 'testData.json'), 200000) || '{}'); } catch { testData = null; }
     let dupHit = null;
     for (const f of batch.filter((b) => b.layer === 'spec')) {
-      const prior = safeRead(path.join(fw, f.rel), 200000);
-      const priorMap = dataVarMap(prior, testData);
-      const newMap = dataVarMap(f.content, testData);
+      // BASELINE-ONLY DEDUP (FIX 2): compare a NEW case ONLY against tests that already existed at
+      // JOB START — never against a sibling generated earlier in THIS run. Legitimate reuse (a new
+      // case an existing test already covers) still skips, but one newly-requested scenario can
+      // NEVER eliminate another newly-requested scenario. On an empty framework there is no
+      // baseline, so every distinct selected scenario survives.
+      const prior = baselineSpecContent[f.rel] || '';
+      if (!prior.trim()) continue;
+      const priorMap = signatureVarMap(prior, testData);
+      const newMap = signatureVarMap(f.content, testData);
       const priorBlocks = specTestBlocks(prior);
       const priorSigs = new Map(priorBlocks.map((b) => [testSignature(b.body, priorMap), b]));
       const newBlocks = specTestBlocks(f.content);
@@ -4128,14 +4208,16 @@ async function coreGenerate(fw, job, log, logs) {
       if (hit) { dupHit = { spec: f.rel, hit }; break; }
     }
     if (dupHit) {
-      log(`[local] ⏭ Semantic duplicate: ${tc.id} "${tc.title || ''}" performs the same actions as existing ${dupHit.hit.id || dupHit.hit.title} in ${dupHit.spec} — skipping (no new coverage; existing tests unchanged).`);
+      log(`[local] ⏭ Reuse (existing coverage): ${tc.id} "${tc.title || ''}" matches pre-existing ${dupHit.hit.id || dupHit.hit.title} in ${dupHit.spec} — reusing it (no new coverage added).`);
       collapsedSpecs.add(dupHit.spec);
+      reusedNewIds.add(origId);
       const pushed = String(tc.id).toUpperCase().replace(/-/g, '_');
       const ri = requestedIds.lastIndexOf(pushed);
       if (ri >= 0) requestedIds.splice(ri, 1);
       continue;
     }
     const wr = writeFiles(fw, batch, baselines);
+    if (batch.some((b) => b.layer === 'spec')) writtenNewIds.add(origId);
     allBackups.push(...wr.backups);
     wr.written.forEach((w) => { recordWrite(w); logWrite(w); });
     files = batch;
@@ -4418,22 +4500,34 @@ async function coreGenerate(fw, job, log, logs) {
     }
   }
 
+  // FIX 3 — GENERATION INTEGRITY GATE. Every genuinely-new selected scenario must have been WRITTEN
+  // this run or legitimately REUSED (equivalent to a pre-existing test). A silent partial (e.g.
+  // 5 selected, 3 written) is a HARD failure: report the missing ids and open NO PR. Execution
+  // failures are handled separately (green-before-PR prune) — this gate is about GENERATION only.
+  const { complete: generationComplete, missing: integrityMissing } = generationIntegrity(selectedNewIds, writtenNewIds, reusedNewIds);
+  if (!generationComplete) {
+    log(`[local] ✖ GENERATION INTEGRITY FAILURE — ${selectedNewIds.length} scenario(s) requested, only ${selectedNewIds.length - integrityMissing.length} generated/reused. Missing: ${integrityMissing.join(', ')}. No PR will be opened.`);
+  } else if (selectedNewIds.length) {
+    log(`[local] ✅ Generation integrity OK — all ${selectedNewIds.length} requested scenario(s) written or reused (written: ${[...writtenNewIds].join(', ') || 'none'}${reusedNewIds.size ? `; reused: ${[...reusedNewIds].join(', ')}` : ''}).`);
+  }
+
   return {
     generatedFiles: written,
     reusedFiles: written.filter((w) => w.reused).map((w) => w.path),
     backups: allBackups,
-    executionStatus,
+    executionStatus: generationComplete ? executionStatus : 'FAILED',
     reportUrl: 'playwright-report/index.html',
     reportSummary: run.summary || null,
-    failureReasons,
+    failureReasons: generationComplete ? failureReasons : [...failureReasons, { title: 'Generation integrity failure', error: `${selectedNewIds.length} scenario(s) requested, only ${selectedNewIds.length - integrityMissing.length} generated. Missing: ${integrityMissing.join(', ')}` }],
     requestedCases: requestedIds,
     automatedCases,
     failedCases,
-    missingCases: [...new Set([...missingCases, ...failedCases])],
-    // Ship green work: a PR opens when at least one requested case was automated AND passed.
-    // Present-but-failing cases were pruned above and are deferred to the next run, so the
-    // committed spec is always all-green; only a total miss (zero automated) suppresses the PR.
-    verified: requestedIds.length === 0 ? true : automatedCases.length > 0,
+    integrityMissing,
+    missingCases: [...new Set([...missingCases, ...failedCases, ...integrityMissing])],
+    // A PR opens only when at least one requested case was automated AND passed AND generation was
+    // COMPLETE (no requested scenario silently dropped). Present-but-failing cases were pruned above
+    // and deferred to the next run; a GENERATION gap hard-fails the whole run (verified=false → no PR).
+    verified: (requestedIds.length === 0 ? true : automatedCases.length > 0) && generationComplete,
     logs,
   };
 }
@@ -5031,6 +5125,12 @@ module.exports = {
   constructorWiredDeps,
   writeFiles,
   captureBaselines,
+  testSignature,
+  signatureVarMap,
+  localLiteralMap,
+  dataVarMap,
+  specTestBlocks,
+  generationIntegrity,
   pushBranch,
   commitAndPushBranch,
   discardBranch,
