@@ -511,17 +511,23 @@ export function detectActionCompletion(feature: string, steps: AgentStep[], init
   const loginFeature = LOGIN_CONTROL_RE.test(String(feature || ''));
   if (!actionVerbs.length && !exitFeature && !loginFeature) return null;
   const writeIntent = actionVerbs.some((v) => WRITE_ACTION_VERBS.has(v));
-  const hasFormFill = steps.some((s) => (s.tool === 'fill' || s.tool === 'type') && !actionErrored(s));
+  const pageOf = pageOfSteps(steps, initialUrl);
+  // A FEATURE form fill is a fill on a page that is NOT the login/landing screen. A prerequisite LOGIN
+  // fill (username/password) must never route a direct-action feature (e.g. "Add Product to Cart" — a
+  // single "Add to cart" click with no form of its own) into the fills-then-submit path; otherwise MODE A
+  // finds no feature submit and the real action (MODE B, verb-matched) is never evaluated.
+  const hasFeatureFormFill = steps.some(
+    (s, i) => (s.tool === 'fill' || s.tool === 'type') && !actionErrored(s) && !looksLikeLoginLanding(String(s.context || ''), pageOf[i]),
+  );
 
-  // MODE A — a form was filled ⇒ the feature completes at its own submit (fields filled + submit advanced).
-  if (writeIntent && hasFormFill) {
+  // MODE A — the FEATURE filled a form ⇒ it completes at its own submit (fields filled + submit advanced).
+  if (writeIntent && hasFeatureFormFill) {
     const submit = detectSubmitCompletion(steps, initialUrl);
     if (!submit) return null;
     return { completionIndex: submit.completionIndex, featureStartIndex: submit.formIndex, targetUrl: submit.destUrl, control: submit.control, via: 'commit' };
   }
 
   // MODE B — direct action: the LAST control interaction that IS the feature (verb- or affordance-matched).
-  const pageOf = pageOfSteps(steps, initialUrl);
   let best: ActionCompletion | null = null;
   for (let i = 0; i < steps.length; i += 1) {
     const s = steps[i];

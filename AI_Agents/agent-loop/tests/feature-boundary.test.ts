@@ -494,3 +494,93 @@ test('26c. app-name feature is NOT verified while still on the login/landing scr
   assert.equal(b.acceptanceVerified, false);
   assert.match(b.reason, /never reached/);
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 27. DIRECT-ACTION FEATURE BEHIND A LOGIN (live Autopilot Explore bug: "Add Product to Cart").
+//     The feature verb "add" is a WRITE verb, so the acceptance rule tried the fills-then-submit path
+//     (MODE A). The ONLY fills in the walk were the prerequisite LOGIN (username/password), and the real
+//     "Add to cart" click neither navigates nor carries a submit-labelled button — so MODE A found no
+//     feature submit and (before the fix) bailed with `return null`, never evaluating the direct-action
+//     MODE B that verb-matches the "Add to cart" click. The Explore loop then rejected every self-reported
+//     "passed" and exhausted the 32-step budget. Fix: a prerequisite LOGIN fill must not count as a FEATURE
+//     form fill, so the feature is verified by its action (MODE B), not a non-existent submit. Fully generic.
+
+// After the add, the inventory shows the item's button flipped to "Remove" and a cart badge — observable
+// proof the add-to-cart action took effect (supplied at finish time as the model's latest snapshot).
+const INVENTORY_AFTER_ADD = `
+- heading "Products" [level=2]
+- button "Remove" [ref=e5]
+- link "1" [ref=e6]
+`.trim();
+
+// login (FILLS username + password on the root login page) → inventory → click Add to cart (no navigation).
+function addToCartAfterLoginWalk(): AgentStep[] {
+  return [
+    step({ tool: 'fill', args: { value: 'standard_user' }, context: LOGIN_FORM, locator: "getByRole('textbox', { name: 'Username' })", url: LOGIN }),
+    step({ tool: 'fill', args: { value: 'secret_sauce' }, context: LOGIN_FORM, locator: "getByRole('textbox', { name: 'Password' })", url: LOGIN }),
+    step({ tool: 'click', args: {}, context: '- button "Login" [ref=e3]', locator: "getByRole('button', { name: 'Login' })", url: INVENTORY }),
+    step({ tool: 'click', args: {}, context: '- button "Add to cart" [ref=e2]', locator: "getByRole('button', { name: 'Add to cart' })", url: INVENTORY }), // no navigation
+  ];
+}
+
+test('27a. "Add Product to Cart" behind a login is verified by the add action (MODE B), not a submit', () => {
+  const walk = addToCartAfterLoginWalk();
+  const act = detectActionCompletion('Add Product to Cart', walk, LOGIN, INVENTORY_AFTER_ADD);
+  assert.ok(act, 'the add-to-cart action is accepted');
+  assert.equal(act?.via, 'verb');            // matched the "Add to cart" control's own name, not a form submit
+  assert.equal(act?.completionIndex, 3);     // the Add-to-cart click, NOT the earlier login submit
+  const b = detectFeatureBoundary('Add Product to Cart', LOGIN, walk, INVENTORY_AFTER_ADD);
+  assert.equal(b.acceptanceVerified, true);
+  assert.equal(b.completedViaAction, true);
+  assert.equal(b.completionIndex, 3);
+  assert.equal(resolveFeatureStatus('failed', b), 'passed'); // the model's "passed" is now accepted
+});
+
+// 27b. GUARD: the same feature with NO effect yet (no resolved post-state) is still NOT accepted — the fix
+//      only re-routes to the action rule, it does not lower the bar (an add with no observable effect fails).
+test('27b. add-to-cart with no observable effect is still not accepted', () => {
+  const walk = addToCartAfterLoginWalk();
+  assert.equal(detectActionCompletion('Add Product to Cart', walk, LOGIN), null); // no resultingSnapshot ⇒ no effect
+});
+
+// A genuine WRITE flow behind a login (e.g. "Add Employee"): login FILLS → open the add form → FILL the
+// employee fields on a non-login page → Save that NAVIGATES. This MUST still complete via the submit (MODE A
+// 'commit'), proving the fix does not weaken real write-flow acceptance.
+const HR_LOGIN = 'https://hr.example.com/auth/login';
+const HR_ADD_USER = 'https://hr.example.com/admin/addUser';
+const HR_USERS = 'https://hr.example.com/admin/viewUsers';
+const HR_LOGIN_FORM = `
+- textbox "Username" [ref=e1]
+- textbox "Password" [ref=e2]
+- button "Login" [ref=e3]
+`.trim();
+
+function addEmployeeWalk(): AgentStep[] {
+  return [
+    step({ tool: 'fill', args: { value: 'admin' }, context: HR_LOGIN_FORM, locator: "getByRole('textbox', { name: 'Username' })", url: HR_LOGIN }),
+    step({ tool: 'fill', args: { value: 'pass' }, context: HR_LOGIN_FORM, locator: "getByRole('textbox', { name: 'Password' })", url: HR_LOGIN }),
+    step({ tool: 'click', args: {}, context: '- button "Login" [ref=e3]', locator: "getByRole('button', { name: 'Login' })", url: HR_USERS }),
+    step({ tool: 'click', args: {}, context: '- button "Add" [ref=e5]', locator: "getByRole('button', { name: 'Add' })", url: HR_ADD_USER }), // opens the add-user form
+    step({ tool: 'fill', args: { value: 'John' }, context: '- textbox "First Name" [ref=e6]', locator: "getByRole('textbox', { name: 'First Name' })", url: HR_ADD_USER }),
+    step({ tool: 'fill', args: { value: 'Doe' }, context: '- textbox "Last Name" [ref=e7]', locator: "getByRole('textbox', { name: 'Last Name' })", url: HR_ADD_USER }),
+    step({ tool: 'click', args: {}, context: '- button "Save" [ref=e8]', locator: "getByRole('button', { name: 'Save' })", url: HR_USERS }), // save navigates back to the list
+  ];
+}
+
+test('27c. REGRESSION: a real write-flow ("Add Employee") still completes via its submit (MODE A commit)', () => {
+  const walk = addEmployeeWalk();
+  const act = detectActionCompletion('Add Employee', walk, HR_LOGIN);
+  assert.ok(act, 'the write flow is accepted at its submit');
+  assert.equal(act?.via, 'commit');          // the employee-form fills are FEATURE fills ⇒ MODE A still applies
+  assert.equal(act?.control, 'Save');
+  const b = detectFeatureBoundary('Add Employee', HR_LOGIN, walk);
+  assert.equal(b.acceptanceVerified, true);
+});
+
+test('27d. REGRESSION: the same write-flow filled but NOT saved is still rejected (no false-accept)', () => {
+  const walk = addEmployeeWalk();
+  walk.pop();                                 // drop the Save click ⇒ the feature form was filled but never submitted
+  assert.equal(detectActionCompletion('Add Employee', walk, HR_LOGIN), null);
+  const b = detectFeatureBoundary('Add Employee', HR_LOGIN, walk);
+  assert.equal(b.acceptanceVerified, false);
+});
