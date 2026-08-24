@@ -2536,6 +2536,93 @@ export function assertExistingModuleApiPreserved(fw: string, candidate: LlmArtif
   }
 }
 
+/**
+ * DOC-COMMENT gate (in-memory, repairable). Every generated layer must carry NEAT intent comments: a one-line
+ * JSDoc header on each Page/Module class, a one-line header on each PUBLIC Module method, and a one-line scenario
+ * comment above each test(). The model is instructed to add these and is shown commented exemplars — this gate
+ * makes them MECHANICAL rather than best-effort, feeding any miss back into the self-repair loop. Comments are
+ * always addable (no evidence dependency) so a hard gate is safe here. To respect APPEND-ONLY, classes, methods
+ * and test titles ALREADY present in the on-disk file are grandfathered — only NEWLY added ones must be commented.
+ * Generic across every app.
+ */
+export function assertDocComments(fw: string, candidate: LlmArtifacts): void {
+  const missing: string[] = [];
+  const hasLeadingComment = (src: string, node: ts.Node): boolean => {
+    const ranges = ts.getLeadingCommentRanges(src, node.getFullStart());
+    return Array.isArray(ranges) && ranges.length > 0;
+  };
+  const parse = (file: string, content: string): ts.SourceFile =>
+    ts.createSourceFile(file || 'artifact.ts', content, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const priorText = (file?: string): string => (file ? safeRead(join(fw, file)) : '');
+  const priorClassNames = (src: string): Set<string> =>
+    new Set((src.match(/export\s+class\s+(\w+)/g) || []).map((s) => s.replace(/export\s+class\s+/, '')));
+
+  // Page — class header only (locators are self-evident).
+  const pageSrc = String(candidate.page?.content || '');
+  if (pageSrc.trim()) {
+    const prior = priorClassNames(priorText(candidate.page?.file));
+    parse(candidate.page?.file || 'Page.ts', pageSrc).forEachChild(function walk(node) {
+      if (ts.isClassDeclaration(node) && node.name && !prior.has(node.name.text) && !hasLeadingComment(pageSrc, node)) {
+        missing.push(`Page ${candidate.page?.file || ''}: class ${node.name.text} needs a one-line JSDoc header describing its role.`);
+      }
+      node.forEachChild(walk);
+    });
+  }
+
+  // Module — class header + every NEW public method (constructor excluded).
+  const modSrc = String(candidate.module?.content || '');
+  if (modSrc.trim()) {
+    const prior = priorText(candidate.module?.file);
+    const priorClasses = priorClassNames(prior);
+    const priorMethods = new Set(extractPublicMethods(prior).map((mm) => mm.name));
+    parse(candidate.module?.file || 'Module.ts', modSrc).forEachChild(function walk(node) {
+      if (ts.isClassDeclaration(node) && node.name) {
+        if (!priorClasses.has(node.name.text) && !hasLeadingComment(modSrc, node)) {
+          missing.push(`Module ${candidate.module?.file || ''}: class ${node.name.text} needs a one-line JSDoc header describing the workflow it encapsulates.`);
+        }
+        for (const member of node.members) {
+          if (!ts.isMethodDeclaration(member) || !member.name || !ts.isIdentifier(member.name)) continue;
+          const name = member.name.text;
+          if (name === 'constructor' || priorMethods.has(name)) continue;
+          const mods = ts.canHaveModifiers(member) ? ts.getModifiers(member) : undefined;
+          const nonPublic = mods?.some((mod) => mod.kind === ts.SyntaxKind.PrivateKeyword || mod.kind === ts.SyntaxKind.ProtectedKeyword);
+          if (nonPublic) continue;
+          if (!hasLeadingComment(modSrc, member)) {
+            missing.push(`Module ${candidate.module?.file || ''}: method ${name}() needs a one-line JSDoc describing its intent.`);
+          }
+        }
+      }
+      node.forEachChild(walk);
+    });
+  }
+
+  // Spec — every NEW test() case needs a scenario comment (existing titles grandfathered for APPEND-ONLY).
+  const specSrc = String(candidate.spec?.content || '');
+  if (specSrc.trim()) {
+    const priorTitles = new Set([...priorText(candidate.spec?.file).matchAll(/\btest\s*\(\s*['"`]([^'"`]+)['"`]/g)].map((m) => m[1]));
+    parse(candidate.spec?.file || 'spec.ts', specSrc).forEachChild(function walk(node) {
+      if (ts.isExpressionStatement(node) && ts.isCallExpression(node.expression)
+        && ts.isIdentifier(node.expression.expression) && node.expression.expression.text === 'test') {
+        const arg0 = node.expression.arguments[0];
+        const title = arg0 && ts.isStringLiteralLike(arg0) ? arg0.text : '';
+        if (!priorTitles.has(title) && !hasLeadingComment(specSrc, node)) {
+          missing.push(`Spec ${candidate.spec?.file || ''}: test('${title}') needs a one-line // comment above it stating the scenario and expected outcome.`);
+        }
+      }
+      node.forEachChild(walk);
+    });
+  }
+
+  if (missing.length) {
+    throw new Error(
+      `Codegen: generated code is missing required intent comments:\n- ${missing.join('\n- ')}\n`
+      + `Add NEAT one-line comments only: a JSDoc header on each Page/Module class, a JSDoc line on each public `
+      + `Module method, and a // scenario line above each test(). Do NOT comment individual statements or restate `
+      + `code. Re-emit the affected file(s) with these comments and every other line unchanged.`,
+    );
+  }
+}
+
 /** Run EVERY in-memory quality gate against a parsed candidate. Throws ONE clear, repairable message. */
 function runQualityGates(fw: string, job: CodegenJob, trace: AgentStep[], candidate: LlmArtifacts, uniquenessObserved: boolean): void {
   const page = { file: candidate.page.file || 'Page', content: candidate.page.content };
@@ -2569,6 +2656,8 @@ function runQualityGates(fw: string, job: CodegenJob, trace: AgentStep[], candid
   ]);
   // In-memory + repairable: a routes.X reference must be defined in config OR returned in "routes".
   assertRoutesResolvable(fw, candidate, trace);
+  // Neat intent comments on each new class/public method/test — mechanical enforcement of the doc-comment rule.
+  assertDocComments(fw, candidate);
 }
 
 /**
