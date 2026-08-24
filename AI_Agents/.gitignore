@@ -32,7 +32,6 @@ dev-automation-jobs.json
 # Gemini
 .gemini/
 
-.vercel
 .env*.local
 .env.bak*
 *.bak-gemini

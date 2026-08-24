@@ -681,13 +681,7 @@ Do NOT fabricate test scenarios for features not mentioned in the input.`;
         const userModel = reqData.llm.model && reqData.llm.model.trim() ? reqData.llm.model.trim() : null;
         
         // Pass continuation options if provided by frontend
-        // On Vercel Free tier (10s limit), force single-round to avoid timeout
-        const isVercelFree = !!process.env.VERCEL && !process.env.VERCEL_PRO;
-        let continuation = reqData.continuation || null;
-        if (isVercelFree && continuation && continuation.type !== 'none') {
-            console.log('[generate-plan] Vercel Free tier detected — disabling continuation to fit 10s limit');
-            continuation = { type: 'none' };
-        }
+        const continuation = reqData.continuation || null;
         const result = await connector.generateContent(userPrompt, systemPrompt, userModel, continuation);
         
         // result is now { content, meta } from the updated LLM connector
@@ -696,7 +690,7 @@ Do NOT fabricate test scenarios for features not mentioned in the input.`;
 
         // Temp directory for output files
         const runId = uuidv4();
-        const tmpDir = process.env.VERCEL ? '/tmp' : path.join(process.cwd(), '.tmp');
+        const tmpDir = path.join(process.cwd(), '.tmp');
         if (!fs.existsSync(tmpDir)) {
             fs.mkdirSync(tmpDir, { recursive: true });
         }
@@ -1485,24 +1479,19 @@ app.get('/download/:filename', (req, res) => {
         return res.status(403).json({ detail: "Invalid filename" });
     }
     
-    // Check both local .tmp and vercel /tmp
     const localTmp = path.join(process.cwd(), '.tmp', filename);
-    const apiTmp = process.env.VERCEL ? path.join('/tmp', filename) : localTmp;
-    
-    if (fs.existsSync(apiTmp)) {
-        return res.download(apiTmp, filename);
-    } else if (fs.existsSync(localTmp)) {
+    if (fs.existsSync(localTmp)) {
         return res.download(localTmp, filename);
     }
     
     return res.status(404).json({ detail: "File not found." });
 });
 
-// Export the app for Vercel Serverless Function
+// Export the app (serverless handler / tests)
 module.exports = app;
 
 // SPA fallback: serve index.html for all non-API routes (Render / standalone)
-if (!process.env.VERCEL && fs.existsSync(_clientDist)) {
+if (fs.existsSync(_clientDist)) {
     app.get('*', (req, res) => {
         res.sendFile(path.join(_clientDist, 'index.html'));
     });
