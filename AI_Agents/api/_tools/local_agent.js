@@ -256,6 +256,108 @@ function wrapperApi(fw, budget = 2200) {
   return text;
 }
 
+// Fresh repos are provisioned from a GENERIC template whose src/pages|modules|tests ship empty (.gitkeep),
+// so the framework read below returns '' and the model gets NO style exemplar. These fallbacks then teach the
+// mandatory shape: per-screen Page+Module decomposition (never a monolith) and a spec that IMPORTS testData.json.
+const FALLBACK_PAGE_EXEMPLAR = `import { type Locator, type Page } from '@playwright/test';
+
+/** Sign-in screen — locators only (ONE Page object per screen). */
+export class SignInPage {
+  constructor(private readonly page: Page) {}
+
+  usernameInput = (): Locator => this.page.getByRole('textbox', { name: 'Username' });
+  passwordInput = (): Locator => this.page.getByRole('textbox', { name: 'Password' });
+  signInButton = (): Locator => this.page.getByRole('button', { name: 'Sign in' });
+}
+
+/** Search screen — a SEPARATE Page object for a SEPARATE screen (per-screen decomposition, never a monolith). */
+export class SearchPage {
+  constructor(private readonly page: Page) {}
+
+  searchInput = (): Locator => this.page.getByRole('searchbox', { name: 'Search' });
+  searchButton = (): Locator => this.page.getByRole('button', { name: 'Search' });
+  resultsHeading = (): Locator => this.page.getByRole('heading', { name: 'Results' });
+}
+`;
+
+const FALLBACK_MODULE_EXEMPLAR = `import { type Page } from '@playwright/test';
+import { Actions } from '../utils/Actions';
+import { Logger } from '../utils/Logger';
+import { routes, urlFor } from '../config';
+import { SignInPage } from '../pages/SignInPage';
+import { SearchPage } from '../pages/SearchPage';
+
+/** Sign-in workflow — ONE module per screen. */
+export class SignInModule {
+  private readonly actions: Actions;
+  private readonly logger = Logger.create('SignInModule');
+  private readonly signInPage: SignInPage;
+
+  constructor(page: Page) {
+    this.actions = new Actions(page);
+    this.signInPage = new SignInPage(page);
+  }
+
+  /** Open the sign-in page. */
+  async goto(): Promise<void> {
+    this.logger.step(1, 'Open the sign-in page');
+    await this.actions.navigate(urlFor(routes.login), { readyElement: this.signInPage.usernameInput() });
+  }
+
+  /** Submit credentials. */
+  async signIn(username: string, password: string): Promise<void> {
+    this.logger.step(2, 'Submit credentials');
+    await this.actions.fill(this.signInPage.usernameInput(), username);
+    await this.actions.fill(this.signInPage.passwordInput(), password);
+    await this.actions.click(this.signInPage.signInButton());
+  }
+}
+
+/** Search workflow — a SEPARATE module for a SEPARATE screen; the spec composes both in order. */
+export class SearchModule {
+  private readonly actions: Actions;
+  private readonly logger = Logger.create('SearchModule');
+  private readonly searchPage: SearchPage;
+
+  constructor(page: Page) {
+    this.actions = new Actions(page);
+    this.searchPage = new SearchPage(page);
+  }
+
+  /** Run a search query. */
+  async search(query: string): Promise<void> {
+    this.logger.step(1, 'Run a search');
+    await this.actions.fill(this.searchPage.searchInput(), query);
+    await this.actions.click(this.searchPage.searchButton());
+  }
+}
+`;
+
+const FALLBACK_SPEC_EXEMPLAR = `import { test, expect } from '../fixtures';
+import { credentials, routes, urlRegex } from '../config';
+import testData from '../testdata/testData.json';
+import { SignInModule } from '../modules/SignInModule';
+import { SearchModule } from '../modules/SearchModule';
+import { SearchPage } from '../pages/SearchPage';
+
+test.describe('Search Journey', () => {
+  // Sign in, then search — each screen driven by its OWN module; the spec composes them and consumes testData.
+  test('TC_001 signed-in user can search @SearchJourney @Smoke @Regression', async ({ page }) => {
+    const signInModule = new SignInModule(page);
+    const searchModule = new SearchModule(page);
+    const searchPage = new SearchPage(page);
+    const { username, password } = credentials('app');
+
+    await signInModule.goto();
+    await signInModule.signIn(username, password);
+    await expect(page).toHaveURL(urlRegex(routes.inventory));
+
+    await searchModule.search(testData.search.query);
+    await expect(searchPage.resultsHeading()).toBeVisible();
+  });
+});
+`;
+
 function readGrounding(fw, job) {
   const active = resolveSkill(job);
   const lean = LOW_TPM_PLATFORMS.has(config().platform);
@@ -270,9 +372,9 @@ function readGrounding(fw, job) {
     skillHeal: b.heal ? safeRead(path.join(fw, '.github', 'skills', 'pw-self-healing', 'SKILL.md'), b.heal) : '',
     capabilities: groundingIndex(fw, job, b.caps),
     wrapperApi: wrapperApi(fw, lean ? 1200 : 2200),
-    pageEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'pages'), 'Page.ts'), b.ex),
-    moduleEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'modules'), 'Module.ts'), b.ex),
-    specEx: safeRead(pickSpecExemplar(path.join(fw, 'src', 'tests')), b.spec),
+    pageEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'pages'), 'Page.ts'), b.ex) || FALLBACK_PAGE_EXEMPLAR,
+    moduleEx: safeRead(firstMatchingFile(path.join(fw, 'src', 'modules'), 'Module.ts'), b.ex) || FALLBACK_MODULE_EXEMPLAR,
+    specEx: safeRead(pickSpecExemplar(path.join(fw, 'src', 'tests')), b.spec) || FALLBACK_SPEC_EXEMPLAR,
     testData: safeRead(path.join(fw, 'src', 'testdata', 'testData.json'), b.data),
     fixtures: safeRead(path.join(fw, 'src', 'fixtures', 'index.ts'), b.fix),
     smartLocator: b.smart ? safeRead(path.join(fw, 'src', 'utils', 'SmartLocator.ts'), b.smart) : '',
@@ -2062,7 +2164,7 @@ function buildSystemPrompt() {
     'LOCATOR DECLARATION (follow exactly — MATCH THE EXISTING PAGES IN THIS REPO): pick the ONE style the repo already uses and never mix them. (A) constructor-field style: `readonly <name>: Locator;` declared on the class AND assigned in the constructor `this.<name> = page.getByRole(...);` — EVERY declared field MUST be assigned in the constructor (strictPropertyInitialization: a declared `<name>: Locator;` with no `this.<name> = …` is a COMPILE ERROR). (B) arrow-getter style: `<name> = (): Locator => this.page.getByRole(...);` (store the page via `constructor(private readonly page: Page) {}`). NEVER leave a `Locator` field declared but uninitialized, and NEVER reference a `<page>.<name>` from a module/spec that the Page does not actually define.',
     'VALUE-INDEPENDENT LOCATORS (follow exactly): a locator must IDENTIFY an element, never encode the runtime VALUE it displays. NEVER bake a dynamic value (price, amount, total, count, date, name) into a getByText — e.g. do NOT write `getByText(\'<Label>: $12.34\')`; instead locate the element by its stable label/role/data-test (e.g. the `<label>`/row container) and ASSERT the value in the spec with `toHaveText`/`toContainText`. Baking the value into the locator makes a wrong value fail as "element not found" (unclear) and turns the spec assertion into a tautology.',
     'CALCULATED ASSERTIONS: when a value is DERIVED from others (e.g. total = subtotal + tax), do NOT assert three independently hardcoded strings. Read the parts from the page, parse the numbers, and assert the RELATIONSHIP in the spec (e.g. expect(total).toBeCloseTo(subtotal + tax)) so the test proves the computation, not a fixed snapshot. Keep any literal expected numbers in testData.json, never in a locator.',
-    'DATA & CONFIG: never hardcode credentials/data. Valid credentials come from credentials(\'app\') (src/config). Negative/other data lives in src/testdata/testData.json — reuse existing keys; if you need NEW data, emit an EXTENDED testData.json (config layer) that KEEPS all existing keys and ADDS yours.',
+    'DATA & CONFIG: never hardcode credentials/data. Valid credentials come from credentials(\'app\') (src/config). Negative/other data lives in src/testdata/testData.json — reuse existing keys; if you need NEW data, emit an EXTENDED testData.json (config layer) that KEEPS all existing keys and ADDS yours. The spec CONSUMES that file via a top-level import (import testData from \'../testdata/testData.json\') and references testData.<domain>.<key> — NEVER inline a const testData object that duplicates the file.',
     'FIXTURES: specs consume fixtures (e.g. loginModule, loginPage, page) from src/fixtures. If you CREATE a new Page/Module, you MUST also emit an updated src/fixtures/index.ts (fixture layer) that keeps all existing fixtures and registers the new Page + Module.',
     'SPEC NAMING = DOMAIN, never a single scenario. Group every case for a page/module into ONE domain spec (login.spec.ts), one test() per case. If an existing domain spec is provided, ADD to it — never create a parallel file.',
     'Playwright hooks ONLY: use test.beforeAll/test.afterAll/test.beforeEach/test.afterEach — NEVER bare beforeAll/afterAll/beforeEach/afterEach (those are Jest/Mocha globals and are undefined here). Import { test, expect } from the framework fixture used by the exemplar spec, not from @playwright/test unless the exemplar does.',
@@ -2198,7 +2300,7 @@ function buildGeneratePrompt(job, g, snapshot, existing, liveWalk, liveTrace) {
     '- NEVER emit two test() blocks with the same test-case id. Each TC id appears exactly once. If a case id already exists in the shown spec, keep that one test as-is — do not add a second test for the same id, even with a different title.',
     '- APPEND-ONLY: NEVER renumber, reorder, or change the id or title of any EXISTING test. Add the new case using EXACTLY the TC id given in the task, appended AFTER the existing tests. Every existing test keeps its exact id and title verbatim.',
     '- Locators: ONE strategy per element by default — when the app exposes a dedicated test-id attribute (data-test/data-testid), copy the PROVEN selector VERBATIM as a config-free attribute locator (e.g. page.locator(\'[data-test="username"]\')) which needs NO testIdAttribute config, use getByTestId only if playwright.config already declares a matching testIdAttribute, otherwise getByRole/getByLabel/getByPlaceholder. A SmartLocator fallback chain is allowed ONLY for a fragile element and MUST carry a `// reason:` note (max 3 strategies). No stacked speculative locators.',
-    '- Data: use credentials(\'app\') for valid login and src/testdata/testData.json for other data. If new data is needed, emit an EXTENDED testData.json (config layer) preserving all existing keys.',
+    '- Data: use credentials(\'app\') for valid login and src/testdata/testData.json for other data — consume it via a top-level import (import testData from \'../testdata/testData.json\'), NEVER an inline const testData object. If new data is needed, emit an EXTENDED testData.json (config layer) preserving all existing keys.',
     '- Authenticated flows: if the target page is only reachable AFTER login (anything past the login screen), the spec MUST authenticate FIRST — in a test.beforeEach that calls the framework login module (navigate to the login page, e.g. loginModule.goto(), THEN loginModule.login(credentials(\'app\').username, credentials(\'app\').password)) and asserts the post-login landing — BEFORE any page-specific steps, exactly like the spec exemplar. NEVER call login() without navigating to the login page first, and never assume an already-authenticated session.',
     '- Preconditions/state: NEVER assume the target page is already in the required state (e.g. an item already in the cart, a record already selected). Establish every precondition through the app UI FIRST. Search the "Reusable API across ALL domains" list above for a method that performs that setup — even if it lives in a DIFFERENT domain (e.g. an add-to-cart / create-record / login method) — and CALL it; only write new interaction code when NO existing method covers the need. Reach the target page by the real user journey in the case steps above; do NOT deep-link to a page whose content depends on prior actions and then assert that content exists. A Module navigation helper (goto) must wait only for a STABLE page landmark (title/header/container) that exists regardless of data — never for data-dependent content like a specific row.',
     '- Ambiguous controls: when several identical controls exist (e.g. N identical "Add"/"Remove"/"Delete" buttons in a list), NEVER use a bare text/role locator that matches many — Playwright strict mode WILL fail. Prefer an existing Module method that already resolves the right element (e.g. a product-detail add method), or scope to a unique parent/row (by the record/product name), or use an explicit .filter()/.nth() with a `// reason:` note. One unambiguous target per action.',

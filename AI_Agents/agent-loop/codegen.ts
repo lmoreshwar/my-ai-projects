@@ -439,14 +439,22 @@ function wrapperContract(fw: string): string {
  */
 const FALLBACK_PAGE_EXEMPLAR = `import { type Locator, type Page } from '@playwright/test';
 
-/** Login screen — locators only. */
-export class SampleLoginPage {
+/** Sign-in screen — locators only (ONE Page object per screen). */
+export class SignInPage {
   constructor(private readonly page: Page) {}
 
   usernameInput = (): Locator => this.page.getByRole('textbox', { name: 'Username' });
   passwordInput = (): Locator => this.page.getByRole('textbox', { name: 'Password' });
-  loginButton = (): Locator => this.page.getByRole('button', { name: 'Login' });
-  errorMessage = (): Locator => this.page.getByRole('alert');
+  signInButton = (): Locator => this.page.getByRole('button', { name: 'Sign in' });
+}
+
+/** Search screen — a SEPARATE Page object for a SEPARATE screen (per-screen decomposition, never a monolith). */
+export class SearchPage {
+  constructor(private readonly page: Page) {}
+
+  searchInput = (): Locator => this.page.getByRole('searchbox', { name: 'Search' });
+  searchButton = (): Locator => this.page.getByRole('button', { name: 'Search' });
+  resultsHeading = (): Locator => this.page.getByRole('heading', { name: 'Results' });
 }
 `;
 
@@ -454,49 +462,76 @@ const FALLBACK_MODULE_EXEMPLAR = `import { type Page } from '@playwright/test';
 import { Actions } from '../utils/Actions';
 import { Logger } from '../utils/Logger';
 import { routes, urlFor } from '../config';
-import { SampleLoginPage } from '../pages/SampleLoginPage';
+import { SignInPage } from '../pages/SignInPage';
+import { SearchPage } from '../pages/SearchPage';
 
-/** Login workflow: open the page and submit credentials for an authenticated session. */
-export class SampleLoginModule {
-  private readonly page: Page;
+/** Sign-in workflow — ONE module per screen. */
+export class SignInModule {
   private readonly actions: Actions;
-  private readonly logger = Logger.create('SampleLoginModule');
-  private readonly loginPage: SampleLoginPage;
+  private readonly logger = Logger.create('SignInModule');
+  private readonly signInPage: SignInPage;
 
   constructor(page: Page) {
-    this.page = page;
     this.actions = new Actions(page);
-    this.loginPage = new SampleLoginPage(page);
+    this.signInPage = new SignInPage(page);
   }
 
-  /** Open the login page and wait for the username field. */
+  /** Open the sign-in page. */
   async goto(): Promise<void> {
-    this.logger.step(1, 'Open the login page');
-    await this.actions.navigate(urlFor(routes.login), { readyElement: this.loginPage.usernameInput() });
+    this.logger.step(1, 'Open the sign-in page');
+    await this.actions.navigate(urlFor(routes.login), { readyElement: this.signInPage.usernameInput() });
   }
 
-  /** Enter credentials and submit. */
-  async login(username: string, password: string): Promise<void> {
+  /** Submit credentials. */
+  async signIn(username: string, password: string): Promise<void> {
     this.logger.step(2, 'Submit credentials');
-    await this.actions.fill(this.loginPage.usernameInput(), username);
-    await this.actions.fill(this.loginPage.passwordInput(), password);
-    await this.actions.click(this.loginPage.loginButton());
+    await this.actions.fill(this.signInPage.usernameInput(), username);
+    await this.actions.fill(this.signInPage.passwordInput(), password);
+    await this.actions.click(this.signInPage.signInButton());
+  }
+}
+
+/** Search workflow — a SEPARATE module for a SEPARATE screen; the spec composes both in order. */
+export class SearchModule {
+  private readonly actions: Actions;
+  private readonly logger = Logger.create('SearchModule');
+  private readonly searchPage: SearchPage;
+
+  constructor(page: Page) {
+    this.actions = new Actions(page);
+    this.searchPage = new SearchPage(page);
+  }
+
+  /** Run a search query. */
+  async search(query: string): Promise<void> {
+    this.logger.step(1, 'Run a search');
+    await this.actions.fill(this.searchPage.searchInput(), query);
+    await this.actions.click(this.searchPage.searchButton());
   }
 }
 `;
 
 const FALLBACK_SPEC_EXEMPLAR = `import { test, expect } from '../fixtures';
 import { credentials, routes, urlRegex } from '../config';
-import { SampleLoginModule } from '../modules/SampleLoginModule';
+import testData from '../testdata/testData.json';
+import { SignInModule } from '../modules/SignInModule';
+import { SearchModule } from '../modules/SearchModule';
+import { SearchPage } from '../pages/SearchPage';
 
-test.describe('Sample Login', () => {
-  // Valid credentials should land on the inventory page.
-  test('TC_001 valid credentials reach the app @SampleLogin @Smoke @Regression', async ({ page }) => {
-    const loginModule = new SampleLoginModule(page);
+test.describe('Search Journey', () => {
+  // Sign in, then search — each screen driven by its OWN module; the spec composes them and consumes testData.
+  test('TC_001 signed-in user can search @SearchJourney @Smoke @Regression', async ({ page }) => {
+    const signInModule = new SignInModule(page);
+    const searchModule = new SearchModule(page);
+    const searchPage = new SearchPage(page);
     const { username, password } = credentials('app');
-    await loginModule.goto();
-    await loginModule.login(username, password);
+
+    await signInModule.goto();
+    await signInModule.signIn(username, password);
     await expect(page).toHaveURL(urlRegex(routes.inventory));
+
+    await searchModule.search(testData.search.query);
+    await expect(searchPage.resultsHeading()).toBeVisible();
   });
 });
 `;
@@ -764,7 +799,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- ONE NAVIGATION PATH — no duplicate nav: test.beforeEach does SHARED LOGIN ONLY (loginModule.goto() + loginModule.login(credentials("app"))). Feature navigation lives in the feature Module.goto() called INSIDE each test. Do NOT also navigate to the feature from beforeEach (no page.goto(feature) there) when a test calls <feature>Module.goto() — that double-navigates. Pick the Module.goto() as the single authoritative path.',
     '- SEQUENTIAL, APPEND-ONLY numbering: each spec file owns its own TC_001, TC_002… sequence. When a spec for this feature already exists, read the highest existing TC_XXX and number NEW cases from the next free number (existing TC_001–TC_003 → new TC_004); never renumber, reorder, or overwrite an existing test() block — append after them and return the FULL file with every existing test kept verbatim.',
     '- Reuse SHARED METHODS/HELPERS, not just locators — but ONLY methods present in the Wrapper API contract, each called on its listed property. Typical mappings WHEN the contract lists them: custom dropdown -> this.workflowActions.selectDropdownOption(trigger, optionText); searchable/autocomplete -> this.workflowActions.searchAndSelectOption(input, text, optionText?); native <select> -> this.actions.selectOption(target, value); checkbox -> this.workflowActions.setCheckbox(target, checked); radio -> this.workflowActions.selectRadioOption(label); date field -> this.workflowActions.selectDate(input, value); table read -> this.workflowActions.readTableCell(table, rowText, colIndex); table row action -> this.workflowActions.clickInRow(table, rowText, controlName); table row checkbox -> this.workflowActions.setRowCheckbox(table, rowText, checked); search box -> this.workflowActions.searchWithOptionalSubmit(input, value, submit?). If NONE of the contract helpers fits a new interaction, implement it as a parameterized METHOD ON THE NEW MODULE (workflow logic belongs in the Module) — NEVER inline interaction logic in the spec, NEVER call a listed method on the wrong property, and NEVER invent a wrapper method that is not in the Wrapper API contract (the shared utils are a FIXED API on this path; this JSON output cannot emit a modified util file). Reuse one helper for repeated flows (login/logout/common assertions) too.',
-    '- TEST DATA: read every value via the testData accessor (never hardcode usernames/names/roles/expected text in a spec). Reuse an existing matching entry before adding a new one; only add genuinely-new keys, and keep every existing testData key. CONSUMPTION IS MANDATORY: every key you ADD to testData MUST be READ by the spec — never seed testData.X and then pass a duplicated string literal (e.g. adding testData.checkout.firstName but still calling submit(\'Jordan\', ...)); the spec MUST pass testData.checkout.firstName. Test data written but never consumed is a defect.',
+    '- TEST DATA: read every value from src/testdata/testData.json, consumed via a top-level import (import testData from \'../testdata/testData.json\') — NEVER an inline `const testData = { … }` object that duplicates the file, and never hardcode usernames/names/roles/expected text in a spec. Reuse an existing matching entry before adding a new one; only add genuinely-new keys, and keep every existing testData key. CONSUMPTION IS MANDATORY: every key you ADD to testData MUST be READ by the spec — never seed testData.X and then pass a duplicated string literal (e.g. adding testData.checkout.firstName but still calling submit(\'Jordan\', ...)); the spec MUST pass testData.checkout.firstName. Test data written but never consumed is a defect.',
     '- APP-PREPOPULATED FIELDS: every field listed in the App-prepopulated fields section is an application-owned default. Do NOT create a Page locator for it, add testData for it, fill/clear/type it, include it in uniqueFields, or assert its literal value. For a prepopulated dropdown/radio, do NOT re-select/re-check the value it already holds. Leave it untouched unless the approved test case explicitly requests custom entry. This does NOT forbid using a page/section heading or a static label as a READ-ONLY readiness or visibility assertion (e.g. asserting the "Products" heading is visible) — a heading/label is page chrome, not a prepopulated input value.',
     '- UNIQUE CONSTRAINTS (evidence-gated): treat a field as uniqueness-constrained ONLY when the LIVE trace actually exposed a duplicate/"already exists"/"already taken" validation for it. A field NAME alone is NOT evidence: a postal/ZIP code, phone/house/street number, or any "…code"/"…number"/"…id" the app accepts as a plain value is ORDINARY reusable testData — store a FIXED readable value, do NOT call uniqueValue(), and do NOT emit a uniqueFields entry for it. When (and only when) the live trace proved a uniqueness constraint on a genuine identifier/username/email/record-number, store only a readable seed in testData, import uniqueValue from "../utils/UniqueData" (add retryOnCollision only in mode B below), and generate a FRESH value for EACH submit via uniqueValue(seed, { kind, length }). TWO modes: (A) DEFAULT — if the field is proven-unique but the collision message is not an inline-recoverable locator, just fill the fresh uniqueValue() and Save (NO retry, NO collision locator); return a uniqueFields descriptor with only testDataPath+kind (+length) and OMIT collisionPageField/collisionMessage. (B) COLLISION RETRY — when the live trace exposed an inline collision validation with a locatable message for the field, wrap the submit in retryOnCollision({ page: this.page, successUrl: urlRegex(routes.X), collision: this.<page>.collisionLocator, makeValue: () => uniqueValue(seed, { kind, length }), submit: async (value) => { fill the field with value; click Save; }, collisionMessage }); the Page MUST expose that exact live collision locator, retry ONLY when it appears (all other errors/timeouts fail), and do NOT add a second waitForURL after the helper. Return one uniqueFields descriptor per unique field so codegen can enforce this contract. HARD REQUIREMENT: every uniqueFields entry you declare MUST have a matching uniqueValue(seed, { kind, length }) call AND an `import { uniqueValue } from "../utils/UniqueData"` in the Module that actually fills that field — declaring a uniqueFields descriptor without wiring uniqueValue() into the Module is REJECTED; if a field is not proven-unique, use ordinary FIXED testData for it rather than leaving an unimplemented uniqueFields entry.',
     '- TAGS — industry standard, stacked in the test() title: a feature/module tag in PascalCase (e.g. @AdminAddUser) PLUS suite tags — @Smoke on the primary happy-path case, @Regression on ALL cases. Do NOT use @Positive/@Negative. Match the domain naming already used in the repo.',
