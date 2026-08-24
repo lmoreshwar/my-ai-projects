@@ -3434,6 +3434,87 @@ function applyFieldInit(fw, written, evidence, allBackups, recordWrite, log) {
   }
 }
 
+/** A concrete, non-empty placeholder for a backfilled testData leaf — format-inferred from the leaf
+ *  name so field validation still passes, else a generic readable string. Never app-specific (real
+ *  credentials come from credentials('app'), not testData). */
+function testDataPlaceholder(key) {
+  const k = String(key).toLowerCase();
+  if (k.includes('email')) return 'test@example.com';
+  if (k.includes('zip') || k.includes('postal') || k.includes('pincode')) return '12345';
+  if (k.includes('phone') || k.includes('mobile')) return '5551234567';
+  if (k.includes('price') || k.includes('amount') || k.includes('total') || k.includes('qty') || k.includes('quantity')) return '1';
+  return 'Sample ' + String(key).replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim();
+}
+
+/**
+ * DETERMINISTIC testData guarantee (sibling of ensureReferencedLocators). A generated spec that reads
+ * `testData.<a>.<b>` crashes at runtime ("Cannot read properties of undefined") AND fails tsc when
+ * src/testdata/testData.json lacks that key — and the provisioned template ships testData.json = {}.
+ * The LLM is told to emit an extended file but often references keys it never writes. This scans every
+ * WRITTEN spec for SCALAR `testData.<path>` reads and, for any path missing from testData.json,
+ * deep-sets a concrete placeholder. Additive only — never overwrites a value the model DID emit, never
+ * drops an existing key; skips method calls (testData.x.find) and array indexing (testData.x[0]) so
+ * array-of-record fixtures are never corrupted. Runs regardless of tsc/node_modules availability, so it
+ * holds on a bare provisioned repo. Generic. Returns { changed, added:[dottedPath], backup:relPath|null }.
+ */
+function ensureReferencedTestData(fw, written) {
+  const root = path.resolve(fw);
+  const abs = path.join(root, 'src', 'testdata', 'testData.json');
+  const refs = new Set();
+  for (const w of written) {
+    if (w.layer !== 'spec') continue;
+    let src;
+    try { src = fs.readFileSync(path.join(root, w.path), 'utf8'); } catch { continue; }
+    // Lookbehind excludes path/string/property contexts so the import specifier
+    // '../testdata/testData.json' is never mistaken for a `testData.json` data reference.
+    const re = /(?<![\w.\/'"`])testData((?:\.[A-Za-z_$][\w$]*)+)/g;
+    let m;
+    while ((m = re.exec(src))) {
+      const nextChar = src[re.lastIndex];
+      if (nextChar === '(' || nextChar === '[') continue; // method call / array index — not a scalar data key
+      refs.add(m[1].slice(1)); // strip leading '.'
+    }
+  }
+  if (!refs.size) return { changed: false, added: [], backup: null };
+
+  let data = {};
+  try { data = JSON.parse(fs.readFileSync(abs, 'utf8') || '{}'); } catch { data = {}; }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) data = {};
+
+  const added = [];
+  for (const dotted of refs) {
+    const parts = dotted.split('.');
+    let node = data;
+    let ok = true;
+    for (let i = 0; i < parts.length - 1; i++) {
+      const key = parts[i];
+      if (node[key] == null) node[key] = {};
+      else if (typeof node[key] !== 'object' || Array.isArray(node[key])) { ok = false; break; }
+      node = node[key];
+    }
+    if (!ok) continue; // an existing non-object value blocks the path — never clobber it
+    const leaf = parts[parts.length - 1];
+    if (!(leaf in node)) {
+      node[leaf] = testDataPlaceholder(leaf);
+      added.push(dotted);
+    }
+  }
+  if (!added.length) return { changed: false, added: [], backup: null };
+
+  let backup = null;
+  if (fs.existsSync(abs)) {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const bakRel = path.join('.blast-backups', `testData.json.bak-${ts}`);
+    const bakAbs = path.join(root, bakRel);
+    fs.mkdirSync(path.dirname(bakAbs), { recursive: true });
+    fs.copyFileSync(abs, bakAbs);
+    backup = bakRel.replace(/\\/g, '/');
+  }
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, JSON.stringify(data, null, 2) + '\n', 'utf8');
+  return { changed: true, added, backup };
+}
+
 /**
  * Safely write parsed files under FRAMEWORK_PATH/src.
  * - Refuses paths that escape the repo or src/.
@@ -4443,6 +4524,16 @@ async function coreGenerate(fw, job, log, logs) {
   }
   applyFieldInit(fw, written, referencedEvidence, allBackups, recordWrite, log);
 
+  // Guarantee every scalar testData.<a>.<b> the spec reads exists in testData.json (deterministic; the
+  // template ships {} and the LLM often references keys it never emits → "Cannot read properties of
+  // undefined" + a tsc error the cloud can't catch when node_modules is absent). Runs before the gate.
+  const tdReg = ensureReferencedTestData(fw, written);
+  if (tdReg.changed) {
+    if (tdReg.backup) allBackups.push(tdReg.backup);
+    log(`[local]   ＋ backfilled ${tdReg.added.length} referenced testData key(s) into testData.json: ${tdReg.added.join(', ')}`);
+    recordWrite({ path: 'src/testdata/testData.json', layer: 'other', reused: false, action: 'merged' });
+  }
+
   const specPaths = () => written.filter((w) => w.layer === 'spec').map((w) => w.path);
   if (specPaths().length === 0) {
     log('[local] No spec file generated (LLM output likely truncated) — requested case(s) NOT automated. Verification FAILED; no PR will be opened.');
@@ -4508,6 +4599,12 @@ async function coreGenerate(fw, job, log, logs) {
         }
       }
       applyFieldInit(fw, written, referencedEvidence, allBackups, recordWrite, log);
+      const tdC = ensureReferencedTestData(fw, written);
+      if (tdC.changed) {
+        if (tdC.backup) allBackups.push(tdC.backup);
+        log(`[local]   ＋ backfilled ${tdC.added.length} referenced testData key(s) during compile-fix: ${tdC.added.join(', ')}`);
+        recordWrite({ path: 'src/testdata/testData.json', layer: 'other', reused: false, action: 'merged' });
+      }
       log(`[local] Applied compile-fix ${tsr + 1}/${MAX_TS_ROUNDS} to ${cr.written.length} file(s). Re-checking…`);
     }
     if (unresolvedCompileErrors.length) {
@@ -5277,6 +5374,7 @@ module.exports = {
   compactJourney,
   ensureFixturesRegistered,
   ensureReferencedLocators,
+  ensureReferencedTestData,
   inferLocatorTarget,
   parseAriaElements,
   ensurePageFieldsInitialized,
