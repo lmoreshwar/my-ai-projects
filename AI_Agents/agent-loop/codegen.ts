@@ -21,7 +21,7 @@ import { existsSync, readFileSync, writeFileSync, readdirSync } from 'node:fs';
 import { dirname, join, normalize } from 'node:path';
 import OpenAI from 'openai';
 import ts from 'typescript';
-import { deriveLocatorScopeHint, type AgentStep, type LocatorScopeHint, type InteractionEvidence } from './agent-loop';
+import { deriveLocatorScopeHint, isStableUniqueLocator, type AgentStep, type LocatorScopeHint, type InteractionEvidence } from './agent-loop';
 import {
   assertDependencyArtifactsPreserved, assertResolvedDependenciesUsed, dependencyResolutionContext, writeCapabilityDependencyMemory,
   type CapabilityDependencyResolution,
@@ -496,19 +496,46 @@ test.describe('Sample Login', () => {
 });
 `;
 
-/** Whether the framework already has a reusable login Module and/or a registered login fixture. */
-function loginAssets(fw: string): { hasLoginModule: boolean; loginFixture: string | null } {
-  let hasLoginModule = false;
+/**
+ * Find a reusable login Module by CONTENT, not by filename: the app's authentication entry is a module
+ * class that DEFINES both a `goto()` and a `login(...)` method, even when it is named after the app (e.g.
+ * SauceDemoModule) rather than `*Login*Module`. Returns the module's REAL class name + the login() arg
+ * hint so the shared-login rule reuses it verbatim instead of re-authoring login in every feature module.
+ * A conventionally-named auth file wins first (goto optional, preserving prior name-based behavior); any
+ * other module must structurally BE an auth entry (both goto + login) to qualify. Fully generic.
+ */
+function findLoginModule(fw: string): { className: string; loginArgs: string } | null {
   const modulesDir = join(fw, 'src/modules');
-  if (existsSync(modulesDir)) {
-    hasLoginModule = readdirSync(modulesDir).some((f) => /login/i.test(f) && f.endsWith('Module.ts'));
+  if (!existsSync(modulesDir)) return null;
+  const files = readdirSync(modulesDir).filter((f) => f.endsWith('Module.ts') && !f.endsWith('.d.ts'));
+  const named = (f: string): boolean => /login|signin|sign-in|auth/i.test(f);
+  const consider = (src: string, requireGoto: boolean): { className: string; loginArgs: string } | null => {
+    const loginDef = src.match(/^[ \t]*(?:public|private|protected)?\s*(?:async\s+)?login\s*\(([^)]*)\)/m);
+    const cls = src.match(/export\s+class\s+(\w+)/);
+    if (!loginDef || !cls) return null;
+    if (requireGoto && !/^[ \t]*(?:public|private|protected)?\s*(?:async\s+)?goto\s*\(/m.test(src)) return null;
+    return { className: cls[1], loginArgs: loginDef[1].trim() ? 'credentials("app")' : '' };
+  };
+  for (const f of files.filter(named)) {
+    const hit = consider(safeRead(join(modulesDir, f)), false);
+    if (hit) return hit;
   }
+  for (const f of files.filter((f) => !named(f))) {
+    const hit = consider(safeRead(join(modulesDir, f)), true);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** Whether the framework already has a reusable login Module and/or a registered login fixture. */
+function loginAssets(fw: string): { loginModule: { className: string; loginArgs: string } | null; loginFixture: string | null } {
+  const loginModule = findLoginModule(fw);
   let loginFixture: string | null = null;
   const fixturesSrc = safeRead(join(fw, 'src/fixtures/index.ts'));
   for (const m of fixturesSrc.matchAll(/^\s*(\w+)\s*:\s*async\s*\(/gm)) {
     if (/login/i.test(m[1])) { loginFixture = m[1]; break; }
   }
-  return { hasLoginModule, loginFixture };
+  return { loginModule, loginFixture };
 }
 
 /**
@@ -517,13 +544,14 @@ function loginAssets(fw: string): { hasLoginModule: boolean; loginFixture: strin
  * "unknown parameter" crash on a reset repo). Three cases: a registered login fixture -> destructure
  * it; a LoginModule class but no fixture -> instantiate it; neither -> generate login from scratch.
  */
-function loginGuidanceFor(fw: string): string {
-  const { hasLoginModule, loginFixture } = loginAssets(fw);
+export function loginGuidanceFor(fw: string): string {
+  const { loginModule, loginFixture } = loginAssets(fw);
   if (loginFixture) {
     return `- SHARED LOGIN: a '${loginFixture}' fixture IS registered - destructure it (async ({ page, ${loginFixture} }) => ...) and log in in test.beforeEach (${loginFixture}.goto() + ${loginFixture}.login(credentials("app"))). Feature navigation stays in the feature Module.goto() inside each test.`;
   }
-  if (hasLoginModule) {
-    return '- SHARED LOGIN: a LoginModule exists but is NOT a registered fixture - instantiate it in the beforeEach/test body (const loginModule = new LoginModule(page)) and call loginModule.goto() + loginModule.login(credentials("app")). NEVER destructure a `loginModule` fixture (it is not registered).';
+  if (loginModule) {
+    const inst = loginModule.className.charAt(0).toLowerCase() + loginModule.className.slice(1);
+    return `- SHARED LOGIN — REUSE the existing ${loginModule.className}: it already exposes goto()+login(), so do NOT re-author login (no login()/goto() method, no username/password locators) in THIS feature's Module or Page. Import it (import { ${loginModule.className} } from '../modules/${loginModule.className}'), instantiate in the beforeEach/test body (const ${inst} = new ${loginModule.className}(page)) and call ${inst}.goto() + ${inst}.login(${loginModule.loginArgs}). NEVER destructure a '${inst}' fixture (it is not registered). Feature navigation stays in the feature Module.goto() inside each test.`;
   }
   return '- LOGIN FROM SCRATCH: there is NO login Module or login fixture yet. If the app requires login, generate the login step inside THIS feature\'s Module (a login() method that fills username/password from credentials("app") and submits) - do NOT reference a `loginModule` fixture (destructuring it fails with "unknown parameter"). Feature navigation stays in the feature Module.goto() inside each test.';
 }
@@ -561,8 +589,13 @@ function renderTrace(trace: AgentStep[]): string {
     const context = t.context ? `\n   [live snapshot context for this ref]\n${t.context}` : '';
     // Older approved plans predate scopeHint, so recover it from their captured snapshot context.
     const positionalLocator = /\.(?:first|last|nth)\s*\(/.test(t.locator || '');
-    const scopeHint: LocatorScopeHint | undefined = t.scopeHint
-      || (positionalLocator ? deriveLocatorScopeHint(t.context || '', String(t.args?.ref || ''), true) : undefined);
+    // A stable, unique test-id echo from the CLI's attribute-aware generator is the strongest target — copy
+    // it verbatim and do NOT override it with a synthetic label-scoped xpath climb (which can anchor on
+    // volatile nearby text such as a price). Only fall back to the scope hint for a positional/ambiguous echo.
+    const scopeHint: LocatorScopeHint | undefined = isStableUniqueLocator(t.locator || '')
+      ? undefined
+      : (t.scopeHint
+        || (positionalLocator ? deriveLocatorScopeHint(t.context || '', String(t.args?.ref || ''), true) : undefined));
     const scope = scopeHint
       ? `\n   [AMBIGUOUS ${scopeHint.role}${scopeHint.name ? ` "${scopeHint.name}"` : ''} match - ${scopeHint.matches} controls; use this EXACT label-scoped Page locator instead of the positional CLI echo]\n   ${scopeHint.locator}`
       : '';
@@ -712,6 +745,7 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- Every generated Page locator MUST be based on the verified live explore evidence. Copy a non-positional echoed locator verbatim. When an action has an [AMBIGUOUS ...] scope hint, use its exact supplied locator instead of the CLI echo (which may use .first(), .last(), or .nth()). Never re-guess a locator.',
     '- Module = workflow methods that call ONLY the wrapper properties + methods listed in the Wrapper API contract above, each on its OWN property (this.actions.* for primitive interactions, this.workflowActions.* for shared interaction helpers, this.waitHelper.* for waits, this.logger.* for logging). CONSTRUCT every wrapper you call in the constructor from the page (e.g. this.actions = new Actions(page); this.workflowActions = new WorkflowActions(page); this.waitHelper = new WaitHelper(page)) — only the ones you actually use. A method listed under one wrapper does NOT exist on another: calling a WorkflowActions helper on this.actions crashes at runtime with "is not a function". Never put a raw locator or an assertion in a Module.',
     '- Spec = import { test, expect } from "../fixtures"; instantiate the new Module directly with the test\'s page, e.g. `const m = new <Feature>Module(page)`. Put all assertions here.',
+    '- STATE/VALUE ASSERTIONS (a count, badge, total, price, or status/confirmation value the flow produces): do NOT assert a lone short or generic literal via a bare unscoped page.getByText("1").toBeVisible() — a 1-3 char or generic literal matches many nodes (strict-mode ambiguity) and FALSE-PASSES when any unrelated element already shows that text, and toBeVisible only proves SOME element with that text exists, not that the state element holds the expected value. Instead SCOPE to the exact element the trace observed: add a getter on the feature Page (its getByRole(role, { name }) from the a11y evidence, or its stable data-test/testid when the evidence shows one) and assert the CONCRETE value from the spec with toHaveText/toContainText, e.g. expect(<feature>Page.<stateElement>()).toHaveText(testData.<a>.<b>). Reserve toBeVisible for presence-only checks (a heading/container that has no value to verify).',
     '- FIXTURES: the test callback may destructure ONLY { page } plus fixtures already listed in "Fixtures already registered" above (e.g. loginModule for shared login). This feature\'s brand-new Page/Module are NOT fixtures — codegen does not edit src/fixtures/index.ts — so NEVER write `async ({ <feature>Page })` or `async ({ <feature>Module })` (Playwright fails with "unknown parameter"). When the spec needs the new Page for an assertion, instantiate it directly in the test body: `const <feature>Page = new <Feature>Page(page)`; likewise `const <feature>Module = new <Feature>Module(page)`. The reuse exemplar destructures ITS OWN registered fixtures — do not copy that for a not-yet-registered feature.',
     '- For login, the Module\'s login method takes (username, password); the spec passes credentials("app"). Do NOT hardcode credentials.',
     loginGuidance,

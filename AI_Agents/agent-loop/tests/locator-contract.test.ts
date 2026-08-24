@@ -23,7 +23,7 @@ import {
   assertNoSelfReferentialSortAssertion,
   singleTargetNamedPageMembers,
 } from '../codegen';
-import { deriveLocatorScopeHint, interactionEvidenceForRef } from '../agent-loop';
+import { deriveLocatorScopeHint, interactionEvidenceForRef, isStableUniqueLocator } from '../agent-loop';
 import type { AgentStep, InteractionEvidence } from '../agent-loop';
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────────── */
@@ -352,4 +352,56 @@ test('assertNoSelfReferentialSortAssertion ACCEPTS a comparison to an INDEPENDEN
 test('assertNoSelfReferentialSortAssertion ACCEPTS a sort of a DIFFERENT array (not the asserted value)', () => {
   // Comparing the observed list to a sorted copy of a SEPARATELY-captured baseline is legitimate.
   assert.doesNotThrow(() => assertNoSelfReferentialSortAssertion(specWith('expect(sortedNames).toEqual([...originalNames].sort());')));
+});
+
+/* ── 11. STABLE ECHO PREFERENCE: a unique test-id echo beats the label-scoped xpath climb ────────── */
+
+// SauceDemo-style inventory: several identical "Add to cart" buttons; the interacted one carries a UNIQUE
+// data-test. deriveLocatorScopeHint anchors on the nearest text ($29.99) and climbs xpath — fragile. When the
+// CLI's own attribute-aware echo is a stable unique test-id, that echo must WIN over the price+xpath climb.
+const AMBIGUOUS_ADD_TO_CART_SNAPSHOT = `
+- main:
+  - list:
+    - listitem:
+      - text: "$29.99"
+      - button "Add to cart" [ref=e10]
+    - listitem:
+      - text: "$9.99"
+      - button "Add to cart" [ref=e11]
+`.trim();
+
+test('isStableUniqueLocator is TRUE for a data-test / testid / getByTestId target', () => {
+  assert.ok(isStableUniqueLocator(`page.locator('[data-test="add-to-cart-sauce-labs-backpack"]')`));
+  assert.ok(isStableUniqueLocator(`page.getByTestId('add-to-cart-sauce-labs-backpack')`));
+  assert.ok(isStableUniqueLocator(`this.page.locator('[data-testid="continue"]')`));
+  assert.ok(isStableUniqueLocator(`page.locator('[data-qa="finish"]')`));
+});
+
+test('isStableUniqueLocator is FALSE for role/text/positional/xpath echoes', () => {
+  assert.ok(!isStableUniqueLocator(`page.getByRole('button', { name: 'Add to cart' })`));
+  assert.ok(!isStableUniqueLocator(`page.getByRole('button', { name: 'Add to cart' }).first()`));
+  assert.ok(!isStableUniqueLocator(`page.locator('[data-test="x"]').first()`));
+  assert.ok(!isStableUniqueLocator(`page.getByText('$29.99', { exact: true }).locator('xpath=ancestor::*[1]').getByRole('button')`));
+  assert.ok(!isStableUniqueLocator(`page.getByText('Add to cart')`));
+  assert.ok(!isStableUniqueLocator(''));
+});
+
+test('interactionEvidenceForRef PREFERS a unique data-test echo over the ambiguous price-anchored xpath climb', () => {
+  const provenTestId = `page.locator('[data-test="add-to-cart-sauce-labs-backpack"]')`;
+  const scope = deriveLocatorScopeHint(AMBIGUOUS_ADD_TO_CART_SNAPSHOT, 'e10'); // the fragile price+xpath climb
+  assert.ok(scope, 'the ambiguous button still derives a label-scoped hint');
+  assert.match(scope!.locator, /\$29\.99[\s\S]*xpath=ancestor/); // proof the hint IS the price climb
+  const ev = interactionEvidenceForRef(AMBIGUOUS_ADD_TO_CART_SNAPSHOT, 'e10', 'click', provenTestId, scope);
+  assert.ok(ev);
+  assert.equal(ev!.uniqueness, 2, 'the button is ambiguous in the snapshot');
+  assert.equal(ev!.custom, true, 'an ambiguous control is still flagged custom');
+  assert.equal(ev!.locatorEvidence, provenTestId, 'the unique data-test echo WINS over the price+xpath climb');
+});
+
+test('interactionEvidenceForRef still falls back to the scoped hint when the echo is POSITIONAL', () => {
+  const positional = `page.getByRole('button', { name: 'Add to cart' }).first()`;
+  const scope = deriveLocatorScopeHint(AMBIGUOUS_ADD_TO_CART_SNAPSHOT, 'e10');
+  const ev = interactionEvidenceForRef(AMBIGUOUS_ADD_TO_CART_SNAPSHOT, 'e10', 'click', positional, scope);
+  assert.ok(ev);
+  assert.equal(ev!.locatorEvidence, scope!.locator, 'a positional echo is discarded in favour of the scoped hint');
 });

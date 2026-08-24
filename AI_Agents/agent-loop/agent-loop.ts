@@ -252,6 +252,23 @@ export function deriveLocatorScopeHint(snapshot: string, ref: string, forceAmbig
 }
 
 /**
+ * True when a locator is a stable, position-independent, UNIQUE target on its own: a test-id-family
+ * attribute selector (data-test / data-testid / data-test-id / data-qa / data-cy / data-pw) or a
+ * getByTestId() getter, with NO positional (.first/.last/.nth) or xpath-structure disambiguation. Such a
+ * proven CLI echo — produced by Playwright's own attribute-aware selector generator, which only emits it
+ * when it resolves to exactly one element — is STRONGER evidence than a synthetic label-scoped xpath climb,
+ * so codegen copies it verbatim instead of overriding it. Fully generic (any data-* test-id family).
+ */
+export function isStableUniqueLocator(locator: string): boolean {
+  const loc = String(locator || '').trim();
+  if (!loc) return false;
+  if (/\.(?:first|last|nth)\s*\(/.test(loc)) return false; // positional index — not a stable unique target
+  if (/xpath\s*=/.test(loc)) return false;                  // brittle DOM-structure climb
+  if (/getByTestId\s*\(/.test(loc)) return true;            // Playwright test-id getter
+  return /\[\s*(?:data-test(?:id|-id)?|data-qa|data-cy|data-pw)\s*=/.test(loc); // test-id-family CSS attribute
+}
+
+/**
  * Build the VERIFIED-LIVE interaction contract for a ref-based action, from the snapshot the action ran
  * against. `custom` flags the cases where a bare getByRole is unsafe: an unnamed checkable widget or an
  * ambiguous role. Generic — no app-specific classes or names.
@@ -272,12 +289,19 @@ export function interactionEvidenceForRef(
   const label = scopeHint?.label || nearestLabelInSnapshot(lines, target) || target.name;
   const unnamedCheckable = ['checkbox', 'radio', 'switch'].includes(target.role) && !target.name;
   const custom = unnamedCheckable || uniqueness > 1;
+  // A stable, unique, non-positional proven echo (a test-id-family selector the CLI's own attribute-aware
+  // generator resolved to exactly one element) is STRONGER evidence than a synthetic label-scoped xpath
+  // climb — prefer it so an ambiguous control (one of N same-named buttons) is targeted by its unique test
+  // id, not a fragile nearest-text ancestor climb. Fall back to the scoped hint only for a positional/weak echo.
+  const locatorEvidence = isStableUniqueLocator(provenLocator)
+    ? provenLocator
+    : (scopeHint?.locator || provenLocator || '');
   return {
     controlId: label || target.name || ref,
     action,
     semanticRole: target.role,
     accessibleName: target.name,
-    locatorEvidence: scopeHint?.locator || provenLocator || '',
+    locatorEvidence,
     interactionTarget: `${target.role}${target.name ? ` "${target.name}"` : ' (unnamed)'} [ref=${ref}]`,
     uniqueness,
     custom,
