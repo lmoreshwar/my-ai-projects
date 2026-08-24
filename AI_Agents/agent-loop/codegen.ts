@@ -439,6 +439,7 @@ function wrapperContract(fw: string): string {
  */
 const FALLBACK_PAGE_EXEMPLAR = `import { type Locator, type Page } from '@playwright/test';
 
+/** Login screen — locators only. */
 export class SampleLoginPage {
   constructor(private readonly page: Page) {}
 
@@ -455,6 +456,7 @@ import { Logger } from '../utils/Logger';
 import { routes, urlFor } from '../config';
 import { SampleLoginPage } from '../pages/SampleLoginPage';
 
+/** Login workflow: open the page and submit credentials for an authenticated session. */
 export class SampleLoginModule {
   private readonly page: Page;
   private readonly actions: Actions;
@@ -467,11 +469,13 @@ export class SampleLoginModule {
     this.loginPage = new SampleLoginPage(page);
   }
 
+  /** Open the login page and wait for the username field. */
   async goto(): Promise<void> {
     this.logger.step(1, 'Open the login page');
     await this.actions.navigate(urlFor(routes.login), { readyElement: this.loginPage.usernameInput() });
   }
 
+  /** Enter credentials and submit. */
   async login(username: string, password: string): Promise<void> {
     this.logger.step(2, 'Submit credentials');
     await this.actions.fill(this.loginPage.usernameInput(), username);
@@ -486,6 +490,7 @@ import { credentials, routes, urlRegex } from '../config';
 import { SampleLoginModule } from '../modules/SampleLoginModule';
 
 test.describe('Sample Login', () => {
+  // Valid credentials should land on the inventory page.
   test('TC_001 valid credentials reach the app @SampleLogin @Smoke @Regression', async ({ page }) => {
     const loginModule = new SampleLoginModule(page);
     const { username, password } = credentials('app');
@@ -762,7 +767,8 @@ function buildPrompt(fw: string, job: CodegenJob, trace: AgentStep[]): string {
     '- UNIQUE CONSTRAINTS (evidence-gated): treat a field as uniqueness-constrained ONLY when the LIVE trace actually exposed a duplicate/"already exists"/"already taken" validation for it. A field NAME alone is NOT evidence: a postal/ZIP code, phone/house/street number, or any "…code"/"…number"/"…id" the app accepts as a plain value is ORDINARY reusable testData — store a FIXED readable value, do NOT call uniqueValue(), and do NOT emit a uniqueFields entry for it. When (and only when) the live trace proved a uniqueness constraint on a genuine identifier/username/email/record-number, store only a readable seed in testData, import uniqueValue from "../utils/UniqueData" (add retryOnCollision only in mode B below), and generate a FRESH value for EACH submit via uniqueValue(seed, { kind, length }). TWO modes: (A) DEFAULT — if the field is proven-unique but the collision message is not an inline-recoverable locator, just fill the fresh uniqueValue() and Save (NO retry, NO collision locator); return a uniqueFields descriptor with only testDataPath+kind (+length) and OMIT collisionPageField/collisionMessage. (B) COLLISION RETRY — when the live trace exposed an inline collision validation with a locatable message for the field, wrap the submit in retryOnCollision({ page: this.page, successUrl: urlRegex(routes.X), collision: this.<page>.collisionLocator, makeValue: () => uniqueValue(seed, { kind, length }), submit: async (value) => { fill the field with value; click Save; }, collisionMessage }); the Page MUST expose that exact live collision locator, retry ONLY when it appears (all other errors/timeouts fail), and do NOT add a second waitForURL after the helper. Return one uniqueFields descriptor per unique field so codegen can enforce this contract. HARD REQUIREMENT: every uniqueFields entry you declare MUST have a matching uniqueValue(seed, { kind, length }) call AND an `import { uniqueValue } from "../utils/UniqueData"` in the Module that actually fills that field — declaring a uniqueFields descriptor without wiring uniqueValue() into the Module is REJECTED; if a field is not proven-unique, use ordinary FIXED testData for it rather than leaving an unimplemented uniqueFields entry.',
     '- TAGS — industry standard, stacked in the test() title: a feature/module tag in PascalCase (e.g. @AdminAddUser) PLUS suite tags — @Smoke on the primary happy-path case, @Regression on ALL cases. Do NOT use @Positive/@Negative. Match the domain naming already used in the repo.',
     '- TEST INDEPENDENCE: every test() runs STANDALONE (a case may be run individually via grep). Each test does its OWN login + navigation (prefer test.beforeEach for shared setup) and never depends on state left by a sibling test.',
-    '- CLEAN CODE: match the exemplars\' indentation, no unused imports, no dead code, no duplicated boilerplate that belongs in a shared helper. One short comment only above a non-obvious step.',
+    '- CLEAN CODE: match the exemplars\' indentation, no unused imports, no dead code, no duplicated boilerplate that belongs in a shared helper. Do not restate code or over-comment obvious lines.',
+    '- DOC COMMENTS (neat, not noisy): put a ONE-LINE /** ... */ header on each Page and Module class stating its role, a ONE-LINE /** ... */ on each public Module method stating its intent, and a ONE-LINE // comment above each test() stating the scenario and expected outcome. One short intent line per class/method/test is the ceiling — never comment individual statements.',
     '',
     '## Output — STRICT JSON only (no prose, no markdown fences):',
     '{',
