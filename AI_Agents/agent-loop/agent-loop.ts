@@ -163,6 +163,71 @@ function renderRefs(refs: RefRow[]): string {
   return refs.slice(0, 60).map((r) => `- ref=${r.ref} ${r.role}${r.name ? ` "${r.name}"` : ''}`).join('\n');
 }
 
+// Generic FORWARD-progress UI vocabulary. STRONG words are unambiguously forward (a destination or a
+// commit); WEAK words also advance but are ambiguous ("Continue Shopping" is regressive), so they score
+// lower and never outrank a strong signal on the same page.
+const ADVANCE_VERBS_STRONG = new Set([
+  'checkout', 'cart', 'basket', 'bag', 'purchase', 'buy', 'pay', 'payment', 'order', 'place',
+  'confirm', 'finish', 'complete',
+]);
+const ADVANCE_VERBS_WEAK = new Set(['continue', 'next', 'proceed', 'submit', 'review', 'go']);
+
+function tokenize(text: string): string[] {
+  return String(text || '').toLowerCase().match(/[a-z0-9]+/g) || [];
+}
+
+interface NavCandidate { ref: string; role: string; name: string; href: string; score: number; }
+
+/**
+ * Evidence-based route seeding: from the LIVE snapshot, list the link/button controls (with their
+ * hrefs when the a11y tree exposes `/url:`) that best ADVANCE toward the requested goal. Ranking is
+ * derived only from the current page + the goal text the user supplied — never an app-specific rule.
+ * Used to steer the model when it stalls (no tool call / stagnant loop) so it clicks the real next
+ * control (e.g. a cart/checkout link) instead of wandering into an unrelated menu or giving up.
+ */
+export function navigationCandidates(snapshot: string, goal: string, feature: string, limit = 6): NavCandidate[] {
+  const lines = String(snapshot || '').split('\n');
+  const goalTokens = new Set([...tokenize(goal), ...tokenize(feature)].filter((w) => w.length >= 3));
+  const rowRe = /^\s*-?\s*(link|button)(?:\s+"([^"]*)")?[^\n]*\[ref=([a-z0-9]+)\]/;
+  const urlRe = /^\s*-?\s*\/url:\s*(\S+)/;
+  const out: NavCandidate[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(rowRe);
+    if (!m) continue;
+    const ref = m[3];
+    if (seen.has(ref)) continue;
+    seen.add(ref);
+    const role = m[1].toLowerCase();
+    const name = (m[2] || '').trim();
+    // A link's destination often follows on the next `/url:` child line — cheap, generic evidence.
+    let href = '';
+    for (let j = i + 1; j <= i + 2 && j < lines.length; j++) {
+      const u = lines[j].match(urlRe);
+      if (u) { href = u[1]; break; }
+    }
+    const candTokens = [...tokenize(name), ...tokenize(href)];
+    let score = 0;
+    for (const t of candTokens) {
+      if (goalTokens.has(t)) score += 2;            // matches the user's own goal/feature wording
+      if (ADVANCE_VERBS_STRONG.has(t)) score += 2;  // unambiguous forward control/route
+      else if (ADVANCE_VERBS_WEAK.has(t)) score += 1;
+    }
+    out.push({ ref, role, name, href, score });
+  }
+  // Relevant controls first; keep some fallback options so there is always a next move to offer.
+  out.sort((a, b) => b.score - a.score);
+  return out.slice(0, limit);
+}
+
+/** Render nav candidates as a compact, model-facing hint block. */
+function renderNavCandidates(cands: NavCandidate[]): string {
+  if (!cands.length) return '';
+  return cands
+    .map((c) => `- ref=${c.ref} ${c.role}${c.name ? ` "${c.name}"` : ''}${c.href ? ` → ${c.href}` : ''}`)
+    .join('\n');
+}
+
 /** Keep the parent/label lines around the chosen live ref so codegen can scope unnamed controls. */
 function snapshotContextForRef(snapshot: string, ref: string): string {
   if (!snapshot || !ref) return '';
@@ -770,6 +835,10 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
   // action or silently drifting onto an unrelated page. Bounded so it can never loop forever.
   const MAX_ALTERNATIVE_ATTEMPTS = 4;
   const NO_PROGRESS_LIMIT = 3;
+  // A single empty completion must NOT abort the walk: nudge the model back toward the goal (with the
+  // live navigation options) up to this many times before conceding it is genuinely stuck.
+  const MAX_EMPTY_RESPONSE_NUDGES = 3;
+  let emptyResponseNudges = 0;
   let alternativeAttempts = 0;
   let noProgressStreak = 0;
   let lastSignature = '';
@@ -798,6 +867,8 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
         attemptedApproaches.push(attempt);
         log(`[agent] \u26a0 stagnant loop detected at ${url} — requesting alternative approach ${alternativeAttempts}/${MAX_ALTERNATIVE_ATTEMPTS}.`);
         note += `\n\nSELF-HEALING: the last ${NO_PROGRESS_LIMIT} action(s) produced no visible change on this page. Do NOT repeat the same action — reassess ALL available navigation options here (menu items, icons, links) and try a genuinely DIFFERENT one to reach the requested feature. (Alternative attempt ${alternativeAttempts}/${MAX_ALTERNATIVE_ATTEMPTS}.)`;
+        const stuckCands = renderNavCandidates(navigationCandidates(yaml, opts.goal, featureText));
+        if (stuckCands) note += `\n\nControls on THIS page that most likely advance toward the goal (prefer these over menus/icons):\n${stuckCands}`;
       }
     } else {
       noProgressStreak = 0;
@@ -841,10 +912,25 @@ export async function runAgentLoop(opts: AgentLoopOptions): Promise<AgentLoopRes
       const choice = completion.choices[0]?.message;
       if (!choice) return finish('incomplete', 'No response from the model.');
 
-      // No tool call → the model is done talking; treat as incomplete unless it explicitly finished.
+      // No tool call → the model stalled. A single empty completion must NOT kill the walk: nudge it
+      // back toward the goal WITH the live navigation options (seeded routing), bounded so it can never
+      // loop forever. Only concede 'incomplete' after the nudge budget is spent.
       const toolCalls = choice.tool_calls || [];
       if (!toolCalls.length) {
-        return finish('incomplete', choice.content || 'Model returned no tool call.');
+        if (emptyResponseNudges < MAX_EMPTY_RESPONSE_NUDGES) {
+          emptyResponseNudges += 1;
+          const cands = renderNavCandidates(navigationCandidates(latestSnapshot, opts.goal, featureText));
+          const nav = cands
+            ? `\n\nNavigation options currently on the page — pick the one that advances toward the goal (click its ref, or goto its route). Prefer these over menus/icons:\n${cands}`
+            : `\n\nCall snapshot first to see the current page, then act.`;
+          messages.push({
+            role: 'user',
+            content: `You have NOT finished the task and returned no tool call. Do not stop. You must reach the requested feature ("${featureText}") and complete it end-to-end.${nav}\n\nContinue now with exactly ONE tool call (snapshot first if your refs may be stale).`,
+          });
+          log(`[agent] \u26a0 model returned no tool call — nudging back toward the goal (${emptyResponseNudges}/${MAX_EMPTY_RESPONSE_NUDGES}).`);
+          continue;
+        }
+        return finish('incomplete', choice.content || 'Model returned no tool call after repeated nudges toward the goal.');
       }
 
       messages.push(choice);
