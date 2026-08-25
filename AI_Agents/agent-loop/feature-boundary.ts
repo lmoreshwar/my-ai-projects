@@ -685,6 +685,41 @@ export interface TraceSplit {
   primaryTrace: AgentStep[];
 }
 
+// Generic disclosure/menu-toggle vocabulary — a control that only reveals UI (no persistent app state).
+// Deliberately narrow: it must never match a state-mutating control (add-to-cart, save, a real link).
+const MENU_TOGGLE_RE = /\b(?:menu|hamburger|burger|drawer|sidebar|flyout|kebab|overflow)\b/i;
+
+/**
+ * Drop VERIFIED steps whose effect is immediately superseded by a hard navigation: a menu/disclosure
+ * TOGGLE click that did NOT change the URL, followed by a `goto` to a DIFFERENT page. The classic case
+ * is the walk opening a hamburger/side menu and then reaching the destination by direct URL — the toggle
+ * contributes nothing to the reproducible flow and only adds noise to the authored test. Fully generic
+ * and evidence-based (URL transition + disclosure vocabulary only) — never an app/feature rule. Scoped to
+ * disclosure toggles so a state-mutating click (e.g. add-to-cart, which is also non-navigating) is SAFE.
+ */
+export function pruneSupersededSteps(steps: AgentStep[]): AgentStep[] {
+  const NON_NAV = new Set(['click', 'hover', 'press']);
+  const drop = new Set<number>();
+  let currentUrl = '';
+  for (let i = 0; i < steps.length; i++) {
+    const s = steps[i];
+    const stepUrl = s.url || '';
+    const didNotNavigate = !stepUrl || stepUrl === currentUrl;
+    if (NON_NAV.has(s.tool) && didNotNavigate && MENU_TOGGLE_RE.test(s.locator || '')) {
+      // The next AUTHORED step (recorded snapshots are evidence, not actions — skip them).
+      let j = i + 1;
+      while (j < steps.length && steps[j].tool === 'snapshot') j += 1;
+      const next = steps[j];
+      const nextUrl = next ? (next.url || String((next.args as Record<string, unknown>)?.url || '')) : '';
+      if (next && next.tool === 'goto' && nextUrl && nextUrl !== (currentUrl || stepUrl)) {
+        drop.add(i);
+      }
+    }
+    if (stepUrl) currentUrl = stepUrl;
+  }
+  return drop.size ? steps.filter((_, i) => !drop.has(i)) : steps;
+}
+
 /**
  * Split a walk into prerequisite / feature / downstream segments using the detected boundary.
  * When the target was never reached, everything is primary (no downstream to strip) so behavior is

@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { runAgentLoop } from './agent-loop';
 import { authorPlanFromTrace, authorScenariosFromDiscovery, authorFeatureVerificationScenarios, scenariosToCases, markCoveredScenarios, type CodegenJob, type BlastPlanV2 } from './codegen';
 import { dependencyResolutionContext, resolveCapabilityDependencies } from './capability-dependencies';
-import { detectFeatureBoundary, splitTrace, resolveFeatureStatus } from './feature-boundary';
+import { detectFeatureBoundary, splitTrace, resolveFeatureStatus, pruneSupersededSteps } from './feature-boundary';
 
 const log = (l: string): void => console.log(l);
 
@@ -65,7 +65,11 @@ When the feature needs one of these states, establish it as setup before verifyi
   // state — a non-navigating action's resulting snapshot is not re-derivable from steps alone).
   const boundary = walk.featureBoundary ?? detectFeatureBoundary(feature, url, walk.steps);
   const effStatus = resolveFeatureStatus(walk.status, boundary);
-  const primaryTrace = boundary.acceptanceVerified ? splitTrace(walk.steps, boundary).primaryTrace : walk.steps;
+  // Prune menu/disclosure toggles the walk opened but then bypassed via a direct navigation, so the
+  // authored test carries only the reproducible flow (no dead menu clicks). Generic + evidence-based.
+  const primaryTrace = pruneSupersededSteps(
+    boundary.acceptanceVerified ? splitTrace(walk.steps, boundary).primaryTrace : walk.steps,
+  );
   if (boundary.acceptanceVerified && walk.status !== 'passed') {
     log(`[explore] feature boundary: ${boundary.reason} — treating exploration as PASSED (downstream steps ignored).`);
   }
