@@ -260,3 +260,43 @@ test('gate STILL rejects a locator absent from BOTH interaction and snapshot evi
     /SamplePage\.invented[\s\S]*not present in verified live evidence/,
   );
 });
+
+/* ── Placeholder-named inputs: a snapshot textbox name is NOT verified getByRole evidence (SauceDemo login) ── */
+
+// SauceDemo's login form as the agent snapshots it: Playwright names each input by its PLACEHOLDER, so the
+// a11y snapshot shows `- textbox "Username"`, but the DOM has no accessible name (inputs are [data-test]
+// only). getByRole('textbox', { name: 'Username' }) matches nothing at runtime → the 32s login timeout.
+const LOGIN_FORM_SNAPSHOT = [
+  '### Page',
+  '- Page URL: https://www.saucedemo.com/',
+  '### Snapshot',
+  '```yaml',
+  '- textbox "Username" [ref=e1]',
+  '- textbox "Password" [ref=e2]',
+  '- button "Login" [ref=e3]',
+  '```',
+].join('\n');
+const loginSnapshotTrace: AgentStep[] = [{ tool: 'snapshot', args: {}, result: LOGIN_FORM_SNAPSHOT }];
+
+test('snapshotRoleNameLocators does NOT surface editable text inputs (placeholder-named) as getByRole evidence', () => {
+  const locs = snapshotRoleNameLocators(loginSnapshotTrace);
+  assert.ok(!locs.some((l) => /getByRole\('textbox'/.test(l)), 'a placeholder-named textbox is not runtime-safe getByRole evidence');
+  assert.ok(locs.some((l) => locatorsEquivalent(l, "getByRole('button', { name: 'Login' })")), 'the submit button (stable name) is still evidence');
+});
+
+test('gate REJECTS a login field locator grounded ONLY in a snapshot textbox name (prevents the SauceDemo login timeout)', () => {
+  const usernameField = "  usernameInput = (): Locator => this.page.getByRole('textbox', { name: 'Username' });";
+  const generated = artifacts(usernameField, 'usernameInput', 'usernameInput');
+  assert.throws(
+    () => assertPageObjectContracts(FW, generated, loginSnapshotTrace),
+    /usernameInput[\s\S]*not present in verified live evidence/,
+  );
+});
+
+test('gate ACCEPTS a login field locator that WAS actually interacted with (real interaction evidence)', () => {
+  const usernameField = "  usernameInput = (): Locator => this.page.getByRole('textbox', { name: 'Username' });";
+  const generated = artifacts(usernameField, 'usernameInput', 'usernameInput');
+  const interacted: AgentStep[] = [{ tool: 'fill', args: { value: '{{USERNAME}}' }, locator: "getByRole('textbox', { name: 'Username' })", result: '' }];
+  assert.doesNotThrow(() => assertPageObjectContracts(FW, generated, interacted));
+});
+

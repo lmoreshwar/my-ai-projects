@@ -1515,6 +1515,15 @@ export function locatorsEquivalent(a: string, b: string): boolean {
  * accepts a grounded assertion/navigation locator. Parses only the snapshot text the agent actually
  * captured (nameless structural `generic` nodes are skipped) — generic, never app-specific.
  */
+// Editable text-entry roles whose a11y-snapshot NAME is commonly derived from the `placeholder`
+// attribute (Playwright's snapshot uses it as a fallback accessible name). `getByRole(role, { name })`
+// matching at RUNTIME does NOT consider placeholder, so a snapshot line like `- textbox "Username"`
+// must NEVER be treated as verified evidence for a getByRole textbox INTERACTION locator — that locator
+// resolves to nothing live (the SauceDemo login timeout: inputs are [data-test] only, no accessible
+// name). Such fields must be grounded by a REAL interaction/discovery locator instead. Assertion and
+// navigation roles (heading/button/link/tab/…) keep runtime-stable names and remain valid evidence.
+const PLACEHOLDER_NAMED_INPUT_ROLES = new Set(['textbox', 'searchbox', 'spinbutton']);
+
 export function snapshotRoleNameLocators(trace: AgentStep[]): string[] {
   const out: string[] = [];
   const LINE = /^\s*-\s+([a-z][a-z-]*)\s+"((?:[^"\\]|\\.)*)"/;
@@ -1525,7 +1534,7 @@ export function snapshotRoleNameLocators(trace: AgentStep[]): string[] {
       const m = raw.match(LINE);
       if (!m) continue;
       const [, role, name] = m;
-      if (role === 'generic' || !name) continue;
+      if (role === 'generic' || !name || PLACEHOLDER_NAMED_INPUT_ROLES.has(role)) continue;
       out.push(`getByRole('${role}', { name: '${name.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}' })`);
     }
   }
